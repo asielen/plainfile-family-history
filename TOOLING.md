@@ -25,10 +25,12 @@ External binary: `exiftool` (embedded-metadata read/write).
 Everything else stdlib.
 No network access except the geocoder's optional gazetteer download.
 
-**Archive root discovery.** A real archive root contains `fha.yaml` + `sources/` (+ the other record dirs); discovery walks upward from CWD to find it, and `--root PATH` overrides.
+**Archive root discovery.** An archive root is identified by the presence of `fha.yaml`; discovery walks upward from CWD to find it, and `--root PATH` overrides. (`sources/` and the other record directories are expected but not required for root detection — a brand-new archive may have `fha.yaml` before its record directories exist.)
 The spec docs (`SPEC.md`/`TOOLING.md`) normally live at the archive root but may instead be installed with the tools; `--spec-root PATH` points at them when separated.
 In the public spec repo, the fixture is run explicitly: `fha lint --root example-archive --spec-root .` — the repo root is not itself an archive.
 All stored paths are alias-form with forward slashes (normalize on Windows).
+
+**`--root` per subcommand.** Because Python's `argparse` does not propagate parent-parser flags into subparsers, **every subcommand defines its own `--root` (and `--spec-root`) flag**. Both `fha --root X lint` and `fha lint --root X` work; the subcommand's own flag wins. Implementations in other languages must respect the same dual-position convention.
 
 **Path resolution (`resolve_path`).** Record paths begin with a root alias (`photos/…`, `documents/…`). `_lib.py` loads `fha.yaml` once per run; `resolve_path(p)` maps the first segment through `roots:` (absolute values used as-is; relative values join the archive root; a missing `fha.yaml` or alias defaults to the internal directory of the same name).
 Every tool that touches asset files — lint E011/E012, photoindex, packet, process, site — resolves through this function and never assumes assets are under the archive root.
@@ -65,9 +67,11 @@ All file IO is UTF-8.
 | `1850~` / `1850?` | 1849-01-01 | 1851-12-31 (widened ±1y) |
 | `185X` | 1850-01-01 | 1859-12-31 |
 | `1850-05` | 1850-05-01 | 1850-05-31 |
-| `1850-~05` | 1850-04-01 | 1850-06-30 (widened ±1m) |
+| `1850-~05` or `1850-05~` | 1850-04-01 | 1850-06-30 (widened ±1m) |
 | `[..1920]` | 0001-01-01 | 1920-12-31 |
 | `A/B` (interval) | min(A) | max(B) |
+
+**Month-approximate tilde position:** EDTF Level 1 permits the uncertainty qualifier either *before* the month component (`1850-~05`, tilde precedes the month) or *after* the full date component (`1850-05~`, tilde trails the month). Both are valid and treated identically by this system. Real-world data uses both; the validation regex and bounds computation must accept either position.
 
 Validation regex (accepting the subset above) is the linter's date check; anything else is `E014`.
 
@@ -81,7 +85,8 @@ Validation regex (accepting the subset above) is the linter's date check; anythi
 The query surface for every other tool and for ad-hoc research (`sqlite3` or any viewer).
 Never appended; never authoritative.
 
-**Incremental mode.** `fha index --source S-xxxx` upserts one source: delete its rows (sources, source_files, claims, claim_persons, claim_links, its citations), re-parse the one file, re-insert — sub-second, run automatically at the end of review sessions.
+**Incremental mode.** `fha index --source S-xxxx` upserts one source: delete its rows, re-parse the one file, re-insert — sub-second, run automatically at the end of review sessions.
+Deletion order matters: collect claim IDs first, then delete `claim_persons` and `claim_links` by those IDs, then delete `claims`, then `sources`/`source_files`/`source_people`. Reversing this order leaves orphan rows in the child tables because the parent subquery finds nothing.
 Full rebuild remains the periodic truth-check; any discrepancy between incremental and full states is a bug in incremental, by definition.
 
 **Build algorithm.** (1) glob `sources/**/*.md`, `people/**/*.md`, `places/places.yaml`, `notes/**/*.md`; (2) parse each with the parsing layer; (3) insert in one transaction; (4) scan all prose bodies for `TOKEN_RE` → citations table; (5) glob asset trees for filenames carrying S-ids → files table reconciliation; (6) build FTS tables.
@@ -179,7 +184,7 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 | E008 | Significance override without reason | field pair check |
 | E009 | `contradicts:` without an open question | search `notes/questions.md` + research files for both C-ids; absent → error |
 | E010 | Frontmatter schema failure | required fields per record kind |
-| E011 | Inventory ↔ disk mismatch | `files:` entry missing on disk (path resolved via fha.yaml) — except `status: missing-fixture` under `example-archive/`/`tests/fixtures/`, which is W-level; or an on-disk file carrying this S-id — by filename (documents root) or embedded `SOURCE:` keyword scan (photos root, `--with-exif`) — absent from inventory |
+| E011 | Inventory ↔ disk mismatch | `files:` entry missing on disk (path resolved via fha.yaml) — except `status: missing-fixture` under `example-archive/` or `tests/` (any directory named `tests`), which is **suppressed entirely** (no finding emitted); a `missing-fixture` in a real archive (not under those roots) is an error; or an on-disk file carrying this S-id — by filename (documents root) or embedded `SOURCE:` keyword scan (photos root, `--with-exif`) — absent from inventory |
 | E012 | Embedded source-keyword disagreement | documents root: `SOURCE:` keyword must agree with the filename S-id and inventory. Photos root: `SOURCE:` must agree with the record inventory — photos carry no filename S-ids by design. (`--with-exif`, slower) |
 | E013 | Summary block drift | parse `**Born/Died/Married/Parents/Children:**` lines; compare cited `[S-]`/`[P-]` ids and dates against accepted claims for that person; mismatch → error, summary line lacking any accepted claim → warning W104 |
 | E014 | Non-EDTF date | validation regex |
@@ -188,16 +193,23 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 | E017 | DNA source not `restricted: true`, or DNA file outside `documents/dna/` | field + path check |
 | E018 | Agent-instruction drift | AGENTS.md / skills reference deprecated commands (`fha promote`), stale skill names, or contradict locked rules (photo renames) |
 
-Warnings / reports: **W101** vitals gaps per person (the completeness report) · **W102** suggested-claim backlog per source · **W103** stale folder bracket lists vs relationship claims · **W104** summary line without supporting accepted claim · **W105** hand-edits under a GENERATED header · **W106** accepted claims missing Mills analysis fields (informational; cleanup-session fodder) · **W107** direct references to merged persons (gradual cleanup list) · **W108** README.md older than the last SPEC.md change (the README rule) · **W109** non-vital or low-confidence claim missing `notes` context (the context nudge).
+Warnings / reports: **W101** vitals gaps per person (the completeness report) · **W102** suggested-claim backlog per source · **W103** stale folder bracket lists vs relationship claims · **W104** summary line without supporting accepted claim · **W105** hand-edits under a GENERATED header · **W106** accepted claims missing Mills analysis fields (informational; cleanup-session fodder) · **W107** direct references to merged persons (gradual cleanup list) · **W108** README.md older than the last SPEC.md change (the README rule) · **W109** non-vital or low-confidence claim missing `notes` context (the context nudge); also used as the catch-all code for unrecognized `source_type` vocabulary and for file-format issues surfaced by `--format-check` (missing final newline, CRLF line endings) — a future cleanup may give these their own codes · **W110** Ahnentafel placement issue (requires `root_person` in `fha.yaml`): a direct-line couple folder's numeric prefix does not match the derived Ahnentafel number, or a direct-line person's files live in the wrong couple folder — `fha views brackets --fix` resolves both.
 
 **Formatter** (`fha lint --format-check` / `--format-write`): conservative normalization only — frontmatter and claim key order, lowercase IDs, blank-line and final-newline hygiene, YAML list indentation.
 Never rewrites prose beyond trailing whitespace.
 
-**Fix modes** (each gated behind an explicit flag, each prints a diff first): `--mint-stubs` (E005 → create stubs in `people/stubs/`), `--spawn-questions` (E009 → append templated question to `notes/questions.md`), `--fix-inventory` (E011 → regenerate `files:` from the ID-glob, preserving hand-written `role`/`original_filename` where the path matches).
+**Fix modes** (each gated behind an explicit flag; use `--dry-run` to preview what would change before writing): `--mint-stubs` (E005 → create stubs in `people/stubs/`), `--spawn-questions` (E009 → append templated question to `notes/questions.md`), `--fix-inventory` (E011 → regenerate `files:` from the ID-glob, preserving hand-written `role`/`original_filename` where the path matches).
 
-**Summary-block parsing detail (E013).** The block is the contiguous run of `**Label:** …` lines after the H1.
-Dates in it are display-format; comparison is by cited claim: each line's `[S-id]` must correspond to an `accepted` claim of the matching type (`birth`/`death`/`marriage`) for this person from that source, and `[P-id]`s in Parents/Children must match accepted `relationship` claims.
-Display text itself is not parsed for equality — the citation is the contract.
+**Required claim fields enforced by E010:** `id`, `type`, `persons`, `value`, `status`. Note: `confidence` is required per SPEC §8.5 but is not in the E010 required-field set for milestone 1 — it is derived by tooling from `source_type` and the linter does not yet enforce its presence. Future work: add `confidence` to E010 enforcement, or emit a dedicated warning for accepted claims lacking it.
+
+**Summary-block parsing detail (E013).** The block is the run of `**Label:** …` entries after the H1, before the first `## Section` header. Labels are: `Born`, `Died`, `Married`, `Parents`, `Children`.
+The parser must handle **both** layout styles:
+- *Multi-line:* one `**Label:**` per line — the common case in hand-authored profiles.
+- *Inline (single-line):* multiple `**Label:**` markers on one line (e.g. `**Born:** … **Married:** … **Parents:** …` all run together) — occurs in practice when the block was written without explicit line breaks.
+
+Implementation: scan the summary text (up to the first `## Section`) with `finditer` on the `**Label:**` pattern; split into segments between consecutive label positions; extract `[S-id]` and `[P-id]` tokens from each segment. Do **not** split by line — line splitting fails on the inline form.
+
+Comparison rule: each `[S-id]` in a segment must correspond to an `accepted` claim of the matching type (`birth`/`death`/`marriage`) for this person from that source; `[P-id]`s in Parents/Children must match accepted `relationship` claims. Display text is not parsed for equality — the citation is the contract.
 
 ---
 
@@ -268,6 +280,23 @@ Never overwrites; never moves a stub out of `stubs/` (placement into couple fold
 
 *Tier 2 — model-assisted (optional, gated behind `--with-vision`):* a vision pass over candidate pairs to confirm perceptual similarity — catches variations with unrelated names (e.g. `scan001.jpg` and `scan002.jpg` that are actually front/back of one photo). Expensive; used only on ambiguous cases Tier 1 can't resolve. Backlog until the core tools exist.
 
+**Filename parsing algorithm.** Suffixes are stripped in this fixed priority order (implemented in `parse_media_filename`):
+1. Strip `-crop` suffix first → `is_crop = True`. Crop stacks on any other suffix combination.
+2. Strip part-kind suffix: `-negative` checked before `-back` / `-front` / `-pageN`.
+3. Detect trailing single-letter variant ID — hyphen-letter (`-b`) or letter immediately after a digit (`034b`).
+4. Remaining stem → `base_id`.
+
+Result: `ParsedName(base_id, variant_id, part_kind, page_num, is_crop)` where `part_kind` ∈ `"front" | "back" | "page" | "negative" | "none"`. **Semantics:** `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` — it marks a scan of the physical film or glass-plate negative; in the grouper it is always stored at the stem level regardless of any variant letter (a negative is source material for the root image, not a print variant). `-crop` marks a derivative detail image (zoomed text, face close-up); crops are stored in dedicated `_crop` slots alongside their parent scan and supplied as supplementary AI context, never treated as independent primary images. A missing `-page1` is never inferred by the parser — if a group contains explicit `-pageN` siblings, the grouper may promote an untagged file to page 1, but the parser itself never does this.
+
+**Multi-image batch types.** When a folder contains multiple images for one source, classify the set before processing:
+
+| Type | Description | Treatment |
+|---|---|---|
+| **A — Variant scans** | Same physical side/object, different crop/exposure/rotation/quality | Merge into one source |
+| **B — Front/back** | One or more front scans and one or more back scans of the same physical photo, postcard, or document | Merge into one source |
+| **C — Multi-page document** | Different pages of a booklet, album, scrapbook, or document set (filenames `-page1`, `-page2`, …) | One ordered document set; preserve page order exactly; transcribe text across all pages labeling each section `[Page 1]`, `[Page 2]`, … in captions |
+| **D — Helper crops** | Small crops from a larger page to aid legibility of text or a detail | Supplementary views of their parent page only — not independent pages or sources |
+
 **Processing a variation group:** when a group is detected, `fha process` surfaces it with a confirmation prompt:
 
 ```
@@ -310,7 +339,12 @@ All write GENERATED-headed `.md` into the tree; all derive purely from the index
 - **`fha views timeline [P-id|--all-curated]`** → `…_timeline_{P-id}.md`: accepted + needs-review claims for the person, sorted by `date_min`, grouped by decade, each line `EDTF — type: value [S-id]`, suggested claims listed in a trailing "unreviewed" section.
 - **`fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|html|dot]`** → traverses the `relationships` edges from the person. `ancestors`: parent-edges recursively (pedigree). `descendants`: child-edges recursively (the v1 hero — "all descendants of T.E."). `fan`: the person plus kin plus social edges, one or two hops (2 = default; catches in-laws and shared-affiliation ties), the research-network graph — confirmed edges solid, `fha cooccur` candidates dashed, hypotheses ghosted, so the view doubles as a research surface. Bilinear: spouse edges pull in in-law branches. Every node carries its `[P-id]` (→ links to the person page) and every edge its source `claim_id`. Output is **the neutral tree JSON** — the stable data contract (nodes: `{p_id, name, vitals, sex}`; edges: `{type, from, to, claim_id, dates}`) — or dot for tooling. This JSON is what the spec pins down; the *rendering* of it (the site's vendored tree library, styling) is deliberately left to the build. A renderer adapter maps this neutral shape to whatever library is in use.
 - **`fha views sources-index`** → per curated person and per couple folder: every source with ≥1 claim naming the person(s), grouped by source_type, with paths.
-- **`fha views brackets`** → reports (or with `--fix`, renames) couple-folder bracket lists from accepted `relationship` claims. Renaming folders is safe: names carry no machine meaning.
+- **`fha views brackets`** → folder maintenance for the `people/` tree, covering three concerns in one pass (all previewed as diffs; `--fix` applies them):
+  1. **Bracket lists** — refresh stale `[child, …]` annotations in couple-folder names from accepted `relationship` claims. (W103)
+  2. **Ahnentafel numbers** *(requires `root_person` in `fha.yaml`)* — derive each direct-line couple's correct number by walking accepted parent `relationship` claims outward from `root_person` (#1): the parent with `sex: M` takes position 2n, `sex: F` takes 2n+1; for same-sex or `sex: U` pairs the first-encountered parent (by P-id, deterministic) takes the lower slot. Report folders whose numeric prefix disagrees with the derived number; with `--fix`, rename. (W110)
+  3. **Person file placement** *(requires `root_person`)* — report direct-line person files (all companion kinds: profile, research, timeline, sources-index) living in the wrong couple folder; with `--fix`, move them to the correct folder, creating it when absent. Non-direct-line occupants (siblings, half-siblings, connections) are never moved. (W110)
+  
+  When `root_person` is absent from `fha.yaml`, checks 2 and 3 are skipped with an informational note. Renaming folders and moving person files are both safe: folder names and paths carry no machine meaning — the `P-id` in each filename is the identity.
 
 ---
 
@@ -383,9 +417,18 @@ CREATE VIRTUAL TABLE photo_fts USING fts5(path, title, caption, user_comment, ke
 ```
 
 **Variation grouping.** Versions of one physical photo must index as **one logical photo**.
-Group key, in priority order: (1) shared S-id (filename or `SOURCE:` keyword) — processed photos group by source; (2) same directory + same base stem after stripping the recognized suffix grammar `[-{copy}][-{role}]` (`b`, `c`,`-b`, `-c`, `-negative`, `-back`, `-front`, `-page-N`) — the pipeline's own naming convention; "text from alternate version" keywords corroborate a grouping but never create one (too fuzzy). (NOTE letter varaitions are not always started with a dash, they always appear as the last thing before any additional tags however.)
+Group key, in priority order: (1) shared S-id (filename or `SOURCE:` keyword) — processed photos group by source; (2) same directory + same base stem after stripping the recognized suffix grammar `[-{copy}][-{role}]` (`b`, `c`,`-b`, `-c`, `-negative`, `-back`, `-front`, `-page-N`) — the pipeline's own naming convention; "text from alternate version" keywords corroborate a grouping but never create one (too fuzzy). (NOTE letter variations are not always started with a dash, they always appear as the last thing before any additional tags however.)
 Grouping is conservative: never across directories, never on caption similarity.
 The **primary** variant is the front of copy a (fallback: lexicographically first); search results and the packet's photo gathering return *groups*, copying all variants but counting the photo once (`--files` exposes raw rows).
+
+**Group data structure.** After grouping, each stem's entry holds the following slots (parallel to the `group_folder_images` output used by the photo pipeline, see §6 for the parsing algorithm):
+- `primary` — `{front, back, front_crop, back_crop}`: the main front/back scans and their `-crop` detail images
+- `variants` — ordered list of `{version, front, back, front_crop, back_crop}`: version-letter (a, b, c…) alternates and their crops
+- `pages` — `{page_num → path}`: multi-page document pages keyed by integer
+- `page_crops` — `{page_num → path}`: crop detail per page number
+- `negative` / `negative_crop` — scan of the physical film/glass-plate negative and any crop of it
+
+Negative grouping rule: negatives are stored at the stem level regardless of any variant letter in their filename — a negative is source material for the root image, not an A/B variant of the print. For page sets, `all_fronts` is the sorted page list and `all_backs` is all-None; `photo_groups` in the schema caches this structure for "show me all variants" queries. The `photos.variant_role` column holds the compound role value (`front`, `back`, `front-crop`, `back-crop`, `negative`, `negative-crop`, `page-1`, …).
 
 **Group date resolution.** Each variant may carry its own `DATE:` pattern and EXIF date (different backs say different things — that is evidence, not noise).
 The group's `edtf_resolved` is the **best-confidence variant's** EDTF: score by number of `!` components (D > M > Y), then `~` over `?`; deterministic tie-break by path.
@@ -643,7 +686,7 @@ Feeds report §15a.6. *(Flagged as a future-intelligence focus: a model-assisted
 **Order:** `_lib` foundations → `install`/`update-tools` (scaffolding, §13c) → `id` → `index` → `lint` → `stubs` → `views` → `photoindex` (+triage, +reconcile) → `xref` → `cooccur` → `report` → `packet` → `process` → `convert-mining` → `site` → `wikitree` → `gedcom` → `capture` → `places geocode`.
 Rationale: lint validates everything later tools write; the photo index gates the packet; the converter needs stubs + lint to validate its output.
 
-**Testing:** the pilot tree is the **clean** golden fixture and must lint clean (TODO-marked asset gaps are W-level, not E-level, in fixture mode); intentionally broken fixtures live separately under `tests/fixtures/broken-*/`, one per lint code.
+**Testing:** the pilot tree is the **clean** golden fixture (`tests/fixtures/`) and must lint clean (exit 0; TODO-marked asset gaps are W-level, not E-level, in fixture mode); intentionally broken fixtures live separately under `tests/fixtures/broken-*/`, one per lint code. The `example-archive/` is a separate demonstration fixture — it is permitted to exit 1 with documented known warnings (e.g. W101 for historical figures whose death records have not been located); those warnings must not regress in count or code without a deliberate change.
 Each tool ships `--dry-run`; tests are golden-file comparisons against a committed copy of the pilot (`tests/fixtures/`), plus deliberate-corruption fixtures for every lint code (a file per E/W code, asserting it fires). `fha lint` must run clean on the pilot before any release of any tool; a `make check` target runs the suite.
 
 ---
@@ -716,7 +759,7 @@ Organized by how often *you* touch it — the skills are the real working surfac
 | `fha capture` (T C, + browser companion) | Capturing a record from an open web page (Ancestry etc.): citation + asset/HTML-snapshot + research-log entry → `fha process`. The main intake on-ramp. |
 | `fha gedcom <P-id\|--all>` (T C) | Exporting relationships+vitals to GEDCOM for another genealogy app. One-way; redacts living/unknown. |
 | `fha views tree <P-id> --mode …` (T C) | Generating an ancestor/descendant/FAN tree (json/html/dot). |
-| `fha views timeline\|sources-index\|draft-queue\|brackets` (T C) | Manual view refresh (review sessions auto-trigger); `brackets --fix` after family-structure changes. |
+| `fha views timeline\|sources-index\|draft-queue\|brackets` (T C) | Manual view refresh (review sessions auto-trigger); `brackets --fix` after family-structure changes — also verifies and corrects Ahnentafel folder numbers and person file placement (requires `root_person` in `fha.yaml`). |
 | `fha places geocode` / `places lint` (T C) | Coordinate backfill (human-confirmed); registry hygiene. |
 | `fha convert-mining [--apply]` (T C) | One-time: legacy ChatGPT mining migration. |
 | `fha photoindex find / report` (T C) | Ad-hoc photo search; cross-variant date-conflict review. |

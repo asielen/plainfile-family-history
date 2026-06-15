@@ -10,3 +10,4 @@ Before tagging a spec release or pushing a significant change:
 - [ ] AGENTS.md / CLAUDE.md reference current command and skill names (no stale `promote`, `PERSON:`, `add-source`).
 - [ ] SPEC decision log includes the change.
 - [ ] Repo/tools/template/fixture distinction stays clear (no doc treats the repo root as a real archive).
+- [ ] Spec and Tooling files match implementation details if decisions were made differently than in the spec

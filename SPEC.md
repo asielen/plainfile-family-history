@@ -314,7 +314,7 @@ All dates in archive records use **EDTF (ISO 8601-2)**:
 | Circa | `1850~` |
 | Decade | `185X` |
 | Year + month | `1850-05` |
-| Month approximate | `1850-~05` |
+| Month approximate | `1850-~05` or `1850-05~` (tilde before or after month — both valid EDTF Level 1) |
 | Uncertain | `1850?` |
 | Before | `[..1920]` |
 | Interval | `1871-02/1871-03` |
@@ -394,7 +394,7 @@ Reorganizing or rescanning assets must never orphan a source or claim; the recor
 - Direct-line children get their own numbered folder, never a subfolder.
 - **A direct ancestor's non-ancestral marriages** get suffix folders sorting beside the ancestral one: `040b Thomas Hartley + (second spouse) [children]`. Occupants beyond the ancestor are connections-tier people; half-siblings of the line live here.
 - Ahnentafel's even/odd convention is a sorting convenience, not an assumption — use one partner's even number consistently; nothing in the model requires opposite-sex couples.
-- The whole tree is a projection, regenerable from relationship claims; Ahnentafel numbers are derivable, never stored in records.
+- The whole tree is a projection, regenerable from relationship claims; Ahnentafel numbers are derivable, never stored in records. The derivation root — the person at position #1 — is declared in `fha.yaml` as `root_person` (§12.4); any direct-line descendant works as the anchor, since all full siblings share one ancestor tree. With that declaration, tools compute every ancestral couple's Ahnentafel number from accepted `relationship` claims and can verify and correct folder placement (see `fha views brackets`, `TOOLING.md §7`).
 
 ### 12.3 Connections (everyone beyond)
 
@@ -418,6 +418,10 @@ Roots are configured in `fha.yaml`, never hard-coded:
 
 ```yaml
 # fha.yaml — plain, hand-editable archive configuration
+root_person: P-xxxxxxxxxx    # Ahnentafel anchor: this person is #1 (father #2, mother #3, …).
+                              # Any direct-line descendant works — full siblings share one tree.
+                              # Enables folder-number verification and person placement via
+                              # `fha views brackets`. Omit to disable Ahnentafel tooling.
 roots:
   photos: C:/Photos          # absolute path (external library), or "photos" to keep it internal
   documents: documents       # relative → under the archive root
@@ -437,7 +441,7 @@ A human learns where assets live by reading `fha.yaml`.
 Every record file is **self-identifying** — its ID is in its filename, so files survive separation from their folders, and searching an ID finds everything carrying it.
 
 - **Source records:** `{slug}_{S-id}.md` — slug lowercase hyphenated, mutable; ID immutable.
-- **Source files (documents root):** `{slug}[-{copy}][-{role}]_{S-id}.{ext}` — the *source's* ID, shared by all versions. **Photos-root files are never renamed *by us*** (§12.1) — but another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (§ tooling) when files move. Roles: `front`, `back`, `page-N`, `clipping`, `recording`, `transcript`… Copies: `b`, `c`, `negative`… Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions — "text from alternate version" tags — so any copy reveals the others.)
+- **Source files (documents root):** `{slug}[-{copy}][-{role}]_{S-id}.{ext}` — the *source's* ID, shared by all versions. **Photos-root files are never renamed *by us*** (§12.1) — but another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (§ tooling) when files move. Roles: `front`, `back`, `page-N`, `clipping`, `recording`, `transcript`… Copies: `b`, `c`, `negative`… Derivative views: `-crop` stacks on any other suffix (`front-crop`, `back-crop`, `negative-crop`) marking supplementary detail images, never independent sources. Note: `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` — it is the physical film or glass-plate source material for the root image. Suffix parsing priority order: `-crop` stripped first, then part-kind (`-negative` before `-back`/`-front`/`-pageN`), then trailing variant letter; remaining stem = base id (see `TOOLING.md` §6 for the full algorithm). Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions — "text from alternate version" tags — so any copy reveals the others.)
 - **Person files:** `{surname}__{given_names}[_{kind}]_{P-id}.md` — **double underscore** after the surname (families sort together), underscores within given names, **birth surname always** (keeps women findable under the name in their early records; matches WikiTree practice). `kind` ∈ `research` | `timeline` | `sources-index`.
 
 The deliberate style difference — person files underscored, source files hyphenated — instantly distinguishes record kinds in search results.

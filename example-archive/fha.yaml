@@ -3,3 +3,9 @@
 roots:
   photos: photos
   documents: documents
+
+# Ahnentafel root: the person at position #1 in the numbering tree.
+# All ancestor Ahnentafel numbers are derived from this person via relationship claims.
+# Even-numbered folders (002, 004, …) are ancestral couple folders; the root person's
+# parents live in folder 002.
+root_person: P-0a1b2c3d4e   # Alex James Bradford

@@ -21,17 +21,20 @@ The five record types, the claim lifecycle, and the four-layer model are the con
 The agent reads `CLAUDE.md`, which defers to `AGENTS.md`, and now knows the rules: files are truth, AI suggestions enter a review queue, photos are never renamed, every fact cites a source.
 State your **mode** at the start of a session — `research`, `tool-building`, `migration`, or `spec-refinement`.
 
-## Step 3 — Build the tools
+## Step 3 — Use (or extend) the tools
 
-This scaffold ships the tools as *specification*, not code.
-Declare **tool-building mode** and point the agent at the build order in `TOOLING.md` §15:
+The first milestone is complete: `fha lint`, `fha index`, `fha id`, and `fha stubs` are implemented.
+Run them with Python 3.10+ from the `tools/` directory:
 
 ```
-_lib (foundations) → id → index → lint → stubs → views → photoindex → report → ...
+python tools/fha.py lint --root example-archive   # should exit 1 (one W101 warning, no errors)
+python tools/fha.py id mint P                      # mint a fresh person ID
+python tools/fha.py index --root example-archive   # build the SQLite index
 ```
 
-The first milestone: **`fha lint` runs clean on `example-archive/`** (the fictional Hartley family).
-That proves the foundations are correct before anything touches real data.
+To build further tools (process, views, photoindex, report, …), declare **tool-building mode** and
+follow the build order in `TOOLING.md` §15. The substrate (`_lib`, `id`, `index`, `lint`, `stubs`) is done.
+Each new tool follows the same implementation loop: read TOOLING, state contract, implement, test on fixtures, README review.
 
 ## Step 4 — Start your own archive
 
@@ -53,10 +56,9 @@ Copy the contents of `archive-template/` into it as the starting skeleton.
      self-contained even if the public repo vanishes, and you never memorize a file list.
      *(Until the tools are built, the manual equivalent is copying `tools/` plus `SPEC.md`,
      `TOOLING.md`, `AGENTS.md`, `CLAUDE.md` onto the skeleton — which is what install automates.)*
-   - *Install (once packaging exists):* not available yet — the tools are specified, not
-built.
+   - *Install (once packaging exists):* not available yet as a package.
 When the `fha` suite is packaged, you'll install it from this repo and call `fha` from anywhere.
-Until then, vendor the tools (above) or build them in your archive.
+Until then, vendor the tools (above).
 
 **Then, the actual research:**
 

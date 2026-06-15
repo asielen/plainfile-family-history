@@ -68,11 +68,27 @@ copies.
 The real archive is never a test bed; destructive paths are exercised on fixtures exclusively.
 5. **Definition of done:** `fha lint` runs clean on the clean pilot fixture; each of
 the tool's error codes fires on its broken fixture; `--dry-run` previews every mutating operation; help text exists; TOOLING still describes the tool accurately.
-6. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
+**Completion gate:** every flag the CLI accepts and every E/W code the tool advertises must appear in `tools/README.md` as either ✓ implemented or ⚑ deferred before the tool is declared milestone-complete. A flag that exists in the CLI but is absent from that table — or present but neither working nor marked deferred — is documentation debt that blocks handoff. Do not declare a tool done while any flag or code is in an undocumented partial state.
+6. **README review.** Before handoff, scan `README.md`, `docs/GETTING_STARTED.md`, and `tools/README.md` for any reference to the changed tool's behavior, flags, or build status and update anything now inaccurate. A working tool that a README still calls "not yet implemented," or whose flags the getting-started guide misdescribes, is a documentation bug. (The README rule from the decision log §21a binds tool-building as much as spec-refinement.)
+7. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
 
 **Spec-discovery protocol:** when implementation reveals that TOOLING/SPEC is ambiguous, contradictory, or wrong — STOP.
 Do not improvise past the spec (the docs must remain able to regenerate the tools).
 Present the gap, propose the amendment as a decision-log entry, and proceed only after the human's call.
+
+### Coding standards (tool-building mode)
+
+**Before coding:** Map the control flow end-to-end for the area being changed — identify CLI entrypoints, flags, file I/O, exit-code paths, and side effects before writing a line. Identify ownership boundaries before touching shared code in `_lib.py`. There must be one clear owner for each archive mutation or side effect; avoid duplicate pathways for the same behavior. Preserve existing contracts (CLI flags, exit codes, SPEC-defined file formats) unless the task explicitly requires changing them; validate all call sites when a shared interface changes.
+
+**Style:** Write clear, simple, maintainable Python. Prefer simplicity over cleverness; optimize for readability by a single developer, not enterprise-scale abstraction. Use straightforward control flow, small focused functions, and descriptive names. Favor boring, predictable code over compact or clever code. Do not introduce new abstractions, helpers, or architectural layers unless they clearly reduce complexity. Dead code is acceptable as intentional scaffolding for a planned feature — tag it with a `# TODO:` comment explaining what it scaffolds and what must happen before it is activated; remove dead code that has no planned future use.
+
+**Correctness:** Think through failure modes before finalizing — empty inputs, malformed YAML, missing files, partial writes, interrupted runs, and `--dry-run` vs. live-execution divergence. Make cleanup paths explicit; never leave the archive in an inconsistent state after an error. Do not declare work complete while known medium or high correctness issues remain.
+
+**Documentation:** Add docstrings to all non-trivial functions explaining what the function does and, where non-obvious, why the approach was chosen. Add inline comments only where they clarify non-obvious decisions, tradeoffs, or failure-handling; do not add comments that restate obvious code.
+
+**Self-review:** After implementing, review your own diff as a strict code reviewer before finalizing. Look specifically for correctness risks, duplicate side effects, contract mismatches, and missing cleanup. Classify each issue as high, medium, or low severity. Patch all high and medium issues before declaring done; do not leave them as follow-ups unless the human explicitly instructs otherwise.
+
+**Completion:** Work to completion in one run — do not stop after partial implementation if more required work is known. Keep interim narration brief so context is reserved for actual work. If context limits prevent full completion, finish the highest-risk and most central work first, then clearly list what remains.
 
 ### Session end (all modes)
 
@@ -97,8 +113,7 @@ notes/                  general research; notes/questions.md = question log
 
 ## Format quick reference
 
-- **IDs:** `{P|S|C|L|H}-{10 lowercase hex}` (H = hypothesis; never converts to C — verification mints a new claim and links both ways). Never invent one ad hoc — mint with
-`fha id mint <TYPE>` (or generate 10 random hex digits and verify the string appears nowhere in the tree).
+- **IDs:** `{P|S|C|L|H}-{10 Crockford Base32 chars}` (alphabet `0123456789abcdefghjkmnpqrstvwxyz` — lowercase, letters `ilou` omitted; H = hypothesis; never converts to C — verification mints a new claim and links both ways). Never invent one ad hoc — mint with `fha id mint <TYPE>` (or draw 10 chars from that alphabet and verify the string appears nowhere in the tree).
 IDs are immutable and never reused.
 - **Filenames:** sources `{slug}_{S-id}.md`; documents-root source files
 `{slug}[-{copy}][-{role}]_{S-id}.{ext}` (photos-root files are NEVER renamed); person files `{surname}__{given_names}[_{kind}]_{P-id}.md` (birth surname, double underscore).
@@ -125,7 +140,10 @@ fha process <file|folder>   process an original into a Source (documents: rename
                             photos: NEVER rename — keyword only; + record scaffold)
 fha views timeline|sources-index|brackets     regenerate views
 fha photoindex find ...      query the photo library (never bulk-read photos/)
-fha find <ID|text>           locate anything: record + assets + citations for an ID
+fha find <ID|text>           locate anything: record + assets + citations for an ID;
+                            FTS across records, notes, transcripts, photo captions
+fha find --related <ID>      neighborhood of any ID — people/places/sources/claims
+                            adjacent to a person, place, source, claim, or hypothesis
 fha packet <P-id>            person export packet
 ```
 

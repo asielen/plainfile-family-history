@@ -1,4 +1,12 @@
 # fha.yaml — archive configuration (plain, hand-editable). See SPEC.md §12.4.
+#
+# root_person: P-xxxxxxxxxx
+#   Set to the P-id of your direct-line descendant at Ahnentafel position #1
+#   (typically the researcher or the focal youngest generation).
+#   Any full sibling works — siblings share one ancestor tree.
+#   Enables Ahnentafel folder-number verification and person placement via
+#   `fha views brackets`. Omit to disable those checks.
+#
 # Root aliases: record paths like "photos/1880/…" resolve their first segment here.
 # Use an absolute path to keep a library outside the archive (e.g. photos: D:/Photos).
 roots:

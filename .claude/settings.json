@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python tools/fha.py id --root example-archive mint S)",
+      "Bash(python tools/fha.py index --root example-archive)",
+      "Bash(python tools/fha.py stubs --root example-archive --dry-run)",
+      "Bash(python tools/fha.py index --root example-archive -v)",
+      "Bash(python tools/fha.py index --root example-archive --source S-4f5f215e60)",
+      "Bash(python tools/fha.py lint --root example-archive --spec-root . --json)",
+      "PowerShell(cd \"d:\\\\Andrew\\\\Documents\\\\Programming\\\\PycharmProjects\\\\plainfile-family-history\"; python tools/fha.py lint --root example-archive --spec-root . 2>&1; Write-Host \"Exit: $LASTEXITCODE\")"
+    ]
+  }
+}
