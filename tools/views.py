@@ -5,14 +5,14 @@ views.py — fha views: generate view files from the index.
   fha views timeline [P-id | --all-curated]
   fha views sources-index [P-id | --all-curated | --couple-folders]
   fha views draft-queue [P-id | --all-curated]
-  fha views brackets      (not yet implemented)
+  fha views brackets [--fix] [--dry-run]
   fha views tree          (not yet implemented)
 
 ARCHITECTURE OVERVIEW
 ---------------------
-Each view is a read-only projection of data that already exists in the
-archive — it adds no new facts, only reorganises what the index knows.
-All three implemented views follow the same pipeline:
+Three content views (timeline, sources-index, draft-queue) are read-only
+projections derived from the index — they add no new facts.  Each follows
+the same pipeline:
 
   1. Open .cache/index.sqlite  (built by `fha index`; views never write it)
   2. Query claims / sources / persons tables
@@ -32,6 +32,11 @@ describe and share its naming prefix:
 The couple-folder sources-index is the one exception: it has no P-id because
 it describes a whole couple folder, not a single person (TOOLING §7).
 
+`fha views brackets` is a maintenance view, not a content view.  It reads
+the index to derive expected bracket lists and Ahnentafel positions, then
+reports mismatches as W103/W110 findings.  With --fix it renames folders and
+moves person files; --dry-run previews all changes without writing.
+
 SPEC §16 defines the companion kinds; TOOLING §7 defines each view's content.
 """
 
@@ -39,7 +44,9 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import re
+import shutil
 import sqlite3
 import sys
 from pathlib import Path
@@ -52,6 +59,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     find_archive_root,
+    load_fha_yaml,
     normalize_id,   # lower-cases IDs for consistent set/dict keying
     read_record,    # parses YAML front-matter + body from a .md file
 )
@@ -81,8 +89,26 @@ from _lib import (
 #  Draft-queue view  (_generate_draft_queue)
 #    _generate_draft_queue        — diff accepted sources against cited tokens
 #
+#  Brackets view  (_cmd_brackets and helpers)
+#    _parse_bracket_names         — extract [Name1 + Name2] list from folder name
+#    _folder_numeric_prefix       — '040 Thomas …' → 40
+#    _given_name                  — 'Thomas Edward Hartley' → 'Thomas' (first word)
+#    _couple_folder_dirs          — list digit-prefixed dirs under people/
+#    _persons_in_folder           — person_ids whose profile files live in a folder
+#    _build_ahnentafel_map        — BFS from root_person → {pid: int position}
+#    _check_w103_brackets         — derive expected bracket lists, find mismatches
+#    _person_couple_folder        — locate a person's current couple folder via index
+#    _person_name_from_db         — fetch display name from persons table
+#    _companion_files_in_folder   — disk-scan for all .md files for a person in a folder
+#    _check_w110_ahnentafel       — check 2 (folder rename) and check 3 (file move)
+#    _compose_folder_renames      — merge W103+W110 renames that share a source folder
+#    _print_bracket_preview       — format the preview diff before any writes
+#    _apply_bracket_fixes         — perform renames/moves after confirmation
+#    _cmd_brackets                — CLI handler: report, preview, fix
+#
 #  CLI wiring
 #    _cmd_timeline, _cmd_sources_index, _cmd_draft_queue  — argparse handlers
+#    _cmd_brackets                — brackets handler (above)
 #    _cmd_not_implemented, _cmd_views_help                — stubs / help
 #    register           — called by fha.py to attach 'views' to the main parser
 #    register_standalone, main    — used when running `python tools/views.py` directly
@@ -119,7 +145,7 @@ def _open_db(archive_root: Path) -> sqlite3.Connection | None:
     db_path = archive_root / '.cache' / 'index.sqlite'
     if not db_path.exists():
         print(
-            'ERROR: .cache/index.sqlite not found — run `fha index` first '
+            'ERROR: .cache/index.sqlite not found - run `fha index` first '
             'then re-run this command.',
             file=sys.stderr,
         )
@@ -316,7 +342,7 @@ def _generate_timeline(
     """
     profile_p = _profile_path_for(conn, person_id, archive_root)
     if not profile_p:
-        print(f'WARNING: no profile found for {person_id} — skipped.', file=sys.stderr)
+        print(f'WARNING: no profile found for {person_id} - skipped.', file=sys.stderr)
         return None
 
     name_row = conn.execute('SELECT name FROM persons WHERE id = ?', (person_id,)).fetchone()
@@ -485,7 +511,7 @@ def _generate_sources_index_person(
     """Generate the per-person sources-index. Returns the path written, or None."""
     profile_p = _profile_path_for(conn, person_id, archive_root)
     if not profile_p:
-        print(f'WARNING: no profile found for {person_id} — skipped.', file=sys.stderr)
+        print(f'WARNING: no profile found for {person_id} - skipped.', file=sys.stderr)
         return None
 
     name_row = conn.execute('SELECT name FROM persons WHERE id = ?', (person_id,)).fetchone()
@@ -544,7 +570,7 @@ def _generate_draft_queue(
     """
     profile_p = _profile_path_for(conn, person_id, archive_root)
     if not profile_p:
-        print(f'WARNING: no profile found for {person_id} — skipped.', file=sys.stderr)
+        print(f'WARNING: no profile found for {person_id} - skipped.', file=sys.stderr)
         return None
 
     name_row = conn.execute('SELECT name FROM persons WHERE id = ?', (person_id,)).fetchone()
@@ -615,6 +641,684 @@ def _generate_draft_queue(
 
     out_path.write_text(''.join(lines), encoding='utf-8')
     return out_path
+
+
+# ── Brackets ─────────────────────────────────────────────────────────────────
+
+def _parse_bracket_names(folder_name: str) -> list[str]:
+    """Return names inside the [...] suffix of a folder name, or [] if absent.
+
+    E.g. '040 Thomas Hartley + Margaret Cole [Ethel + Frances]'
+    → ['Ethel', 'Frances'].  Each token is stripped of whitespace.
+    """
+    m = re.search(r'\[([^\]]*)\]', folder_name)
+    if not m:
+        return []
+    return [n.strip() for n in m.group(1).split('+') if n.strip()]
+
+
+def _folder_numeric_prefix(folder_name: str) -> int | None:
+    """Extract the leading integer from a folder name, or None if absent."""
+    m = re.match(r'^(\d+)', folder_name)
+    return int(m.group(1)) if m else None
+
+
+def _given_name(full_name: str) -> str:
+    """Return the first word of a full name — the form used in bracket lists."""
+    parts = full_name.strip().split()
+    return parts[0] if parts else full_name
+
+
+def _couple_folder_dirs(archive_root: Path) -> list[Path]:
+    """Return digit-prefixed directories directly under people/, excluding stubs/connections."""
+    people = archive_root / 'people'
+    if not people.exists():
+        return []
+    excluded = {'stubs', 'connections'}
+    return sorted(
+        e for e in people.iterdir()
+        if e.is_dir()
+        and e.name.lower() not in excluded
+        and re.match(r'^\d', e.name)
+    )
+
+
+def _persons_in_folder(conn: sqlite3.Connection, folder: Path) -> list[str]:
+    """Return person_ids whose profile files live in `folder`.
+
+    Matches on the second path segment in the stored alias path
+    (e.g. 'people/040 Thomas…/file.md' → folder name '040 Thomas…').
+    Both forward-slash and backslash variants are checked for portability.
+    """
+    name = folder.name
+    rows = conn.execute(
+        """
+        SELECT person_id FROM person_files
+        WHERE kind = 'profile'
+          AND (path LIKE ? OR path LIKE ?)
+        """,
+        (f'people/{name}/%', f'people\\{name}\\%'),
+    ).fetchall()
+    return [r['person_id'] for r in rows]
+
+
+def _build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, int]:
+    """BFS from root_pid to build {person_id → Ahnentafel position}.
+
+    Seed: root_pid → 1.  Parents of person at position N:
+      sex='M' → 2N (father's slot), sex='F' → 2N+1 (mother's slot).
+      Same-sex or sex='U' pairs: lexicographically-first P-id → 2N (deterministic).
+    Terminates when no accepted parent edges remain (relationships table is
+    derived from accepted claims only — see index.py).
+
+    WHY BFS: Ahnentafel is a breadth-first numbering by definition.  Depth-first
+    would produce the same positions but BFS is the natural traversal shape.
+    """
+    pid_to_pos: dict[str, int] = {root_pid: 1}
+    queue: list[tuple[str, int]] = [(root_pid, 1)]
+
+    while queue:
+        pid, n = queue.pop(0)
+        parent_rows = conn.execute(
+            """
+            SELECT r.other_id AS pid, p.sex
+            FROM relationships r
+            JOIN persons p ON r.other_id = p.id
+            WHERE r.person_id = ? AND r.rel = 'parent'
+            """,
+            (pid,),
+        ).fetchall()
+
+        parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        if not parents:
+            continue
+
+        if len(parents) == 1:
+            p_pid, p_sex = parents[0]
+            pos = 2 * n if p_sex != 'F' else 2 * n + 1
+            if p_pid not in pid_to_pos:
+                pid_to_pos[p_pid] = pos
+                queue.append((p_pid, pos))
+        else:
+            # Take at most 2 parents; ignore additional (data quality issue)
+            p1_pid, p1_sex = parents[0]
+            p2_pid, p2_sex = parents[1]
+            if p1_sex == 'M' and p2_sex != 'M':
+                father, mother = p1_pid, p2_pid
+            elif p2_sex == 'M' and p1_sex != 'M':
+                father, mother = p2_pid, p1_pid
+            elif p1_sex == 'F' and p2_sex != 'F':
+                mother, father = p1_pid, p2_pid
+            elif p2_sex == 'F' and p1_sex != 'F':
+                mother, father = p2_pid, p1_pid
+            else:
+                # Same sex or both U: lex-first takes even slot (2N)
+                sorted_pids = sorted([p1_pid, p2_pid])
+                father, mother = sorted_pids[0], sorted_pids[1]
+            for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
+                if pp not in pid_to_pos:
+                    pid_to_pos[pp] = pos
+                    queue.append((pp, pos))
+
+    return pid_to_pos
+
+
+def _check_w103_brackets(
+    conn: sqlite3.Connection, archive_root: Path
+) -> list[dict]:
+    """Derive expected bracket lists and return stale-bracket findings.
+
+    For each couple folder, the expected bracket list is: given names of ALL
+    children of persons in the folder, sorted alphabetically, derived from the
+    relationships table (which mirrors accepted child-of claims only).
+
+    Each returned dict has keys: code, folder, old_name, new_name, msg.
+
+    WHY ALL CHILDREN (including direct-line): The bracket list is a human
+    convenience label showing every child of the couple.  Direct-line children
+    (who also have their own numbered couple folder) still appear in their
+    parents' bracket list — e.g. Calvin appears in folder 040 even though
+    Calvin's own couple folder is 020.  This matches the observed example-archive
+    pattern (Warren in 020's brackets, Edith in 010's, etc.).
+    """
+    issues = []
+    for folder in _couple_folder_dirs(archive_root):
+        folder_name = folder.name
+        current_names = _parse_bracket_names(folder_name)
+
+        person_ids = _persons_in_folder(conn, folder)
+        if not person_ids:
+            continue
+
+        # All children of all persons in this folder
+        placeholders = ','.join('?' * len(person_ids))
+        child_rows = conn.execute(
+            f"""
+            SELECT DISTINCT r.other_id AS child_pid, p.name
+            FROM relationships r
+            JOIN persons p ON r.other_id = p.id
+            WHERE r.person_id IN ({placeholders}) AND r.rel = 'child'
+            """,
+            person_ids,
+        ).fetchall()
+
+        derived_names = sorted(
+            _given_name(r['name']) for r in child_rows if r['name']
+        )
+
+        if sorted(current_names) != sorted(derived_names):
+            bracket_part = (
+                f' [{" + ".join(derived_names)}]' if derived_names else ''
+            )
+            base_name = re.sub(r'\s*\[[^\]]*\]', '', folder_name).rstrip()
+            new_name = base_name + bracket_part
+            issues.append({
+                'code': 'W103',
+                'folder': folder,
+                'old_name': folder_name,
+                'new_name': new_name,
+                'msg': (
+                    f'W103 people/{folder_name}: stale bracket list '
+                    f'[{" + ".join(current_names)}] -> [{" + ".join(derived_names)}]'
+                ),
+            })
+    return issues
+
+
+def _person_couple_folder(
+    conn: sqlite3.Connection, archive_root: Path, pid: str
+) -> Path | None:
+    """Return the couple folder a person's profile currently lives in, or None.
+
+    Looks up the profile path from person_files (indexed) and derives the folder.
+    Returns None if the person has no indexed profile, or if the profile is in
+    stubs/ or connections/ (which are never couple folders).
+    """
+    row = conn.execute(
+        "SELECT path FROM person_files WHERE person_id = ? AND kind = 'profile'",
+        (pid,),
+    ).fetchone()
+    if not row:
+        return None
+    parts = row['path'].replace('\\', '/').split('/')
+    if len(parts) < 3 or parts[0] != 'people':
+        return None
+    folder_name = parts[1]
+    if folder_name.lower() in ('connections', 'stubs'):
+        return None
+    return archive_root / 'people' / folder_name
+
+
+def _person_name_from_db(conn: sqlite3.Connection, pid: str) -> str:
+    """Return the display name for pid from the persons table, or pid itself."""
+    row = conn.execute("SELECT name FROM persons WHERE id = ?", (pid,)).fetchone()
+    return row['name'] if row else pid
+
+
+def _companion_files_in_folder(folder: Path, pid: str) -> list[Path]:
+    """Return all .md companion files for pid that exist in folder on disk.
+
+    Matches files whose stem ends with _{pid} (case-insensitive, e.g.
+    'hartley__thomas_P-de957bcda1.md').  This catches profile, research,
+    timeline, sources-index, and draft-queue files regardless of whether they
+    are in the SQLite index (generated files carry no frontmatter id and are
+    therefore absent from person_files).
+
+    WHY DISK SCAN: generated view files (timeline, sources-index, draft-queue)
+    lack a frontmatter `id:` field so index.py does not add them to
+    person_files.  Querying person_files alone would leave them behind when a
+    W110 file-move fix is applied.  Scanning disk is the only reliable way to
+    move all of a person's companion files atomically.
+    """
+    suffix = f'_{pid}'.upper()
+    return sorted(
+        f for f in folder.iterdir()
+        if f.is_file() and f.suffix == '.md'
+        and f.stem.upper().endswith(suffix)
+    )
+
+
+def _check_w110_ahnentafel(
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    pid_to_pos: dict[str, int],
+) -> list[dict]:
+    """Implement TOOLING §7 checks 2 and 3 for Ahnentafel placement.
+
+    Check 2 — folder-number rename:
+      For each direct-line couple, the couple folder's numeric prefix must equal
+      the even Ahnentafel position of the person in the 'father' slot (pos N,
+      where N is even).  If the prefix is wrong, the folder itself is renamed.
+      One folder-rename issue is emitted per mismatched folder.
+
+    Check 3 — person-file placement:
+      For each direct-line person at position N (N ≥ 2), ALL companion files
+      (profile, research, timeline, sources-index, draft-queue) must live in the
+      folder whose prefix equals N (if N is even) or N−1 (if N is odd).  Files
+      are discovered by a disk scan so that generated companions not present in
+      person_files are still found.  Issues are suppressed when the enclosing
+      folder is already being renamed by check 2 to the correct prefix.
+
+    Non-direct-line files (connections/, stubs/) are always skipped.
+    Each returned dict has keys: code, kind ('folder_rename'|'file_move'), and
+    kind-specific fields (old_folder/new_folder or src_path/dst_path/expected_folder).
+    """
+    issues: list[dict] = []
+
+    # ── Check 2: wrong couple-folder prefix ───────────────────────────────────
+    # Per-person iteration misidentifies the problem when a person is accidentally
+    # in the wrong folder: if Thomas (pos 40) lands in folder '020 Calvin...', the
+    # naive check would propose renaming 020 to 040, corrupting the Calvin folder.
+    #
+    # The correct invariant: a folder should be renamed only when ALL of the even-
+    # position anchors found in it claim the SAME expected prefix, and that prefix
+    # differs from the folder's actual prefix.  If two even-position persons from
+    # different Ahnentafel branches are both present (e.g. Thomas pos-40 and Calvin
+    # pos-20 in folder 020), they claim conflicting prefixes — the folder itself is
+    # not misnamed; one person is simply misplaced (check 3 handles that).
+
+    # Step A: collect even-position anchors per folder.
+    folder_anchors: dict[Path, list[tuple[str, int]]] = {}
+    for pid, pos in pid_to_pos.items():
+        if pos < 2 or pos % 2 != 0:
+            continue
+        current_folder = _person_couple_folder(conn, archive_root, pid)
+        if current_folder is None:
+            continue
+        folder_anchors.setdefault(current_folder, []).append((pid, pos))
+
+    # Step B: emit a folder_rename only when anchors unanimously claim one prefix.
+    folders_being_renamed: dict[Path, Path] = {}
+
+    for folder, anchors in folder_anchors.items():
+        actual_prefix = _folder_numeric_prefix(folder.name)
+        if actual_prefix is None:
+            continue
+        claimed_prefixes = {pos for _, pos in anchors}
+        if len(claimed_prefixes) != 1:
+            # Conflicting claims — persons from different branches are co-mingled.
+            # Leave the folder name alone; check 3 will propose moving the strays.
+            continue
+        claimed_prefix = next(iter(claimed_prefixes))
+        if claimed_prefix == actual_prefix:
+            continue
+
+        new_name = re.sub(r'^\d+', str(claimed_prefix).zfill(3), folder.name)
+        new_folder = folder.parent / new_name
+        folders_being_renamed[folder] = new_folder
+
+        anchor_pid = next(pid for pid, pos in anchors if pos == claimed_prefix)
+        person_name = _person_name_from_db(conn, anchor_pid)
+        issues.append({
+            'code': 'W110',
+            'kind': 'folder_rename',
+            'old_folder': folder,
+            'new_folder': new_folder,
+            'msg': (
+                f'W110 people/{folder.name}: folder prefix {actual_prefix} '
+                f'should be {claimed_prefix} ({person_name}, Ahnentafel {claimed_prefix}); '
+                f'rename to {new_name}'
+            ),
+        })
+
+    # ── Check 3: person files in wrong folder ─────────────────────────────────
+    # Build prefix → folder map (using current disk state; includes folders that
+    # are about to be renamed — they still exist at this point).
+    folder_by_prefix: dict[int, Path] = {}
+    for folder in _couple_folder_dirs(archive_root):
+        prefix = _folder_numeric_prefix(folder.name)
+        if prefix is not None:
+            folder_by_prefix[prefix] = folder
+
+    for pid, pos in pid_to_pos.items():
+        if pos < 2:
+            continue
+        expected_prefix = pos if pos % 2 == 0 else pos - 1
+
+        current_folder = _person_couple_folder(conn, archive_root, pid)
+        if current_folder is None:
+            continue
+        actual_prefix = _folder_numeric_prefix(current_folder.name)
+        if actual_prefix is None or actual_prefix == expected_prefix:
+            continue
+
+        # If this folder is being renamed by check 2, check whether the renamed
+        # result lands on the correct prefix.  If so, the file placement will be
+        # correct after the rename and no file-move is needed.
+        if current_folder in folders_being_renamed:
+            dest_of_rename = folders_being_renamed[current_folder]
+            if _folder_numeric_prefix(dest_of_rename.name) == expected_prefix:
+                continue
+
+        # Determine or derive the target folder.
+        dest_folder = folder_by_prefix.get(expected_prefix)
+        if dest_folder is None:
+            new_fname = re.sub(r'^\d+', str(expected_prefix).zfill(3), current_folder.name)
+            dest_folder = archive_root / 'people' / new_fname
+
+        # Scan disk for all companion files — profile, research, and generated.
+        person_name = _person_name_from_db(conn, pid)
+        for src_path in _companion_files_in_folder(current_folder, pid):
+            dst_path = dest_folder / src_path.name
+            issues.append({
+                'code': 'W110',
+                'kind': 'file_move',
+                'src_path': src_path,
+                'dst_path': dst_path,
+                'expected_folder': dest_folder,
+                'msg': (
+                    f'W110 people/{current_folder.name}/{src_path.name}: '
+                    f'{person_name} (Ahnentafel {pos}) '
+                    f'is in folder prefix {actual_prefix}, '
+                    f'expected {expected_prefix}'
+                ),
+            })
+
+    return issues
+
+
+def _compose_folder_renames(
+    w103: list[dict], w110: list[dict]
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Compose W103 bracket renames and W110 folder renames that share a source folder.
+
+    When the same folder appears in both a W103 bracket-list rename and a W110
+    folder-number rename, applying them sequentially would fail: the W103 rename
+    changes the folder's path, so the W110 rename's old_folder no longer exists.
+
+    Instead, compose both changes into a single rename:
+      - numeric prefix from the W110 rename
+      - bracket list from the W103 rename (replacing whatever bracket W110 derived)
+
+    The composed rename replaces the W110 item's new_folder; the W103 item is
+    dropped (its change is now baked into the W110 rename).
+
+    Additionally, any remaining W103 item whose folder has outgoing W110 file_moves
+    is suppressed and returned as the third tuple element.  The bracket for such a
+    folder was computed with stale occupancy (the misplaced person was counted as an
+    occupant) and will be wrong after the moves; suppress now, recompute next run.
+
+    For surviving W103 items, W110 file_move src_paths that point inside the
+    folder being renamed are rewritten so that the src_path stays valid after the
+    W103 rename executes first in _apply_bracket_fixes.
+
+    Returns (w103, w110, w103_suppressed).  All three lists are modified in-place.
+    """
+    w110_folder_renames: dict[Path, dict] = {
+        item['old_folder']: item
+        for item in w110
+        if item['kind'] == 'folder_rename'
+    }
+
+    w103_drop = []
+    for item in w103:
+        old_folder = item['folder']
+        if old_folder not in w110_folder_renames:
+            continue
+
+        w110_item = w110_folder_renames[old_folder]
+
+        # Extract the bracket suffix from the W103 target name ("" when no children)
+        bracket_m = re.search(r'(\s*\[[^\]]*\])$', item['new_name'])
+        bracket_suffix = bracket_m.group(1) if bracket_m else ''
+
+        # Compose: W110's new_folder carries the right prefix; swap its bracket.
+        w110_base = re.sub(r'\s*\[[^\]]*\]$', '', w110_item['new_folder'].name).rstrip()
+        composed_name = w110_base + bracket_suffix
+        composed_folder = w110_item['new_folder'].parent / composed_name
+
+        old_msg = w110_item['msg']
+        w110_item['new_folder'] = composed_folder
+        w110_item['msg'] = (
+            re.sub(r'; rename to .*', '', old_msg)
+            + f'; rename to {composed_name} (prefix + bracket update)'
+        )
+
+        w103_drop.append(item)
+
+    for item in w103_drop:
+        w103.remove(item)
+
+    # Suppress W103 for folders that have outgoing W110 file_moves.
+    # Those brackets were computed with stale occupancy (the misplaced person
+    # was still in the folder at check time). After the moves, the bracket will
+    # differ. Skip the rename now; a fresh run after applying W110 will produce
+    # the correct bracket.
+    w110_src_folders = {
+        item['src_path'].parent
+        for item in w110
+        if item['kind'] == 'file_move'
+    }
+    w103_suppressed = [item for item in w103 if item['folder'] in w110_src_folders]
+    for item in w103_suppressed:
+        w103.remove(item)
+
+    # For remaining W103-only renames, update any W110 file_move src_paths
+    # that point inside the folder being renamed.
+    # _apply_bracket_fixes runs W103 renames first, so without this update
+    # the W110 file-move sources would point at the pre-rename folder path
+    # and the moves would silently skip.
+    for item in w103:
+        old_folder = item['folder']
+        new_folder = old_folder.parent / item['new_name']
+        for w110_item in w110:
+            if w110_item['kind'] != 'file_move':
+                continue
+            try:
+                rel = w110_item['src_path'].relative_to(old_folder)
+                w110_item['src_path'] = new_folder / rel
+            except ValueError:
+                pass
+
+    return w103, w110, w103_suppressed
+
+
+def _print_bracket_preview(
+    w103: list[dict], w110: list[dict], archive_root: Path
+) -> None:
+    """Print a human-readable preview of all planned renames and moves."""
+    if w103:
+        print('\nBracket list renames (W103):')
+        for item in w103:
+            print(f'  RENAME  people/{item["old_name"]}')
+            print(f'       ->  people/{item["new_name"]}')
+    if w110:
+        folder_renames = [i for i in w110 if i['kind'] == 'folder_rename']
+        file_moves = [i for i in w110 if i['kind'] == 'file_move']
+        if folder_renames:
+            print('\nAhnentafel folder renames (W110):')
+            for item in folder_renames:
+                try:
+                    old_rel = item['old_folder'].relative_to(archive_root)
+                    new_rel = item['new_folder'].relative_to(archive_root)
+                except ValueError:
+                    old_rel = item['old_folder']
+                    new_rel = item['new_folder']
+                print(f'  RENAME  {old_rel}')
+                print(f'       ->  {new_rel}')
+        if file_moves:
+            print('\nPerson file moves (W110):')
+            for item in file_moves:
+                try:
+                    src_rel = item['src_path'].relative_to(archive_root)
+                    dst_rel = item['dst_path'].relative_to(archive_root)
+                except ValueError:
+                    src_rel = item['src_path']
+                    dst_rel = item['dst_path']
+                print(f'  MOVE  {src_rel}')
+                print(f'      -> {dst_rel}')
+
+
+def _apply_bracket_fixes(
+    w103: list[dict], w110: list[dict], archive_root: Path
+) -> int:
+    """Apply renames and moves collected by the check functions.
+
+    Renames folders in place (os.rename).  Moves person files using
+    shutil.move, creating the destination folder when absent.
+    Errors on individual items are reported and skipped — the run
+    continues so as many fixes as possible are applied.
+
+    Returns the number of file-move items that were skipped (file not found).
+    Callers should treat a non-zero return as EXIT_WARNINGS.
+    """
+    skips = 0
+
+    # W103: folder renames
+    for item in w103:
+        old_path = item['folder']
+        new_path = old_path.parent / item['new_name']
+        try:
+            os.rename(old_path, new_path)
+            print(f'  RENAMED  {item["old_name"]} -> {item["new_name"]}')
+        except OSError as e:
+            print(f'  ERROR renaming {item["old_name"]}: {e}', file=sys.stderr)
+
+    # W110: folder renames first, then file moves.
+    # Folder renames must precede file moves so that src_path references to
+    # files inside an about-to-be-renamed folder are still valid.
+    for item in w110:
+        if item['kind'] != 'folder_rename':
+            continue
+        old_folder = item['old_folder']
+        new_folder = item['new_folder']
+        try:
+            os.rename(old_folder, new_folder)
+            try:
+                old_rel = old_folder.relative_to(archive_root)
+                new_rel = new_folder.relative_to(archive_root)
+            except ValueError:
+                old_rel, new_rel = old_folder, new_folder
+            print(f'  RENAMED  {old_rel} -> {new_rel}')
+        except OSError as e:
+            print(f'  ERROR renaming {old_folder.name}: {e}', file=sys.stderr)
+
+    for item in w110:
+        if item['kind'] != 'file_move':
+            continue
+        src = item['src_path']
+        dst = item['dst_path']
+        expected_folder = item['expected_folder']
+        if not src.exists():
+            print(f'  SKIP (already moved?) {src}', file=sys.stderr)
+            skips += 1
+            continue
+        try:
+            expected_folder.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            try:
+                rel_src = src.relative_to(archive_root)
+                rel_dst = dst.relative_to(archive_root)
+            except ValueError:
+                rel_src, rel_dst = src, dst
+            print(f'  MOVED  {rel_src} -> {rel_dst}')
+        except OSError as e:
+            print(f'  ERROR moving {src}: {e}', file=sys.stderr)
+
+    return skips
+
+
+def _cmd_brackets(args: argparse.Namespace) -> int:
+    """Handle `fha views brackets [--fix] [--dry-run]`.
+
+    Three checks in one pass (TOOLING §7):
+      1. W103 — refresh stale bracket lists in couple-folder names.
+      2. W110 check 2 — rename couple folders whose numeric prefix disagrees
+                         with the Ahnentafel-derived number.  (Requires root_person.)
+      3. W110 check 3 — move all companion files (profile, research, timeline,
+                         sources-index, draft-queue) to the correct folder.
+                         (Requires root_person.)
+
+    Without --fix or --dry-run: report only.
+    --dry-run: print findings + full preview of changes, exit without writing.
+    --fix: print preview, prompt Apply? [y/N], then write.
+    """
+    archive_root = _resolve_root(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+
+    conn = _open_db(archive_root)
+    if conn is None:
+        return EXIT_FAILURE
+
+    fix = getattr(args, 'fix', False)
+    dry_run = getattr(args, 'dry_run', False)
+
+    try:
+        # ── W103: bracket list check ──────────────────────────────────────
+        w103 = _check_w103_brackets(conn, archive_root)
+
+        # ── W110: Ahnentafel placement check ─────────────────────────────
+        fha_cfg = load_fha_yaml(archive_root)
+        root_person_raw = fha_cfg.get('root_person')
+        w110: list[dict] = []
+
+        if root_person_raw:
+            root_pid = normalize_id(str(root_person_raw))
+            pid_to_pos = _build_ahnentafel_map(conn, root_pid)
+            w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
+        else:
+            print(
+                'INFO: root_person not set in fha.yaml - '
+                'Ahnentafel checks (W110) skipped.'
+            )
+
+        # ── Compose renames that touch the same folder ────────────────────
+        w103, w110, w103_suppressed = _compose_folder_renames(w103, w110)
+
+        all_issues = w103 + w110
+
+        # ── Report ────────────────────────────────────────────────────────
+        for item in all_issues:
+            print(item['msg'])
+
+        if w103_suppressed:
+            n = len(w103_suppressed)
+            print(
+                f'INFO: {n} W103 bracket rename(s) suppressed - bracket was computed'
+                ' with misplaced occupants that W110 will move. Rerun brackets'
+                ' after applying W110 fixes to pick up the correct bracket.'
+            )
+
+        if not all_issues:
+            print('brackets: no issues found.')
+            return EXIT_CLEAN
+
+        if not fix and not dry_run:
+            # Report-only mode: findings emitted above, exit with warnings
+            return EXIT_WARNINGS
+
+        # ── Preview ───────────────────────────────────────────────────────
+        _print_bracket_preview(w103, w110, archive_root)
+
+        if dry_run:
+            print('\n(dry-run: no changes written)')
+            return EXIT_WARNINGS
+
+        # ── Confirm and apply ─────────────────────────────────────────────
+        try:
+            answer = input('\nApply? [y/N] ').strip().lower()
+        except EOFError:
+            answer = ''
+
+        if answer != 'y':
+            print('Aborted - no changes written.')
+            return EXIT_WARNINGS
+
+        skips = _apply_bracket_fixes(w103, w110, archive_root)
+        if skips:
+            print(
+                f'\nDone ({skips} file(s) skipped - see stderr).'
+                ' Run `fha index` to rebuild the index with updated paths.'
+            )
+            return EXIT_WARNINGS
+        print(
+            '\nDone. Run `fha index` to rebuild the index with updated paths.'
+        )
+        return EXIT_CLEAN
+
+    finally:
+        conn.close()
 
 
 # ── CLI command handlers ──────────────────────────────────────────────────────
@@ -828,14 +1532,16 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     dq.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     dq.set_defaults(func=_cmd_draft_queue)
 
-    # ── brackets (stub) ───────────────────────────────────────────────────────
+    # ── brackets ──────────────────────────────────────────────────────────────
     br = vsubs.add_parser(
         'brackets',
-        help='Refresh couple-folder bracket lists (not yet implemented).',
+        help='Check and refresh couple-folder bracket lists (W103/W110).',
     )
     br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
-    br.add_argument('--fix', action='store_true', help='Apply fixes (not yet implemented).')
-    br.set_defaults(func=_cmd_not_implemented)
+    br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
+    br.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview changes without writing.')
+    br.set_defaults(func=_cmd_brackets)
 
     # ── tree (stub) ───────────────────────────────────────────────────────────
     tr = vsubs.add_parser(
@@ -880,7 +1586,6 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
         ('timeline',      'Generate per-person timeline view.',           _cmd_timeline,       _add_person_curated_args),
         ('sources-index', 'Generate per-person sources-index view.',      _cmd_sources_index,  _add_si_args),
         ('draft-queue',   'Generate per-person draft-queue view.',        _cmd_draft_queue,    _add_person_curated_args),
-        ('brackets',      'Refresh couple-folder bracket lists (stub).',  _cmd_not_implemented, None),
         ('tree',          'Generate relationship tree view (stub).',      _cmd_not_implemented, None),
     ]:
         p = subs.add_parser(name, help=help_text)
@@ -888,6 +1593,12 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
         if extra:
             extra(p)
         p.set_defaults(func=func)
+
+    br = subs.add_parser('brackets', help='Check and refresh couple-folder bracket lists (W103/W110).')
+    br.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
+    br.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview changes without writing.')
+    br.set_defaults(func=_cmd_brackets)
 
 
 def _add_person_curated_args(p: argparse.ArgumentParser) -> None:

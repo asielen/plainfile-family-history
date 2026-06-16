@@ -347,6 +347,10 @@ All write GENERATED-headed `.md` into the tree; all derive purely from the index
   
   When `root_person` is absent from `fha.yaml`, checks 2 and 3 are skipped with an informational note. Renaming folders and moving person files are both safe: folder names and paths carry no machine meaning — the `P-id` in each filename is the identity.
 
+- **`fha views clean [--root PATH] [--dry-run]`** — delete all GENERATED-headed companion `.md` files from the `people/` tree (timeline, sources-index, draft-queue for every person and couple folder). Uses the `<!-- GENERATED … -->` header as the sole deletion signal; never touches profile, research, or manually authored files. `--dry-run` lists what would be removed without writing. Primary uses: compacting the archive for sharing (generated files are reproducible bulk) and resetting before a full `fha views refresh`.
+
+- **`fha views refresh [--root PATH]`** — regenerate all content views for every curated person and every couple folder in one shot: runs `timeline --all-curated`, `draft-queue --all-curated`, and `sources-index --all-curated --couple-folders`. Equivalent to running each view individually with `--all-curated`; useful as a post-`fha index` step to keep all views current. Requires a fresh `.cache/index.sqlite`.
+
 ---
 
 ## 8. `fha packet` — person data dump
@@ -479,7 +483,7 @@ Migrates a legacy transcript-mining pipeline output (`facts.txt` table rows, `st
 **Scope: the whole-family site** — the archive as a browsable website, not a single profile (the packet embeds a one-person slice of the same generator).
 
 **Pages:** **Home** — an **interactive descendant explorer** (v1 hero): expand/collapse nodes forward from a root ancestor, each node linking to its person page; plus an ancestor-pedigree view and the surname A–Z index and recent-discoveries teaser.
-All rendered from the `relationships` edges; no server, works from `file://`. **Person (curated)** — summary block; biography with `[S-]` rendered as numbered footnotes, `[P-]` as links; timeline; photo strip (via §9 person resolution, i.e. face_tags); Stories; Friends & Family; sources list. **Person (stub)** — one-line entries on their couple's section. **Source** — citation, metadata, claims table with status badges, thumbnails + file links. **Place** — name, coords (map *URLs*, no embedded map dependency), dated `history:`, claims naming it, contained micro-places (`within:` children). **Discoveries** — rendered from `notes/discoveries.md`.
+All rendered from the `relationships` edges; no server, works from `file://`. **Person (curated)** — summary block; biography with `[S-]` rendered as numbered footnotes, `[P-]` as links; **timeline** (HTML rendering of the same index query as `fha views timeline`: accepted + needs-review claims sorted by date, grouped by decade, each entry showing type, value, and source link — the HTML and `.md` views share the same query and format); photo strip (via §9 person resolution, i.e. face_tags); Stories; Friends & Family; **sources index** (HTML rendering of the same index query as `fha views sources-index`: every source with ≥1 claim naming the person, grouped by source_type, with citation and file links — the HTML and `.md` views share the same query). **Person (stub)** — one-line entries on their couple's section. **Source** — citation, metadata, claims table with status badges, thumbnails + file links. **Place** — name, coords (map *URLs*, no embedded map dependency), dated `history:`, claims naming it, contained micro-places (`within:` children). **Discoveries** — rendered from `notes/discoveries.md`.
 
 **Assets — self-contained snapshot by default.** The generated site is a **standalone snapshot**, not a live view of the archive: the generator produces its **own web-optimized image derivatives** (resized, EXIF stripped so living-person/location metadata never leaks) and copies them into the site folder, so the site depends on *nothing* outside itself — deploy it to a USB stick, a static host, or hand it to a relative, with the archive absent.
 Full-resolution originals never leave the archive; the site carries derivatives only.
@@ -488,7 +492,9 @@ The snapshot contains **only publication-eligible material** — `living`/`unkno
 **Modularity:** because the site is a snapshot, it is decoupled from the archive's churn — regenerating is idempotent, and an old site folder remains a valid frozen view even as the archive moves on.
 Thumbnails/derivatives via PIL.
 
-**Implementation:** Jinja2 templates in `tools/templates/`; markdown→HTML via a minimal stdlib converter (headings, bold, lists, links — the profile format is deliberately simple) to avoid a markdown dependency; image derivatives via `PIL`.
+**Data source — SQLite index, not .md views.** The site reads all structured data (claims, relationships, vitals, sources, citations, place references) directly from `.cache/index.sqlite`, making the output as fresh as the last `fha index` run. The generated companion `.md` views (timeline, sources-index, draft-queue) are *not* read — they are research aids for the agent, not the site's input. Biography prose and Stories sections are read directly from the curated person `.md` file (the only parts that live in prose, not structured claims). This means `fha site` is independent of `fha views` — a site can be generated without ever running `fha views`.
+
+**Implementation:** Jinja2 templates in `tools/templates/`; biography/stories prose rendered to HTML via a minimal stdlib converter (headings, bold, lists, links — the profile format is deliberately simple) to avoid a markdown dependency; structured fact sections (timeline, sources table, relationships) rendered from index queries; image derivatives via `PIL`.
 Token swap: `TOKEN_RE` → relative hrefs; unresolved tokens render highlighted (already lint errors).
 
 **Tree rendering — borrow the engine.** The interactive trees (descendant explorer, ancestor pedigree, FAN graph) are rendered by a **vendored client-side library**, not hand-rolled D3 — current best candidate **family-chart** (donatso, MIT, D3-based, framework-agnostic, has its own JSON input format).

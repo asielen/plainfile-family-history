@@ -661,6 +661,35 @@ Integration rules:
 5. **AI output stays marked as AI** (analysis keywords, marker blocks); human captions are preserved.
 6. AI-derived assertions raised into claims enter at `status: suggested`.
 
+## 21. Publication and export `LOCKED`
+
+Generated output (the static site, person packets) that leaves the archive is subject to binding privacy rules. These rules apply identically to all export paths; they are not tool-specific.
+
+**Living-person redaction (mandatory for all external output):**
+- Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living [Surname]" or "Living Person", and all claims, photos, and source citations naming them are withheld.
+- `unknown` is treated as living. Stubs default to `unknown`.
+- Direct-line couple folders whose occupants are all redacted are collapsed to a stub entry; their folder number is retained so the pedigree chain remains intact.
+
+**Restricted sources (mandatory for all external output):**
+- Sources with `restricted: true` are never included in any external output. Their claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently.
+- DNA evidence always carries `restricted: true`. No DNA-derived conclusions appear in external output without an additional, independent non-DNA source establishing the same fact.
+
+**Scope (what "external output" covers):**
+- `fha site` — the static HTML snapshot.
+- `fha packet` — per-person zip exports.
+- Any future export path (GEDCOM, WikiTree, etc.) unless that path has an explicit `--include-living` / `--include-restricted` opt-in documented in its TOOLING entry.
+
+**Site generation freshness contract:**
+- `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite` — it is as live as the last `fha index` run.
+- Biography prose and Stories sections are read from the curated person `.md` file directly.
+- The generated `.md` views (timeline, sources-index, draft-queue) are research artifacts for the agent; `fha site` does not read them.
+- The site snapshot is frozen at generation time. Regenerating is idempotent; an old snapshot remains a valid frozen view as the archive moves on.
+
+**View maintenance (`fha views clean` / `fha views refresh`):**
+- Generated `.md` views carry the `<!-- GENERATED … -->` header. This header is the sole signal for deletion by `fha views clean` — files without it are never touched, even if they match a view filename pattern.
+- `fha views refresh` is the counterpart: regenerate all content views in one pass after `fha index`. It is the recommended post-index step.
+- Deleting generated views reduces archive size for sharing but does not affect archive correctness; all views are rebuildable from the index.
+
 ---
 
 # Part IV — Tooling requirements

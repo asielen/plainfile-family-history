@@ -14,7 +14,7 @@ They are the "replaceable glue" of the philosophy — disposable, regenerable fr
 | `fha views timeline` | `views.py` | ✓ per-person and --all-curated |
 | `fha views sources-index` | `views.py` | ✓ per-person, --all-curated, --couple-folders |
 | `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated |
-| `fha views brackets` | `views.py` | ⚑ stub — not yet implemented |
+| `fha views brackets` | `views.py` | ✓ W103 bracket refresh, W110 Ahnentafel placement; `--fix` applies, `--dry-run` previews |
 | `fha views tree` | `views.py` | ⚑ stub — not yet implemented |
 
 All views require a fresh `.cache/index.sqlite` (run `fha index` first).
@@ -49,9 +49,9 @@ A code listed in TOOLING must appear here as either ✓ or ⚑ before the tool i
 | E012 | ✓ implemented | Only runs when `--with-exif` is passed (requires exiftool on PATH); silently skipped otherwise. |
 | E018 | ✓ implemented (partial) | Deprecated-command check active. Photo-rename instruction check is a no-op pass — text pattern too ambiguous to assert direction reliably. |
 | W101, W102, W104, W106, W107, W108, W109 | ✓ implemented | — |
-| W103 | ⚑ deferred | Requires relationship-graph traversal from `root_person`. Planned driver: `fha views brackets`. |
+| W103 | ✓ implemented | Stale couple-folder bracket lists; fires in `fha lint` and `fha views brackets`. |
 | W105 | ⚑ deferred | Requires mtime comparison against a known-good generated state. |
-| W110 | ⚑ deferred | Requires `root_person` and relationship traversal. Planned driver: `fha views brackets`. |
+| W110 | ✓ implemented | Direct-line person file in wrong Ahnentafel couple folder; fires in `fha lint` (requires `root_person`) and `fha views brackets`. |
 | `--with-exif` | ✓ implemented | Exiftool batch keyword read; drives E012 and photo-side E011. |
 | `--json` | ✓ implemented | — |
 | `--format-check` | ✓ implemented (partial) | Final-newline and CRLF hygiene active. Frontmatter key order, lowercase ID normalization, YAML indentation: ⚑ deferred. |

@@ -103,6 +103,12 @@ import yaml
 #    _process_person_file        — index one person file + file-level checks
 #    _process_source_file        — index one source file + file-level checks + claims
 #
+#  Bracket / Ahnentafel checks (W103, W110)
+#    _build_children_of          — accepted child-of claims → parent→children map
+#    _check_bracket_lists        — W103: stale couple-folder bracket lists
+#    _build_ahnentafel_lint      — BFS from root_person using in-memory registry
+#    _check_ahnentafel_placement — W110: person file in wrong Ahnentafel folder
+#
 #  Pass 2 — cross-file checks
 #    _cross_file_checks          — top-level coordinator for all cross-file rules
 #    _check_summary_line         — E013/W104: one **Label:** segment vs accepted claims
@@ -615,6 +621,198 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     _collect_token_refs(rec['body'], path, registry)
 
 
+# ── Bracket and Ahnentafel checks (W103, W110) ───────────────────────────────
+
+def _build_children_of(registry: Registry) -> dict[str, set[str]]:
+    """Build parent_pid → {child_pids} from accepted child-of relationship claims.
+
+    Iterates all accepted claims of type 'relationship' with subtype 'child-of'
+    and extracts the roles.child / roles.parent values.  Both scalars and lists
+    are accepted in either field, matching the SPEC §8.4 schema.
+    """
+    children_of: dict[str, set[str]] = {}
+    for claims in registry.source_claims.values():
+        for claim in claims:
+            if (str(claim.get('status', '')) != 'accepted'
+                    or claim.get('type') != 'relationship'
+                    or claim.get('subtype') != 'child-of'):
+                continue
+            roles = claim.get('roles') or {}
+            child_val = roles.get('child')
+            parent_val = roles.get('parent')
+            if not child_val or not parent_val:
+                continue
+            child_ids = [child_val] if isinstance(child_val, str) else list(child_val)
+            parent_ids = [parent_val] if isinstance(parent_val, str) else list(parent_val)
+            for cpid in child_ids:
+                cpid = normalize_id(str(cpid))
+                for ppid in parent_ids:
+                    ppid = normalize_id(str(ppid))
+                    children_of.setdefault(ppid, set()).add(cpid)
+    return children_of
+
+
+def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
+    """W103: stale couple-folder bracket lists.
+
+    For each digit-prefixed directory under people/ (excluding stubs/connections),
+    derives the expected bracket list from accepted child-of relationship claims
+    whose parent field names a person residing in that folder.  ALL children
+    appear — direct-line children with their own folder included — mirroring the
+    bracket convention documented in TOOLING §7.
+
+    WHY ALL CHILDREN: see _check_w103_brackets in views.py.  Same invariant, same
+    source data, different backend (in-memory registry instead of SQLite).
+    """
+    children_of = _build_children_of(registry)
+
+    # Build pid → folder name for all persons with profile files in people/
+    pid_to_folder: dict[str, str] = {}
+    people_dir = registry.archive_root / 'people'
+    excluded = {'stubs', 'connections'}
+    for pid, paths in registry.person_profile_paths.items():
+        for p in paths:
+            if (p.parent.parent == people_dir
+                    and p.parent.name.lower() not in excluded
+                    and re.match(r'^\d', p.parent.name)):
+                pid_to_folder[pid] = p.parent.name
+                break
+
+    # Invert: folder name → {person_ids in that folder}
+    folder_to_pids: dict[str, set[str]] = {}
+    for pid, fname in pid_to_folder.items():
+        folder_to_pids.setdefault(fname, set()).add(pid)
+
+    # Check each couple folder
+    for folder_name, folder_pids in sorted(folder_to_pids.items()):
+        # Current bracket names from the folder name
+        m = re.search(r'\[([^\]]*)\]', folder_name)
+        current_names = (
+            [n.strip() for n in m.group(1).split('+') if n.strip()]
+            if m else []
+        )
+
+        # Derive expected children names
+        child_pids: set[str] = set()
+        for ppid in folder_pids:
+            child_pids.update(children_of.get(ppid, set()))
+
+        derived_names = sorted(
+            str(registry.person_meta.get(cp, {}).get('name', '')).split()[0]
+            for cp in child_pids
+            if registry.person_meta.get(cp, {}).get('name')
+        )
+
+        if sorted(current_names) != sorted(derived_names):
+            findings.append(Finding('W', 'W103',
+                people_dir / folder_name,
+                f'stale bracket list [{" + ".join(sorted(current_names))}] '
+                f'-> [{" + ".join(derived_names)}]; '
+                f'run `fha views brackets --fix` to update'))
+
+
+def _build_ahnentafel_lint(
+    root_pid: str, children_of: dict[str, set[str]], registry: Registry
+) -> dict[str, int]:
+    """BFS from root_pid → {person_id: Ahnentafel position} using in-memory data.
+
+    Same algorithm as _build_ahnentafel_map in views.py, but works from the
+    in-memory registry rather than the SQLite relationships table.  Parents are
+    determined by inverting children_of: a person P is a parent of Q if Q is
+    in children_of[P].
+
+    Determinism on same-sex / unknown pairs: lex-first P-id takes the even slot.
+    """
+    # Build child_pid → {parent_pids} from children_of for quick upward lookup
+    parents_of: dict[str, set[str]] = {}
+    for ppid, cset in children_of.items():
+        for cpid in cset:
+            parents_of.setdefault(cpid, set()).add(ppid)
+
+    pid_to_pos: dict[str, int] = {root_pid: 1}
+    queue: list[tuple[str, int]] = [(root_pid, 1)]
+
+    while queue:
+        pid, n = queue.pop(0)
+        parent_pids = sorted(parents_of.get(pid, set()))
+        if not parent_pids:
+            continue
+
+        if len(parent_pids) == 1:
+            pp = parent_pids[0]
+            sex = str(registry.person_meta.get(pp, {}).get('sex', 'U') or 'U')
+            pos = 2 * n if sex != 'F' else 2 * n + 1
+            if pp not in pid_to_pos:
+                pid_to_pos[pp] = pos
+                queue.append((pp, pos))
+        else:
+            # Take at most 2 parents; ignore additional (data quality issue)
+            p1, p2 = parent_pids[0], parent_pids[1]
+            s1 = str(registry.person_meta.get(p1, {}).get('sex', 'U') or 'U')
+            s2 = str(registry.person_meta.get(p2, {}).get('sex', 'U') or 'U')
+            if s1 == 'M' and s2 != 'M':
+                father, mother = p1, p2
+            elif s2 == 'M' and s1 != 'M':
+                father, mother = p2, p1
+            elif s1 == 'F' and s2 != 'F':
+                mother, father = p1, p2
+            elif s2 == 'F' and s1 != 'F':
+                mother, father = p2, p1
+            else:
+                sorted_pair = sorted([p1, p2])
+                father, mother = sorted_pair[0], sorted_pair[1]
+            for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
+                if pp not in pid_to_pos:
+                    pid_to_pos[pp] = pos
+                    queue.append((pp, pos))
+
+    return pid_to_pos
+
+
+def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> None:
+    """W110: direct-line person files in the wrong couple folder.
+
+    Requires root_person in fha.yaml.  Builds the Ahnentafel map from the
+    in-memory registry, then verifies every direct-line person's profile files
+    live in the couple folder whose numeric prefix equals their expected position
+    (or position−1 if they hold the odd/mother slot).
+
+    Skips persons in people/connections/ or people/stubs/.
+    """
+    root_person_raw = registry.fha_config.get('root_person')
+    if not root_person_raw:
+        return
+
+    root_pid = normalize_id(str(root_person_raw))
+    children_of = _build_children_of(registry)
+    pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry)
+
+    people_dir = registry.archive_root / 'people'
+    excluded = {'stubs', 'connections'}
+
+    for pid, pos in pid_to_pos.items():
+        if pos < 2:
+            continue
+        expected_prefix = pos if pos % 2 == 0 else pos - 1
+
+        for p in registry.person_profile_paths.get(pid, []):
+            folder_name = p.parent.name
+            if folder_name.lower() in excluded:
+                continue
+            if p.parent.parent != people_dir:
+                continue
+            m = re.match(r'^(\d+)', folder_name)
+            if not m:
+                continue
+            actual_prefix = int(m.group(1))
+            if actual_prefix != expected_prefix:
+                name = str(registry.person_meta.get(pid, {}).get('name', pid))
+                findings.append(Finding('W', 'W110', p,
+                    f'{name} (Ahnentafel {pos}) is in folder prefix {actual_prefix}, '
+                    f'expected prefix {expected_prefix}; '
+                    f'run `fha views brackets --fix` to correct'))
+
+
 # ── Cross-file checks ─────────────────────────────────────────────────────────
 
 def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: bool = False) -> None:
@@ -777,7 +975,12 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                         f'[{display_pid}] at line {ref_line} references merged person '
                         f'(merged into {target}); update to the survivor P-id'))
 
-    # W103: stale folder bracket lists (not yet implemented — requires relationship traversal)
+    # W103: stale folder bracket lists
+    _check_bracket_lists(registry, findings)
+
+    # W110: direct-line person in wrong Ahnentafel couple folder
+    _check_ahnentafel_placement(registry, findings)
+
     # W104: summary line without supporting accepted claim (handled in E013 pass)
     # W105: hand-edits under GENERATED header
     _check_generated_headers(registry.archive_root, findings)

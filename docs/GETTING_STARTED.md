@@ -24,7 +24,7 @@ State your **mode** at the start of a session — `research`, `tool-building`, `
 ## Step 3 — Use (or extend) the tools
 
 Milestones 1 and 2 are complete: `fha lint`, `fha index`, `fha id`, `fha stubs`, and
-`fha views` (timeline, sources-index, draft-queue) are all implemented.
+`fha views` (timeline, sources-index, draft-queue, brackets) are all implemented.
 Run them with Python 3.10+ from the repo root:
 
 ```
@@ -34,6 +34,7 @@ python tools/fha.py index --root example-archive          # build the SQLite ind
 python tools/fha.py views timeline --root example-archive --all-curated
 python tools/fha.py views sources-index --root example-archive --couple-folders
 python tools/fha.py views draft-queue --root example-archive --all-curated
+python tools/fha.py views brackets --root example-archive          # check W103/W110; add --fix to apply
 ```
 
 To build further tools (process, photoindex, report, …), declare **tool-building mode** and
