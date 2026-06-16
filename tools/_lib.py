@@ -1,8 +1,17 @@
 """
 _lib.py — shared library for all fha tools.
 
-Parsing primitives, EDTF handling, path resolution, and shared constants.
-Every tool imports from here; tools never import each other.
+This is the foundation every other tool builds on.  Tools never import each
+other — _lib.py is the only shared dependency (TOOLING §15 build rule).
+
+What lives here:
+  - ID grammar and validation  (Crockford Base32, SPEC §10)
+  - EDTF date parsing and bounds computation  (TOOLING §1)
+  - Record file parsing  (frontmatter + fenced claims block + body)
+  - Path and alias resolution  (fha.yaml roots mapping)
+  - Filename grammar parsing  (person and source naming conventions, SPEC §13)
+  - Shared constants: claim types, source types, COMPANION_KINDS, significance
+  - The Finding class and exit-code constants shared by lint and other tools
 """
 
 from __future__ import annotations
@@ -16,6 +25,52 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+# ── CODE MAP ──────────────────────────────────────────────────────────────────
+#
+#  Constants and patterns
+#    CROCKFORD_ALPHA           — the 32-char ID alphabet (i l o u omitted)
+#    ID_RE, TOKEN_RE           — bare ID and [ID] token patterns (SPEC §10)
+#    FRONT_RE, CLAIMS_RE       — frontmatter and fenced claims block patterns
+#    SIGNIFICANCE              — claim type → 'vital'/'substantive'/'incidental'
+#    CLAIM_TYPES, VITAL_TYPES  — frozensets derived from SIGNIFICANCE
+#    SOURCE_TYPES              — controlled vocabulary for source_type field
+#    COMPANION_KINDS           — generated file kinds that share a P-id with their profile
+#
+#  Archive configuration
+#    find_archive_root         — walk up from CWD to find fha.yaml
+#    load_fha_yaml             — parse fha.yaml into a dict
+#    get_roots                 — extract roots mapping from config
+#    resolve_path              — alias path ('photos/…') → absolute Path via fha.yaml
+#
+#  Record parsing
+#    _coerce_yaml              — normalise YAML scalar types for consistent comparisons
+#    read_record               — parse frontmatter + claims + body from a .md file
+#    parse_filename            — decompose filename into {id_str, kind, is_companion}
+#
+#  EDTF handling
+#    is_valid_edtf             — validate an EDTF string against this project's subset
+#    edtf_bounds               — compute (date_min, date_max) ISO strings
+#    _pad_date, _last_day      — internal date-padding helpers
+#
+#  ID utilities
+#    normalize_id              — lowercase for consistent set/dict keying
+#    is_valid_id               — syntactic validity check
+#    id_type_of                — extract P/S/C/L/H type prefix
+#    scan_ids_in_tree          — full-tree scan used by id mint for collision checking
+#
+#  Filename / path helpers
+#    is_fixture_path           — path under example-archive/ or tests/fixtures/?
+#    extract_token_ids         — all [ID] tokens from a text block
+#    extract_bare_ids          — all bare IDs from a text block
+#
+#  Output helpers
+#    EXIT_CLEAN / EXIT_WARNINGS / EXIT_ERRORS / EXIT_FAILURE  — shared exit codes
+#    Finding                   — one lint finding: severity + code + path + message
+#    emit_findings             — print findings list and return exit code
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # ── Regex patterns (TOOLING.md §1) ───────────────────────────────────────────
 
@@ -59,7 +114,10 @@ SOURCE_TYPES: frozenset[str] = frozenset({
     'website', 'artifact', 'proof-argument', 'other',
 })
 
-# Companion file kinds (share a P-id with their profile)
+# Companion file kinds: generated view files that share a P-id with their profile
+# and live in the same folder.  Enumerated here so that parse_filename (kind
+# detection) and index.py (person_files.kind column) stay in sync when new view
+# types are added — add the kind here, and both consumers pick it up automatically.
 COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-index', 'draft-queue'})
 
 # ── fha.yaml loading ──────────────────────────────────────────────────────────
@@ -292,8 +350,21 @@ def is_valid_edtf(s: str | None) -> bool:
 
 def edtf_bounds(s: str | None) -> tuple[str, str]:
     """
-    Return (min_iso, max_iso) for an EDTF string.
-    Implements the table from TOOLING.md §1.
+    Return (date_min, date_max) ISO strings for an EDTF date.
+
+    These bounds serve two purposes:
+      - Sorting: date_min is the ORDER BY column for chronological claim ordering
+      - Windowing: tools can filter claims to a date range with string comparison
+
+    Approximate dates are deliberately widened: '1840~' (about 1840) becomes
+    date_min='1839-01-01', date_max='1841-12-31'.  This reflects the uncertainty.
+
+    IMPORTANT: do not use date_min as the display year for an approximate date.
+    '1840~' has date_min=1839, but the correct decade is 1840s, not 1830s.
+    Always use the EDTF string directly for display and decade grouping, stripping
+    the qualifier yourself.  (See views.py _decade_from_edtf for exactly this.)
+
+    Implements the bounds table from TOOLING.md §1.
     """
     if not s or not isinstance(s, str):
         return ('0001-01-01', '9999-12-31')
@@ -469,7 +540,13 @@ class Finding:
 
 
 def emit_findings(findings: list[Finding], use_json: bool = False) -> int:
-    """Print findings and return the appropriate exit code."""
+    """
+    Print findings to stdout and return the appropriate exit code.
+
+    A convenience wrapper so tool CLIs don't need to know the EXIT_* →
+    severity mapping.  Tools that want custom output formatting should
+    loop over findings themselves and call EXIT_* constants directly.
+    """
     import json
 
     if use_json:

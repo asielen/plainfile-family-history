@@ -3,7 +3,11 @@
 fha — family history archive CLI.
 
 Subcommands live in individual tool files under tools/; each is also
-runnable standalone (python tools/lint.py --root ...).
+runnable standalone (e.g. python tools/lint.py --root …).
+
+This file is intentionally thin — just a dispatcher.  All logic lives in the
+individual tool modules.  Adding a new tool: implement it in tools/newtool.py
+with a register(subs) function, then add one import + one register() call here.
 """
 
 from __future__ import annotations
@@ -53,8 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Import tool modules here (lazy) so that missing deps in one tool
-    # don't prevent other tools from loading.
+    """
+    Entry point for `fha` (or `python tools/fha.py`).
+
+    Tool modules are imported inside this function rather than at the top of
+    the file so that a syntax error or missing dependency in one tool doesn't
+    prevent the other tools from loading.  Each register() call adds that
+    tool's subcommand to the shared parser.
+    """
+    # Lazy imports: keep them inside main() for the reason above.
     from id import register as id_register
     from index import register as index_register
     from lint import register as lint_register

@@ -12,8 +12,31 @@ lint.py — fha lint: verify the archive against the spec.
   fha lint --fix-inventory           Planned inventory fixer (not yet implemented)
 
 Exit codes: 0 = clean, 1 = warnings only, 2 = errors, 3 = tool failure.
-Runs file-by-file plus cross-file passes on a fresh in-memory index.
-Does NOT require fha index to have run. TOOLING §3.
+SPEC §16, TOOLING §3.
+
+HOW IT WORKS — TWO PASSES, NO PRIOR INDEX
+------------------------------------------
+Lint is fully self-contained: it does NOT require `fha index` to have run.
+It builds its own in-memory Registry on the first pass, then runs cross-file
+checks on the second pass once the full picture is available.
+
+Pass 1 — walk and collect  (_walk_archive):
+  Read every person and source file; register IDs, claims, token references,
+  and metadata.  File-level checks fire here — the ones that don't need to see
+  the rest of the archive: bad IDs, missing required fields, malformed EDTF
+  dates, duplicate claim IDs within a source.
+
+Pass 2 — cross-file checks  (_cross_file_checks):
+  With the complete Registry in hand, check things that require the whole
+  picture: orphan token references, duplicate record IDs, summary-block drift
+  against accepted claims, vitals gaps for curated persons, merged-person
+  references, and reverse asset inventory.
+
+WHY IN-MEMORY, NOT THE SQLITE INDEX
+  The SQLite index may not exist, or may be stale.  Lint is the source of
+  truth — the index must match what lint accepts, never the other way around.
+  Building a fresh Registry per run ensures lint is always consistent with
+  what's actually on disk.
 """
 
 from __future__ import annotations
@@ -58,10 +81,68 @@ from _lib import (
 
 import yaml
 
+# ── CODE MAP ──────────────────────────────────────────────────────────────────
+#
+#  Data model
+#    Registry                    — in-memory snapshot of one lint pass
+#
+#  Constants / small helpers
+#    _SOURCE_FILENAME_RE         — grammar check for source filenames (SPEC §13)
+#    _PERSON_FILENAME_RE         — grammar check for person filenames (SPEC §13)
+#    REQUIRED_*_FIELDS           — required frontmatter keys per record type
+#    _normalize_alias_path       — backslash→slash normalisation for path comparison
+#    _mapped_root, _path_to_alias — resolve fha.yaml alias roots to absolute paths
+#    _claim_person_ids           — extract normalised P-ids from a claim's persons: field
+#    _parse_summary_block        — parse **Born/Died/…:** lines from a profile body
+#    _collect_token_refs         — scan a text block for [ID] tokens → registry
+#    _question_blocks            — split a questions.md into per-heading blocks
+#    _metadata_values            — normalise scalar/list exiftool field values
+#
+#  Pass 1 — walk and collect
+#    _walk_archive               — top-level coordinator; calls the _process_* functions
+#    _process_person_file        — index one person file + file-level checks
+#    _process_source_file        — index one source file + file-level checks + claims
+#
+#  Pass 2 — cross-file checks
+#    _cross_file_checks          — top-level coordinator for all cross-file rules
+#    _check_summary_line         — E013/W104: one **Label:** segment vs accepted claims
+#    _has_question_for           — E009: co-occurrence check across question blocks
+#    _get_person_accepted_claims — build accepted-claim list for one person
+#    _check_reverse_inventory    — E011: document files vs source inventory lists
+#    _check_embedded_source_keywords — E012: exiftool SOURCE: keyword vs inventory
+#    _read_source_keywords       — invoke exiftool; parse its JSON keyword output
+#    _check_generated_headers    — W105: hand-edits below a GENERATED header
+#    _check_readme_age           — W108: README.md older than SPEC.md
+#    _check_agent_drift          — E018: deprecated commands in AGENTS.md
+#
+#  Format checks / fix modes
+#    _check_format               — W109: final newline, CRLF line endings
+#    _fix_format                 — apply conservative format fixes
+#    _fix_mint_stubs             — create stubs for the E005 set (--mint-stubs)
+#    _fix_spawn_questions        — append question entries for E009 set (--spawn-questions)
+#
+#  Main entry / CLI
+#    run_lint                    — orchestrates both passes and emits findings
+#    register                    — attach 'lint' to the main fha parser
+#    _run_lint                   — argparse → run_lint bridge
+#    _standalone_main            — for `python tools/lint.py` direct invocation
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 # ── Registry built during a lint run ─────────────────────────────────────────
 
 class Registry:
-    """In-memory index of everything found in one lint pass."""
+    """
+    In-memory snapshot of everything found in one lint pass.
+
+    Populated entirely by Pass 1 (_walk_archive).  Read by Pass 2
+    (_cross_file_checks) once every file has been processed.
+
+    Lint builds its own Registry rather than reading the SQLite index so it
+    can run without `fha index` having been run, and so lint is always
+    consistent with what's on disk rather than with a potentially stale cache.
+    """
 
     def __init__(self, archive_root: Path, fha_config: dict):
         self.archive_root = archive_root
@@ -214,7 +295,16 @@ def _collect_token_refs(text: str, path: Path, registry: Registry) -> None:
 
 
 def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding]) -> None:
-    """First pass: collect all records and build the registry."""
+    """
+    Pass 1: walk the archive tree and populate the registry.
+
+    File-level checks fire here — the ones that don't need to see the whole
+    archive.  Anything that requires knowing whether another record exists
+    (orphan references, vitals gaps, summary-block drift) is deferred to Pass 2.
+
+    Walk order: places → people → sources → notes.  Places are indexed first
+    so their L-ids are available when Pass 2 checks place references in claims.
+    """
 
     # Places
     places_path = archive_root / 'places' / 'places.yaml'
@@ -528,7 +618,14 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 # ── Cross-file checks ─────────────────────────────────────────────────────────
 
 def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: bool = False) -> None:
-    """Second pass: checks that require the full registry."""
+    """
+    Pass 2: checks that require the full registry.
+
+    Called after _walk_archive has finished, so every ID, claim, and token
+    reference is already registered.  Rules that check existence of other
+    records (E004 orphan refs, E005 missing persons, E013 summary drift,
+    W101 vitals gaps) all live here.
+    """
 
     known_ids = registry.all_known_ids()
 
@@ -830,7 +927,14 @@ def _has_question_for(cid1: str, cid2: str, registry: Registry) -> bool:
 
 
 def _get_person_accepted_claims(pid: str, registry: Registry) -> list[dict]:
-    """Return all accepted claims that name pid in their persons: list, with _source_id injected."""
+    """
+    Return all accepted claims that name pid in their persons: list.
+
+    Injects a synthetic '_source_id' key into each claim dict so that callers
+    (E013 summary checks, W101 vitals checks) can identify which source a claim
+    came from without a second lookup.  Claims don't carry source_id in their
+    own YAML dict — it lives on the source record that contains them.
+    """
     result = []
     for sid, claims in registry.source_claims.items():
         for claim in claims:

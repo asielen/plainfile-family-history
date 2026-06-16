@@ -5,8 +5,27 @@ index.py — fha index: build the SQLite query surface.
   fha index                  Full rebuild of .cache/index.sqlite from scratch
   fha index --source S-xxxx  Upsert one source (incremental, sub-second)
 
-The index is never authoritative — delete it and rebuild anytime.
+The index is a disposable SQLite cache — never authoritative, always rebuildable.
 SPEC §8.7, TOOLING §2.
+
+ARCHITECTURE
+------------
+The index is the query surface for views, find, and report.  It mirrors the
+SPEC record model: persons, sources, claims, and derived tables (relationships,
+citations, FTS) built for query efficiency.
+
+Two modes:
+  Full rebuild (build_index):     drop all tables and re-index everything from
+    scratch.  Use after any structural change (new person files, moved records).
+  Incremental upsert (upsert_source):  re-index one source and its claims in
+    place, then re-derive relationships.  Use after editing a single source file
+    — completes in under a second on a normal archive.
+
+The schema lives in _DDL.  Foreign keys are OFF because the archive allows
+forward references (a claim can reference a person whose file appears later in
+the walk), and referential integrity is enforced by `fha lint` instead.
+WAL mode is set for resilience: a crash during indexing leaves the previous
+clean index readable rather than corrupting it.
 """
 
 from __future__ import annotations
@@ -38,7 +57,43 @@ from _lib import (
 
 import yaml
 
+# ── CODE MAP ──────────────────────────────────────────────────────────────────
+#
+#  Schema
+#    _DDL                    — CREATE TABLE statements for all index tables
+#
+#  Low-level DB helpers
+#    _get_db                 — open (or create) the SQLite file, apply DDL
+#    _drop_tables            — wipe all tables before a full rebuild
+#
+#  Indexers (one per record type)
+#    _index_places           — places.yaml → places, place_names, place_history
+#    _index_person           — one person .md → persons + person_files
+#    _index_source           — one source .md → sources + claims + claim_persons
+#                              + claim_links + source_files + source_people
+#    _index_notes            — notes/*.md → notes_fts
+#    _index_citations        — all .md → citations (token → file + line)
+#
+#  Derived tables
+#    _derive_relationships   — accepted claims → relationships adjacency list
+#
+#  Top-level build functions
+#    build_index             — full rebuild: drop, re-index everything, derive
+#    upsert_source           — incremental: re-index one source, re-derive
+#
+#  CLI
+#    register                — attach 'index' to the main fha parser
+#    _run_index              — argparse → build_index / upsert_source bridge
+#    _standalone_main        — for `python tools/index.py` direct invocation
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 # ── DDL ───────────────────────────────────────────────────────────────────────
+# Schema mirrors the SPEC record model plus derived tables for query speed.
+# Foreign keys are OFF — forward references are valid and lint enforces integrity.
+# WAL journal mode: a crash during indexing leaves the prior index readable.
+# kind column in person_files: profile | research | timeline | sources-index | draft-queue
 
 _DDL = """
 PRAGMA journal_mode=WAL;
@@ -258,7 +313,19 @@ def _index_places(conn: sqlite3.Connection, archive_root: Path) -> None:
 
 
 def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> None:
-    """Index one person markdown file."""
+    """
+    Index one person .md file into persons and person_files.
+
+    Profile files (kind='profile') get a full persons row upsert.  Companion
+    files (kind='timeline', 'sources-index', etc.) only get a person_files row
+    — they don't create a second persons entry, but views can find them by
+    person_id and kind.
+
+    Surname is parsed from the filename's double-underscore convention
+    ({surname}__{given}_{P-id}) rather than the name: field, because the
+    frontmatter name may include middle names or honorifics while the filename
+    slug is always the birth surname.
+    """
     rec = read_record(path)
     meta = rec['meta']
 
@@ -537,7 +604,17 @@ def _index_citations(conn: sqlite3.Connection, archive_root: Path) -> None:
 
 
 def _derive_relationships(conn: sqlite3.Connection) -> None:
-    """Derive relationship edges from accepted claims."""
+    """
+    Materialise relationship edges from accepted claims into the relationships table.
+
+    This is a pre-computed adjacency list: rather than joining claim_persons on
+    every query, known parent/child/spouse edges are written here so callers
+    can ask "who are this person's parents?" with a simple SELECT.
+
+    Called at the end of both full rebuild and incremental upsert so the table
+    is always current.  Only accepted claims are used — suggested and
+    needs-review claims don't become load-bearing graph edges.
+    """
     conn.execute('DELETE FROM relationships')
 
     rows = conn.execute(
@@ -657,15 +734,25 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
 
 
 def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
-    """Incremental upsert of one source and its claims."""
+    """
+    Incremental re-index of one source and its claims.
+
+    Deletes all existing rows for this source, then re-reads the source file
+    from disk and inserts fresh rows.  Faster than a full rebuild when only
+    one source file has changed.
+
+    Deletion order matters: child tables (claim_persons, claim_links) must be
+    deleted before the parent claims rows; otherwise the subquery in a child
+    DELETE returns nothing because the parent is already gone.
+
+    Re-derives relationships after the upsert so the relationships table
+    reflects any changed claim statuses.  Does not re-index persons or places
+    — those only change on a full rebuild.
+    """
     cache_dir = archive_root / '.cache'
     conn = _get_db(cache_dir)
 
     sid = normalize_id(source_id)
-
-    # Remove existing rows for this source.
-    # Child tables (claim_persons, claim_links) must be deleted before their parent
-    # (claims), otherwise the subquery returns nothing because the parent rows are gone.
     with conn:
         existing_claim_ids = [
             row[0] for row in
