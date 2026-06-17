@@ -795,7 +795,11 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
             continue
         expected_prefix = pos if pos % 2 == 0 else pos - 1
 
-        for p in registry.person_profile_paths.get(pid, []):
+        all_paths = (
+            registry.person_profile_paths.get(pid, [])
+            + registry.person_companion_paths.get(pid, [])
+        )
+        for p in all_paths:
             folder_name = p.parent.name
             if folder_name.lower() in excluded:
                 continue

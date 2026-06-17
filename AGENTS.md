@@ -117,6 +117,18 @@ only when the why isn't already covered by the function's own docstring.
 
 **Self-review:** After implementing, review your own diff as a strict code reviewer before finalizing. Check correctness (failure modes, missing cleanup, contract mismatches, duplicate side effects) AND documentation (every non-trivial function has a docstring that explains the why; the module docstring reflects what was actually built; no inline comment merely restates the code; the code map is accurate). Classify each issue as high, medium, or low severity. Patch all high and medium issues before declaring done.
 
+Before declaring any task complete, run the following five cross-cutting checks on every changed file. These are the categories that most reliably survive a diff review but surface in a downstream code-review pass:
+
+**1 — Symmetry audit.** For each change, ask: is there a symmetric counterpart not yet touched? Common pairs in this codebase: outgoing links ↔ incoming links (`claim_links`); write/generate ↔ delete/clean; check in `views.py` ↔ matching check in `lint.py`; profile files ↔ companion files (`person_profile_paths` ↔ `person_companion_paths`); full rebuild ↔ incremental upsert. A feature implemented for one direction but not its mirror is the single most common source of missed issues across this PR.
+
+**2 — Error path inventory.** For every new code path, explicitly enumerate three classes of failure: (a) *absent* — the file doesn't exist, the ID is not in the index, the database is missing; (b) *malformed* — empty file, corrupt or schema-less database, YAML parse failure; (c) *misconfigured* — `root_person` is mistyped, a required `fha.yaml` key is absent, a root mapping points nowhere. Each must either degrade gracefully with a message or return a non-zero exit code. Silent success on a failure input is always wrong.
+
+**3 — Config surface check.** Any path computed as `archive_root / 'documents'` or `archive_root / 'photos'` must be verified: does `fha.yaml`'s `roots:` mapping allow that directory to live outside the archive root? If yes — and for `documents` and `photos` it always does — resolve the root through `fha_config`/`resolve_path` instead of hardcoding the internal path. Hardcoded internal paths silently produce wrong results for any archive with external asset roots.
+
+**4 — Cross-tool propagation.** When a data contract changes — a new field, a widened scope, a renamed column, a new operation — grep for every tool that implements or consumes that contract. The same check that lives in `views.py` often has a parallel in `lint.py`. Data deleted by one step of `upsert_source` must also be re-inserted by a later step if it is regenerable. A contract change that is applied to `build_index` but not to `upsert_source` leaves incremental mode silently wrong.
+
+**5 — Simplification safety.** When replacing code for clarity, verify the new form is equivalent for *all* valid inputs, not just the typical case. Specifically: integer-to-string conversion does not preserve zero-padding (`int('040')` → `40` → `'40'` ≠ `'040'`); paths may be absolute or relative; collections may be empty; `None` and an absent key are not always interchangeable. For any replacement, name the input class where the original and simplified forms would differ, and confirm that class is impossible or handled.
+
 **Completion:** Work to completion in one run — do not stop after partial implementation if more required work is known. Keep interim narration brief so context is reserved for actual work. If context limits prevent full completion, finish the highest-risk and most central work first, then clearly list what remains.
 
 ### Session end (all modes)

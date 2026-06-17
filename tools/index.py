@@ -798,6 +798,19 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
 
         if found:
             _index_source(conn, found, archive_root, fha_config)
+            # Re-add citation tokens for the re-indexed source file.
+            try:
+                lines = found.read_text(encoding='utf-8', errors='ignore').splitlines()
+            except OSError:
+                lines = []
+            rel = str(found.relative_to(archive_root))
+            for lineno, line in enumerate(lines, start=1):
+                for m in TOKEN_RE.finditer(line):
+                    token = m.group(1).lower()
+                    conn.execute(
+                        'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
+                        (token, token[0].upper(), rel, lineno),
+                    )
 
         _derive_relationships(conn)
 

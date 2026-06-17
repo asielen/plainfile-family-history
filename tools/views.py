@@ -1007,9 +1007,10 @@ def _check_w110_ahnentafel(
     all_couple_dirs = list(_couple_folder_dirs(archive_root))
     folder_by_prefix: dict[int, Path] = {}
     for folder in all_couple_dirs:
-        prefix = _folder_numeric_prefix(folder.name)
-        if prefix is not None and folder.name.startswith(f'{prefix} '):
-            folder_by_prefix[prefix] = folder
+        # Match only canonical folders: digits then a literal space (excludes '040b…').
+        m = re.match(r'^(\d+) ', folder.name)
+        if m:
+            folder_by_prefix[int(m.group(1))] = folder
 
     for pid, pos in pid_to_pos.items():
         if pos < 2:
@@ -1304,8 +1305,15 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
 
         if root_person_raw:
             root_pid = normalize_id(str(root_person_raw))
-            pid_to_pos = _build_ahnentafel_map(conn, root_pid)
-            w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
+            if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone() is None:
+                print(
+                    f'WARNING: root_person {root_pid!r} is not in the index — '
+                    'Ahnentafel checks (W110) skipped. Run `fha index` or fix fha.yaml.',
+                    file=sys.stderr,
+                )
+            else:
+                pid_to_pos = _build_ahnentafel_map(conn, root_pid)
+                w110 = _check_w110_ahnentafel(conn, archive_root, pid_to_pos)
         else:
             print(
                 'INFO: root_person not set in fha.yaml - '

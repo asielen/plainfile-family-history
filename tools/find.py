@@ -105,13 +105,16 @@ def _index_is_fresh(archive_root: Path) -> bool:
 
 
 def _open_index(archive_root: Path) -> sqlite3.Connection | None:
-    """Open .cache/index.sqlite for reading; return None if missing or corrupt."""
+    """Open .cache/index.sqlite for reading; return None if missing, corrupt, or schema-less."""
     db_path = archive_root / '.cache' / 'index.sqlite'
     if not db_path.exists():
         return None
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
+        # Probe for a required table so empty/corrupt files fail fast here
+        # rather than raising DatabaseError inside per-ID queries.
+        conn.execute('SELECT 1 FROM persons LIMIT 1')
         return conn
     except Exception:
         return None
@@ -601,18 +604,29 @@ def _find_text(
 
     # re.search pass over all record directories.
     # documents/ uses ('*.md', '*.txt') to catch transcript files (role: transcription).
+    # Resolve the documents root via fha.yaml 'roots:' so external asset roots work.
+    _doc_root_val = (fha_config or {}).get('roots', {}).get('documents')
+    if _doc_root_val:
+        _doc_p = Path(str(_doc_root_val))
+        docs_root = _doc_p if _doc_p.is_absolute() else archive_root / _doc_p
+    else:
+        docs_root = archive_root / 'documents'
+
     pattern = re.compile(re.escape(query), re.I)
     scan_dirs = [
-        (archive_root / 'sources',   ('*.md',)),
-        (archive_root / 'people',    ('*.md',)),
-        (archive_root / 'notes',     ('*.md',)),
-        (archive_root / 'documents', ('*.md', '*.txt')),
+        (archive_root / 'sources', ('*.md',)),
+        (archive_root / 'people',  ('*.md',)),
+        (archive_root / 'notes',   ('*.md',)),
+        (docs_root,                ('*.md', '*.txt')),
     ]
     for scan_dir, globs in scan_dirs:
         if not scan_dir.is_dir():
             continue
         for p in sorted(itertools.chain.from_iterable(scan_dir.rglob(g) for g in globs)):
-            rel = str(p.relative_to(archive_root))
+            try:
+                rel = str(p.relative_to(archive_root))
+            except ValueError:
+                rel = str(p)  # external documents root: use absolute path as key
             if rel in seen_paths:
                 continue
             try:
