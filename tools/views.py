@@ -1682,10 +1682,11 @@ def _cmd_tree(args: argparse.Namespace) -> int:
     fmt = getattr(args, 'format', 'json') or 'json'
     if fmt == 'html':
         print(
-            'HTML tree output is not yet available. '
-            'Use fha site (coming in a later milestone) to render the tree as HTML.'
+            'ERROR: HTML tree output is not yet available. '
+            'Use fha site (coming in a later milestone) to render the tree as HTML.',
+            file=sys.stderr,
         )
-        return EXIT_CLEAN
+        return EXIT_FAILURE
 
     person_id = getattr(args, 'person_id', None)
     if not person_id:
@@ -1944,6 +1945,8 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
                 count += 1
 
         print(f'Generated {count} view file(s).')
+        if count:
+            print('Run `fha index` to update the search index with the new view files.')
         return EXIT_CLEAN
 
     finally:

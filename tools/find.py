@@ -269,6 +269,7 @@ def _find_source(
         print(f'  files ({len(file_rows)}):')
         for f in file_rows:
             role_str = f'  [{f["role"]}]' if f['role'] else ''
+            resolved = None
             try:
                 resolved = resolve_path(f['path'], fha_config, archive_root)
                 resolved_str = str(resolved)
@@ -276,7 +277,7 @@ def _find_source(
                 resolved_str = '(unresolvable)'
             if f['path'] in missing_fixture_paths:
                 status_sym = 'missing-fixture'
-            elif f['exists_on_disk']:
+            elif resolved is not None and resolved.exists():
                 status_sym = _OK
             else:
                 status_sym = _BAD
