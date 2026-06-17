@@ -7,6 +7,8 @@ views.py — fha views: generate view files from the index.
   fha views draft-queue [P-id | --all-curated]
   fha views brackets [--fix] [--dry-run]
   fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
+  fha views clean [--dry-run]
+  fha views refresh
 
 ARCHITECTURE OVERVIEW
 ---------------------
@@ -56,14 +58,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
-    TOKEN_RE,       # regex that matches any [X-crockfordid] token in profile text
+    TOKEN_RE,             # regex that matches any [X-crockfordid] token in profile text
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     find_archive_root,
     load_fha_yaml,
-    normalize_id,   # lower-cases IDs for consistent set/dict keying
-    read_record,    # parses YAML front-matter + body from a .md file
+    newest_record_mtime,  # max mtime across sources/people/notes .md + places.yaml
+    normalize_id,         # lower-cases IDs for consistent set/dict keying
+    read_record,          # parses YAML front-matter + body from a .md file
 )
 
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
@@ -122,6 +125,8 @@ from _lib import (
 #    _cmd_timeline, _cmd_sources_index, _cmd_draft_queue  — argparse handlers
 #    _cmd_brackets                — brackets handler (above)
 #    _cmd_tree                    — tree handler (above)
+#    _cmd_clean                   — delete all GENERATED companion files
+#    _cmd_refresh                 — regenerate all content views for all curated persons
 #    _cmd_views_help              — prints views help when no subcommand given
 #    register           — called by fha.py to attach 'views' to the main parser
 #    register_standalone, main    — used when running `python tools/views.py` directly
@@ -150,10 +155,19 @@ def _gen_header(subcommand: str) -> str:
     )
 
 
+def _rebase(p: Path, old: Path, new: Path) -> Path:
+    """Return p relocated from old to new, or p unchanged if not under old."""
+    try:
+        return new / p.relative_to(old)
+    except ValueError:
+        return p
+
+
 def _open_db(archive_root: Path) -> sqlite3.Connection | None:
     """
     Open the index database.
     Prints an error to stderr and returns None if the database is absent.
+    Prints a warning to stderr if any record file is newer than the database.
     """
     db_path = archive_root / '.cache' / 'index.sqlite'
     if not db_path.exists():
@@ -163,6 +177,19 @@ def _open_db(archive_root: Path) -> sqlite3.Connection | None:
             file=sys.stderr,
         )
         return None
+
+    # Freshness check: warn if any record file post-dates the index.
+    try:
+        db_mtime = db_path.stat().st_mtime
+        if newest_record_mtime(archive_root) > db_mtime:
+            print(
+                'WARNING: index may be stale — a record file is newer than '
+                '.cache/index.sqlite. Run `fha index` to refresh.',
+                file=sys.stderr,
+            )
+    except OSError:
+        pass
+
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
@@ -1116,11 +1143,9 @@ def _compose_folder_renames(
         for w110_item in w110:
             if w110_item['kind'] != 'file_move':
                 continue
-            try:
-                rel = w110_item['src_path'].relative_to(old_folder)
-                w110_item['src_path'] = new_folder / rel
-            except ValueError:
-                pass
+            w110_item['src_path']       = _rebase(w110_item['src_path'],       old_folder, new_folder)
+            w110_item['dst_path']       = _rebase(w110_item['dst_path'],       old_folder, new_folder)
+            w110_item['expected_folder'] = _rebase(w110_item['expected_folder'], old_folder, new_folder)
 
     return w103, w110, w103_suppressed
 
@@ -1189,6 +1214,9 @@ def _apply_bracket_fixes(
     # W110: folder renames first, then file moves.
     # Folder renames must precede file moves so that src_path references to
     # files inside an about-to-be-renamed folder are still valid.
+    # After each rename succeeds, rewrite src_path for any file_move items
+    # whose source lives inside the just-renamed folder.
+    file_moves = [item for item in w110 if item['kind'] == 'file_move']
     for item in w110:
         if item['kind'] != 'folder_rename':
             continue
@@ -1202,17 +1230,21 @@ def _apply_bracket_fixes(
             except ValueError:
                 old_rel, new_rel = old_folder, new_folder
             print(f'  RENAMED  {old_rel} -> {new_rel}')
+            for other in file_moves:
+                other['src_path'] = _rebase(other['src_path'], old_folder, new_folder)
         except OSError as e:
             print(f'  ERROR renaming {old_folder.name}: {e}', file=sys.stderr)
 
-    for item in w110:
-        if item['kind'] != 'file_move':
-            continue
+    for item in file_moves:
         src = item['src_path']
         dst = item['dst_path']
         expected_folder = item['expected_folder']
         if not src.exists():
             print(f'  SKIP (already moved?) {src}', file=sys.stderr)
+            skips += 1
+            continue
+        if dst.exists():
+            print(f'  ERROR {src.name}: destination already exists at {dst} — skipped to avoid overwrite.', file=sys.stderr)
             skips += 1
             continue
         try:
@@ -1226,6 +1258,7 @@ def _apply_bracket_fixes(
             print(f'  MOVED  {rel_src} -> {rel_dst}')
         except OSError as e:
             print(f'  ERROR moving {src}: {e}', file=sys.stderr)
+            skips += 1
 
     return skips
 
@@ -1624,6 +1657,10 @@ def _cmd_tree(args: argparse.Namespace) -> int:
     if conn is None:
         return EXIT_FAILURE
     try:
+        row = conn.execute('SELECT id FROM persons WHERE id = ?', (seed_pid,)).fetchone()
+        if row is None:
+            print(f'ERROR: person {seed_pid!r} not found in index.', file=sys.stderr)
+            return EXIT_WARNINGS
         nodes, edges = _traverse_tree(conn, seed_pid, mode, max_hops)
     finally:
         conn.close()
@@ -1699,7 +1736,7 @@ def _cmd_sources_index(args: argparse.Namespace) -> int:
 
         if all_curated or couple_folders_only:
             count = 0
-            if not couple_folders_only:
+            if all_curated:
                 # Per-person files for all curated persons
                 for pid in _curated_person_ids(conn):
                     out = _generate_sources_index_person(conn, pid, archive_root)
@@ -1767,6 +1804,86 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
             return EXIT_CLEAN
         return EXIT_WARNINGS
+
+    finally:
+        conn.close()
+
+
+def _cmd_clean(args: argparse.Namespace) -> int:
+    """Handle `fha views clean [--dry-run]`."""
+    archive_root = _resolve_root(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+
+    dry_run = getattr(args, 'dry_run', False)
+
+    people_dir = archive_root / 'people'
+    if not people_dir.is_dir():
+        print('ERROR: people/ directory not found.', file=sys.stderr)
+        return EXIT_FAILURE
+
+    found: list[Path] = []
+    for p in sorted(people_dir.rglob('*.md')):
+        try:
+            head = p.read_text(encoding='utf-8', errors='ignore')[:200]
+        except OSError:
+            continue
+        if '<!-- GENERATED by fha views' in head:
+            found.append(p)
+
+    if not found:
+        print('No GENERATED view files found.')
+        return EXIT_CLEAN
+
+    for p in found:
+        rel = p.relative_to(archive_root)
+        if dry_run:
+            print(f'  would remove {rel}')
+        else:
+            p.unlink()
+            print(f'  removed {rel}')
+
+    verb = 'Would remove' if dry_run else 'Removed'
+    print(f'{verb} {len(found)} generated file(s).')
+    return EXIT_CLEAN
+
+
+def _cmd_refresh(args: argparse.Namespace) -> int:
+    """Handle `fha views refresh`."""
+    archive_root = _resolve_root(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+
+    conn = _open_db(archive_root)
+    if conn is None:
+        return EXIT_FAILURE
+
+    try:
+        person_ids = _curated_person_ids(conn)
+        if not person_ids:
+            print('No curated persons found in index.')
+            return EXIT_CLEAN
+
+        _per_person = [
+            (_generate_timeline,             'timeline      '),
+            (_generate_draft_queue,          'draft-queue   '),
+            (_generate_sources_index_person, 'sources-index '),
+        ]
+        count = 0
+        for pid in person_ids:
+            for fn, label in _per_person:
+                out = fn(conn, pid, archive_root)
+                if out:
+                    print(f'  {label}->{out.relative_to(archive_root)}')
+                    count += 1
+
+        for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
+            out = _generate_sources_index_couple_folder(conn, folder_path, pids_in_folder)
+            print(f'  sources-index  ->{out.relative_to(archive_root)}')
+            count += 1
+
+        print(f'Generated {count} view file(s).')
+        return EXIT_CLEAN
 
     finally:
         conn.close()
@@ -1895,6 +2012,37 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     tr.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
     tr.set_defaults(func=_cmd_tree)
 
+    # ── clean ─────────────────────────────────────────────────────────────────
+    cl = vsubs.add_parser(
+        'clean',
+        help='Delete all GENERATED-headed companion .md files from the people/ tree.',
+        description=(
+            'Delete all GENERATED-headed companion .md files (timeline, sources-index,\n'
+            'draft-queue) from the people/ tree. Uses the <!-- GENERATED … --> header\n'
+            'as the sole signal; never touches profiles or manually authored files.\n'
+            '--dry-run lists what would be removed without writing.'
+        ),
+    )
+    cl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    cl.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
+    cl.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='List what would be removed without writing.')
+    cl.set_defaults(func=_cmd_clean)
+
+    # ── refresh ───────────────────────────────────────────────────────────────
+    rf = vsubs.add_parser(
+        'refresh',
+        help='Regenerate all content views for every curated person and couple folder.',
+        description=(
+            'Regenerate timeline, draft-queue, and sources-index for every curated\n'
+            'person, plus sources-index.md for every curated couple folder.\n'
+            'Requires a fresh .cache/index.sqlite (run `fha index` first).'
+        ),
+    )
+    rf.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    rf.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
+    rf.set_defaults(func=_cmd_refresh)
+
     # Store a back-reference so _cmd_views_help can print the right help text
     views_p.set_defaults(_views_parser=views_p)
 
@@ -1948,6 +2096,17 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     br.add_argument('--fix', action='store_true', help='Apply renames/moves after preview.')
     br.add_argument('--dry-run', action='store_true', dest='dry_run', help='Preview changes without writing.')
     br.set_defaults(func=_cmd_brackets)
+
+    cl = subs.add_parser('clean', help='Delete all GENERATED-headed companion .md files from the people/ tree.')
+    cl.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    cl.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
+    cl.add_argument('--dry-run', action='store_true', dest='dry_run', help='List what would be removed without writing.')
+    cl.set_defaults(func=_cmd_clean)
+
+    rf = subs.add_parser('refresh', help='Regenerate all content views for every curated person and couple folder.')
+    rf.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    rf.add_argument('--spec-root', metavar='PATH', help='Spec docs root (accepted for CLI consistency).')
+    rf.set_defaults(func=_cmd_refresh)
 
     tr = subs.add_parser('tree', help='Traverse relationships and emit an ancestor/descendant/fan tree.')
     tr.add_argument('person_id', metavar='P-id', help='Seed person for traversal.')

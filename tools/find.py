@@ -23,6 +23,7 @@ Design decisions in TOOLING §4a:
 from __future__ import annotations
 
 import argparse
+import itertools
 import re
 import sqlite3
 import sys
@@ -585,13 +586,17 @@ def _find_text(
         except Exception:
             pass   # FTS tables absent (index built without note content) — fall through
 
-    # re.search pass over all record directories
+    # re.search pass over all record directories.
+    # documents/ uses ('*.md', '*.txt') to catch transcript files (role: transcription).
     pattern = re.compile(re.escape(query), re.I)
-    for d_name in ('sources', 'people', 'notes'):
-        d = archive_root / d_name
-        if not d.is_dir():
+    scan_dirs = [
+        (archive_root / d, ('*.md',)) for d in ('sources', 'people', 'notes')
+    ]
+    scan_dirs.append((archive_root / 'documents', ('*.md', '*.txt')))
+    for scan_dir, globs in scan_dirs:
+        if not scan_dir.is_dir():
             continue
-        for p in sorted(d.rglob('*.md')):
+        for p in sorted(itertools.chain.from_iterable(scan_dir.rglob(g) for g in globs)):
             rel = str(p.relative_to(archive_root))
             if rel in seen_paths:
                 continue

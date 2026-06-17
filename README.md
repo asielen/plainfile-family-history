@@ -150,10 +150,14 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 **Current: `spec v1.2` — milestone 2 complete.**
 
-Milestone 2 delivers the view generators and the folder-maintenance tool:
+Milestone 2 delivers the view generators, folder-maintenance tools, and the
+universal locator:
 `fha views timeline`, `fha views sources-index`, `fha views draft-queue`,
-`fha views brackets` (W103/W110 checks with `--fix`), and `fha views tree`
-(ancestor/descendant/fan traversal, JSON and DOT output) all run cleanly on the
+`fha views brackets` (W103/W110 checks with `--fix`), `fha views tree`
+(ancestor/descendant/fan traversal, JSON and DOT output),
+`fha views clean` / `fha views refresh` (generated-file lifecycle),
+`fha find` (universal ID locator and full-text search), and
+`fha doctor` (archive health report) all run cleanly on the
 example archive alongside the milestone-1 substrate.
 The intended build sequence (detailed in `TOOLING.md` §15):
 
@@ -162,6 +166,9 @@ The intended build sequence (detailed in `TOOLING.md` §15):
 - [x] `fha views timeline`, `fha views sources-index`, `fha views draft-queue` — view generators (milestone 2)
 - [x] `fha views brackets` — folder maintenance: W103 bracket refresh, W110 Ahnentafel placement (milestone 2)
 - [x] `fha views tree` — relationship tree traversal, neutral JSON + DOT output (milestone 2)
+- [x] `fha views clean`, `fha views refresh` — generated-file lifecycle management (milestone 2)
+- [x] `fha find` — universal ID locator and full-text search across records, notes, transcripts (milestone 2)
+- [x] `fha doctor` — archive health report: index freshness, file integrity, privacy flags (milestone 2)
 - [ ] `fha process`, photo index
 - [ ] The session report, cross-reference pass, person packets
 - [ ] The static-site generator and GEDCOM export
