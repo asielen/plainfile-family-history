@@ -110,6 +110,17 @@ def _fmt_delta(seconds: float) -> str:
     return f'{secs}s'
 
 
+def _probe_sqlite(db_path: Path, probe_sql: str) -> bool:
+    """Return True if db_path opens and probe_sql executes without error."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(probe_sql)
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
 def _index_freshness(archive_root: Path) -> tuple[str, str]:
     """
     Check .cache/index.sqlite against the newest record mtime.
@@ -131,12 +142,7 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
     if db_mtime < record_mtime:
         return ('stale', _fmt_delta(record_mtime - db_mtime))
 
-    # Mtime looks fresh — verify the schema is readable before declaring it so.
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.execute('SELECT 1 FROM persons LIMIT 1')
-        conn.close()
-    except Exception:
+    if not _probe_sqlite(db_path, 'SELECT 1 FROM persons LIMIT 1'):
         return ('absent', '')   # treat corrupt/schema-less as absent
 
     return ('fresh', '')
@@ -173,6 +179,8 @@ def _photoindex_freshness(archive_root: Path, fha_config: dict) -> tuple[str, st
         return ('fresh', '')   # photos root exists but empty
 
     if db_mtime >= max_mtime:
+        if not _probe_sqlite(db_path, 'SELECT 1 FROM photos LIMIT 1'):
+            return ('absent', '')
         return ('fresh', '')
 
     return ('stale', _fmt_delta(max_mtime - db_mtime))

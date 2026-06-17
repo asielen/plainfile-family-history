@@ -47,89 +47,18 @@ One mode at a time; if a request crosses modes, say so and ask to switch — nev
 contract.
 Never edits SPEC.md, TOOLING.md, or `tools/`.
 - **tool-building** — edits `tools/` and `tests/` only. Follow the build order
-(TOOLING §15) and the implementation loop below.
+(TOOLING §15). Read **AGENTS_TOOLING.md** for the full implementation loop, coding
+standards, cross-cutting checks, and spec-discovery protocol.
 Spec changes only as *proposed* decision-log entries for the human to approve.
+- **code-review** — strict pre-push review of the current branch. **No file edits.**
+Read **AGENTS_TOOLING.md §Code-review mode** for the full 12-class checklist and
+output format. Use the full repo context (not just the diff); produce a structured
+report with P1/P2/drift/missing-tests sections and a merge-risk verdict.
 - **migration** — bulk intake of existing material into the structure. The highest-risk
 mode: PLAN (what moves where, counts) → DRY-RUN (full preview, no writes) → human approval → execute in bounded batches (≤200 files) → report.
 Never deletes anything; photos are never renamed even here; only staged files move.
 - **spec-refinement** — edits SPEC.md/TOOLING.md + the decision log, and MUST update
 README.md whenever a change affects how a human reads the archive (the README rule).
-
-### Tool-building: the implementation loop (per tool)
-
-1. **Read** the tool's TOOLING section and every SPEC section it cites.
-2. **Restate the contract** to the human before coding: inputs, outputs, flags, exit
-codes, what it must never do.
-Mismatch caught here is cheap.
-3. **Write the documentation shell first.** Before any implementation, write the module
-docstring and all function stubs with their full docstrings. Each docstring should cover:
-what the function does, why the approach was chosen, and any domain constraint a fresh
-reader needs (EDTF quirks, GENERATED header contracts, two-table UNION rationale — the
-things that vanish from memory six months later). If you cannot explain the why before
-implementing, the design is still unsettled; resolve it here rather than in a comment
-retrofitted after the fact. For files with ≥5 non-trivial functions, add a code-map
-comment block near the top listing sections and functions with one-line purposes so the
-file is skimmable without reading every docstring. Use this phase as a final contract
-check — if the stubs reveal spec gaps, surface them now (see Spec-discovery protocol below),
-then flesh out the implementations.
-4. **Implement** within the guardrails: Python ≥3.10; dependencies ONLY PyYAML, Jinja2
-(site), exiftool-as-binary — adding any other is a proposed decision, not a choice; one file per tool under `tools/`, shared code only in `_lib.py`, tools never import tools; no network access (geocoder's gazetteer download excepted).
-5. **Fixtures, not the archive.** Develop and test ONLY against `tests/fixtures/`
-copies.
-The real archive is never a test bed; destructive paths are exercised on fixtures exclusively.
-6. **Definition of done:** `fha lint` runs clean on the clean pilot fixture; each of
-the tool's error codes fires on its broken fixture; `--dry-run` previews every mutating operation; help text exists; TOOLING still describes the tool accurately.
-**Completion gate:** every flag the CLI accepts and every E/W code the tool advertises must appear in `tools/README.md` as either ✓ implemented or ⚑ deferred before the tool is declared milestone-complete. A flag that exists in the CLI but is absent from that table — or present but neither working nor marked deferred — is documentation debt that blocks handoff. Do not declare a tool done while any flag or code is in an undocumented partial state.
-7. **README review.** Before handoff, scan `README.md`, `docs/GETTING_STARTED.md`, and `tools/README.md` for any reference to the changed tool's behavior, flags, or build status and update anything now inaccurate. A working tool that a README still calls "not yet implemented," or whose flags the getting-started guide misdescribes, is a documentation bug. (The README rule from the decision log §21a binds tool-building as much as spec-refinement.)
-8. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
-
-**Spec-discovery protocol:** when implementation reveals that TOOLING/SPEC is ambiguous, contradictory, or wrong — STOP.
-Do not improvise past the spec (the docs must remain able to regenerate the tools).
-Present the gap, propose the amendment as a decision-log entry, and proceed only after the human's call.
-
-### Coding standards (tool-building mode)
-
-**Before coding:** Map the control flow end-to-end for the area being changed — identify CLI entrypoints, flags, file I/O, exit-code paths, and side effects before writing a line. Identify ownership boundaries before touching shared code in `_lib.py`. There must be one clear owner for each archive mutation or side effect; avoid duplicate pathways for the same behavior. Preserve existing contracts (CLI flags, exit codes, SPEC-defined file formats) unless the task explicitly requires changing them; validate all call sites when a shared interface changes.
-
-**Style:** Write clear, simple, maintainable Python. Prefer simplicity over cleverness; optimize for readability by a single developer, not enterprise-scale abstraction. Use straightforward control flow, small focused functions, and descriptive names. Favor boring, predictable code over compact or clever code. Do not introduce new abstractions, helpers, or architectural layers unless they clearly reduce complexity. Dead code is acceptable as intentional scaffolding for a planned feature — tag it with a `# TODO:` comment explaining what it scaffolds and what must happen before it is activated; remove dead code that has no planned future use.
-
-**Correctness:** Think through failure modes before finalizing — empty inputs, malformed YAML, missing files, partial writes, interrupted runs, and `--dry-run` vs. live-execution divergence. Make cleanup paths explicit; never leave the archive in an inconsistent state after an error. Do not declare work complete while known medium or high correctness issues remain.
-
-**Documentation:** The aesthetic target is Steinbeck or Hemingway, not Dickens or Kant.
-Complex things expressed plainly — not plain things dressed up to seem complex.
-A reader picking up the file cold should feel the code is on their side.
-
-*Module docstrings:* every file gets an architecture overview: what this file is for,
-how it fits into the larger system, and the shape of data flowing through it.
-For files with ≥5 non-trivial functions, include a code-map comment block that lists
-sections and functions with one-line purposes so the reader can jump directly to what
-they need without reading the whole file.
-
-*Function docstrings:* explain what the function does AND why the approach was chosen.
-The what is often clear from the code; the why is what disappears without a docstring.
-Prioritise domain context over technical restatement — a reader who knows Python but
-not EDTF dates, Crockford IDs, or the GENERATED-header contract needs that context,
-not a paraphrase of the implementation.
-
-*Inline comments:* only for non-obvious decisions, tradeoffs, platform workarounds, or
-subtle invariants. Never restate the code. Never explain what — only explain why, and
-only when the why isn't already covered by the function's own docstring.
-
-**Self-review:** After implementing, review your own diff as a strict code reviewer before finalizing. Check correctness (failure modes, missing cleanup, contract mismatches, duplicate side effects) AND documentation (every non-trivial function has a docstring that explains the why; the module docstring reflects what was actually built; no inline comment merely restates the code; the code map is accurate). Classify each issue as high, medium, or low severity. Patch all high and medium issues before declaring done.
-
-Before declaring any task complete, run the following five cross-cutting checks on every changed file. These are the categories that most reliably survive a diff review but surface in a downstream code-review pass:
-
-**1 — Symmetry audit.** For each change, ask: is there a symmetric counterpart not yet touched? Common pairs in this codebase: outgoing links ↔ incoming links (`claim_links`); write/generate ↔ delete/clean; check in `views.py` ↔ matching check in `lint.py`; profile files ↔ companion files (`person_profile_paths` ↔ `person_companion_paths`); full rebuild ↔ incremental upsert. A feature implemented for one direction but not its mirror is the single most common source of missed issues across this PR.
-
-**2 — Error path inventory.** For every new code path, explicitly enumerate three classes of failure: (a) *absent* — the file doesn't exist, the ID is not in the index, the database is missing; (b) *malformed* — empty file, corrupt or schema-less database, YAML parse failure; (c) *misconfigured* — `root_person` is mistyped, a required `fha.yaml` key is absent, a root mapping points nowhere. Each must either degrade gracefully with a message or return a non-zero exit code. Silent success on a failure input is always wrong.
-
-**3 — Config surface check.** Any path computed as `archive_root / 'documents'` or `archive_root / 'photos'` must be verified: does `fha.yaml`'s `roots:` mapping allow that directory to live outside the archive root? If yes — and for `documents` and `photos` it always does — resolve the root through `fha_config`/`resolve_path` instead of hardcoding the internal path. Hardcoded internal paths silently produce wrong results for any archive with external asset roots.
-
-**4 — Cross-tool propagation.** When a data contract changes — a new field, a widened scope, a renamed column, a new operation — grep for every tool that implements or consumes that contract. The same check that lives in `views.py` often has a parallel in `lint.py`. Data deleted by one step of `upsert_source` must also be re-inserted by a later step if it is regenerable. A contract change that is applied to `build_index` but not to `upsert_source` leaves incremental mode silently wrong.
-
-**5 — Simplification safety.** When replacing code for clarity, verify the new form is equivalent for *all* valid inputs, not just the typical case. Specifically: integer-to-string conversion does not preserve zero-padding (`int('040')` → `40` → `'40'` ≠ `'040'`); paths may be absolute or relative; collections may be empty; `None` and an absent key are not always interchangeable. For any replacement, name the input class where the original and simplified forms would differ, and confirm that class is impossible or handled.
-
-**Completion:** Work to completion in one run — do not stop after partial implementation if more required work is known. Keep interim narration brief so context is reserved for actual work. If context limits prevent full completion, finish the highest-risk and most central work first, then clearly list what remains.
 
 ### Session end (all modes)
 

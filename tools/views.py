@@ -857,11 +857,12 @@ def _check_w103_brackets(
         if not person_ids:
             continue
 
-        # All children of all persons in this folder
+        # All children of all persons in this folder, tracking the parent so
+        # grandchildren via stray occupants can be excluded.
         placeholders = ','.join('?' * len(person_ids))
         child_rows = conn.execute(
             f"""
-            SELECT DISTINCT r.other_id AS child_pid, p.name
+            SELECT r.person_id AS parent_pid, r.other_id AS child_pid, p.name
             FROM relationships r
             JOIN persons p ON r.other_id = p.id
             WHERE r.person_id IN ({placeholders}) AND r.rel = 'child'
@@ -869,8 +870,15 @@ def _check_w103_brackets(
             person_ids,
         ).fetchall()
 
+        # A stray folder occupant who is also a child here would contribute their
+        # own children (grandchildren of the couple) to the bracket.  Exclude any
+        # child whose parent_pid itself appears as a child in these results.
+        # Dict keyed on child_pid deduplicates multiple-parent entries naturally.
+        all_result_child_pids = {r['child_pid'] for r in child_rows}
         derived_names = sorted(
-            _given_name(r['name']) for r in child_rows if r['name']
+            {r['child_pid']: _given_name(r['name'])
+             for r in child_rows
+             if r['parent_pid'] not in all_result_child_pids and r['name']}.values()
         )
 
         if sorted(current_names) != sorted(derived_names):
@@ -1039,6 +1047,13 @@ def _check_w110_ahnentafel(
         m = re.match(r'^(\d+) ', folder.name)
         if m:
             folder_by_prefix[int(m.group(1))] = folder
+
+    # Also register pending W110 rename destinations so that file-move targets
+    # resolve to the correct folder even when it doesn't yet exist on disk.
+    for new_folder in folders_being_renamed.values():
+        m = re.match(r'^(\d+) ', new_folder.name)
+        if m:
+            folder_by_prefix.setdefault(int(m.group(1)), new_folder)
 
     for pid, pos in pid_to_pos.items():
         if pos < 2:
@@ -1264,7 +1279,9 @@ def _apply_bracket_fixes(
                 old_rel, new_rel = old_folder, new_folder
             print(f'  RENAMED  {old_rel} -> {new_rel}')
             for other in file_moves:
-                other['src_path'] = _rebase(other['src_path'], old_folder, new_folder)
+                other['src_path']        = _rebase(other['src_path'],        old_folder, new_folder)
+                other['dst_path']        = _rebase(other['dst_path'],        old_folder, new_folder)
+                other['expected_folder'] = _rebase(other['expected_folder'], old_folder, new_folder)
         except OSError as e:
             print(f'  ERROR renaming {old_folder.name}: {e}', file=sys.stderr)
 

@@ -644,7 +644,26 @@ def _find_text(
             except OSError:
                 pass
 
-    photos_db_absent = not (archive_root / '.cache' / 'photos.sqlite').exists()
+    photos_db = archive_root / '.cache' / 'photos.sqlite'
+    photos_db_absent = not photos_db.exists()
+    if not photos_db_absent:
+        try:
+            pconn = sqlite3.connect(str(photos_db))
+            pconn.row_factory = sqlite3.Row
+            try:
+                for row in pconn.execute(
+                    "SELECT path, snippet(photo_fts, 2, '[', ']', '…', 32) "
+                    "FROM photo_fts WHERE photo_fts MATCH ?",
+                    (query,),
+                ):
+                    rel = f'[photo] {row[0]}'
+                    if rel not in seen_paths:
+                        hits.append((rel, row[1]))
+                        seen_paths.add(rel)
+            finally:
+                pconn.close()
+        except Exception:
+            pass
 
     if not hits:
         print(f'No results for: {query!r}')

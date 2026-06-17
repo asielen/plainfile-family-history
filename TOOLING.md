@@ -698,13 +698,28 @@ Feeds report §15a.6. *(Flagged as a future-intelligence focus: a model-assisted
 
 ## 15. Build order & testing
 
-**Order:** `_lib` foundations → `install`/`update-tools` (scaffolding, §13c) → `id` → `index` → `lint` → `stubs` → `views` + `find` + `doctor` → `photoindex` (+triage, +reconcile) → `xref` → `cooccur` → `report` → `packet` → `process` → `convert-mining` → `site` → `wikitree` → `gedcom` → `capture` → `places geocode`.
+See **`BUILD.md`** (repo root) for the full, annotated build sequence — which tools are built,
+which are pending, the dependency graph, PR-sized chunk descriptions with algorithm details, and
+definition-of-done test commands for every remaining tool.
 
-**Design decision D8 (implemented milestone 2):** `fha find` and `fha doctor` are milestone 2 deliverables alongside `fha views`.  They depend on the index (`fha index`) but not on the photoindex or any later tool.
-Rationale: lint validates everything later tools write; the photo index gates the packet; the converter needs stubs + lint to validate its output.
+**Dependency summary:**
+```
+_lib → index → lint, stubs, views, find, doctor → photoindex → xref, cooccur →
+find --related → report → packet, places, gedcom, wikitree → process → capture →
+convert-mining → site → install/update-tools
+```
 
-**Testing:** the pilot tree is the **clean** golden fixture (`tests/fixtures/`) and must lint clean (exit 0; TODO-marked asset gaps are W-level, not E-level, in fixture mode); intentionally broken fixtures live separately under `tests/fixtures/broken-*/`, one per lint code. The `example-archive/` is a separate demonstration fixture — it is permitted to exit 1 with documented known warnings (e.g. W101 for historical figures whose death records have not been located); those warnings must not regress in count or code without a deliberate change.
-Each tool ships `--dry-run`; tests are golden-file comparisons against a committed copy of the pilot (`tests/fixtures/`), plus deliberate-corruption fixtures for every lint code (a file per E/W code, asserting it fires). `fha lint` must run clean on the pilot before any release of any tool; a `make check` target runs the suite.
+**Design decision D8 (implemented, layer 2):** `fha find` and `fha doctor` are layer-2
+deliverables alongside `fha views`. They depend on the index but not on the photoindex or any
+later tool. Rationale: lint validates everything later tools write; the photo index gates the
+packet; the converter needs stubs + lint to validate its output.
+
+**Testing invariants:** the clean golden fixture is `tests/fixtures/` (must lint exit 0);
+intentionally broken fixtures live under `tests/fixtures/broken-{CODE}/`, one per lint code.
+`example-archive/` is permitted to exit 1 with documented known warnings (currently W101 —
+Thomas Hartley death record absent); those must not regress in count or code without a
+deliberate change. Every tool ships `--dry-run`. `fha lint` must run clean on the pilot before
+any tool is declared done; `tools/README.md` is the authoritative build-status record.
 
 ---
 

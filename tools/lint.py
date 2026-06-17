@@ -697,6 +697,13 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
         for ppid in folder_pids:
             child_pids.update(children_of.get(ppid, set()))
 
+        # Stray occupants (folder members who are themselves direct children here)
+        # would contribute their own children (grandchildren of the couple) to
+        # child_pids.  Remove the children of any such strays.
+        stray_pids = child_pids & folder_pids
+        for stray_pid in stray_pids:
+            child_pids -= children_of.get(stray_pid, set())
+
         derived_names = sorted(
             str(registry.person_meta.get(cp, {}).get('name', '')).split()[0]
             for cp in child_pids
@@ -815,12 +822,16 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
             if not m:
                 continue
             actual_prefix = int(m.group(1))
-            if actual_prefix != expected_prefix:
-                name = str(registry.person_meta.get(pid, {}).get('name', pid))
-                findings.append(Finding('W', 'W110', p,
-                    f'{name} (Ahnentafel {pos}) is in folder prefix {actual_prefix}, '
-                    f'expected prefix {expected_prefix}; '
-                    f'run `fha views brackets --fix` to correct'))
+            # Canonical placement: digit prefix followed by a space.
+            # Suffix folders like '040b …' share the numeric prefix but are never
+            # the correct location for a direct-line person file.
+            if re.match(r'^(\d+) ', folder_name) and actual_prefix == expected_prefix:
+                continue
+            name = str(registry.person_meta.get(pid, {}).get('name', pid))
+            findings.append(Finding('W', 'W110', p,
+                f'{name} (Ahnentafel {pos}) is in folder prefix {actual_prefix}, '
+                f'expected prefix {expected_prefix}; '
+                f'run `fha views brackets --fix` to correct'))
 
 
 # ── Cross-file checks ─────────────────────────────────────────────────────────
