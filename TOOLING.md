@@ -86,7 +86,7 @@ The query surface for every other tool and for ad-hoc research (`sqlite3` or any
 Never appended; never authoritative.
 
 **Incremental mode.** `fha index --source S-xxxx` upserts one source: delete its rows, re-parse the one file, re-insert — sub-second, run automatically at the end of review sessions.
-Deletion order matters: collect claim IDs first, then delete `claim_persons` and `claim_links` by those IDs, then delete `claims`, then `sources`/`source_files`/`source_people`. Reversing this order leaves orphan rows in the child tables because the parent subquery finds nothing.
+Deletion order matters (child tables before parent rows): collect claim IDs first, then delete `claim_persons` and `claim_links` by those IDs, then delete `claims`; capture `sources.path` before deletion, then delete `citations` by that path, then delete `sources`/`source_files`/`source_people`. Reversing parent/child order leaves orphan rows because the parent subquery finds nothing.
 Full rebuild remains the periodic truth-check; any discrepancy between incremental and full states is a bug in incremental, by definition.
 
 **Build algorithm.** (1) glob `sources/**/*.md`, `people/**/*.md`, `places/places.yaml`, `notes/**/*.md`; (2) parse each with the parsing layer; (3) insert in one transaction; (4) scan all prose bodies for `TOKEN_RE` → citations table; (5) glob asset trees for filenames carrying S-ids → files table reconciliation; (6) build FTS tables.

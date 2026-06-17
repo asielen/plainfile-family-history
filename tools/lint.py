@@ -1126,7 +1126,7 @@ def _has_question_for(cid1: str, cid2: str, registry: Registry) -> bool:
     for content in registry.research_content.values():
         all_blocks.extend(_question_blocks(content))
 
-    return any(cid1 in block and cid2 in block for block in all_blocks)
+    return any(cid1 in block.lower() and cid2 in block.lower() for block in all_blocks)
 
 
 def _get_person_accepted_claims(pid: str, registry: Registry) -> list[dict]:

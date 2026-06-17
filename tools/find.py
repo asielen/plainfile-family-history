@@ -81,6 +81,11 @@ configure_utf8_stdout()
 _OK  = '✓'
 _BAD = '✗'
 
+_REL_INVERSE: dict[str, str] = {
+    'corroborates': 'corroborated-by',
+    'contradicts':  'contradicted-by',
+}
+
 
 # ── Index freshness ───────────────────────────────────────────────────────────
 
@@ -361,6 +366,14 @@ def _find_claim(
     for lnk in links:
         print(f'  {lnk["rel"]}: {lnk["target_id"]}')
 
+    incoming = conn.execute(
+        "SELECT rel, claim_id FROM claim_links WHERE target_id = ? ORDER BY rel, claim_id",
+        (cid,)
+    ).fetchall()
+    for lnk in incoming:
+        label = _REL_INVERSE.get(lnk['rel'], f'{lnk["rel"]}-by')
+        print(f'  {label}: {lnk["claim_id"]}')
+
     return EXIT_CLEAN
 
 
@@ -590,9 +603,11 @@ def _find_text(
     # documents/ uses ('*.md', '*.txt') to catch transcript files (role: transcription).
     pattern = re.compile(re.escape(query), re.I)
     scan_dirs = [
-        (archive_root / d, ('*.md',)) for d in ('sources', 'people', 'notes')
+        (archive_root / 'sources',   ('*.md',)),
+        (archive_root / 'people',    ('*.md',)),
+        (archive_root / 'notes',     ('*.md',)),
+        (archive_root / 'documents', ('*.md', '*.txt')),
     ]
-    scan_dirs.append((archive_root / 'documents', ('*.md', '*.txt')))
     for scan_dir, globs in scan_dirs:
         if not scan_dir.is_dir():
             continue
@@ -722,6 +737,7 @@ def run_find(
         print(
             '--related is not yet available. It will be implemented in milestone 3 '
             'after fha xref and fha cooccur are built. '
+            '(--date filtering is also deferred.) '
             '(Design decision D4, TOOLING §4a)'
         )
         return EXIT_CLEAN
@@ -765,6 +781,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     mode.add_argument(
         '--related', metavar='ID',
         help='Neighborhood of an ID — people/places/sources adjacent (deferred to milestone 3)',
+    )
+
+    p.add_argument(
+        '--date', metavar='EDTF',
+        help='Filter --related results to the given EDTF date expression (deferred to milestone 3)',
     )
 
     p.add_argument(
@@ -816,6 +837,11 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--text', metavar='PHRASE')
     mode.add_argument('--related', metavar='ID')
+
+    parser.add_argument(
+        '--date', metavar='EDTF',
+        help='Filter --related results to the given EDTF date expression (deferred to milestone 3)',
+    )
 
     parser.add_argument('query', nargs='?', metavar='ID_OR_TEXT')
     args = parser.parse_args(argv)

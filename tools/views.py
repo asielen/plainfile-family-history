@@ -1001,12 +1001,14 @@ def _check_w110_ahnentafel(
         })
 
     # ── Check 3: person files in wrong folder ─────────────────────────────────
-    # Build prefix → folder map (using current disk state; includes folders that
-    # are about to be renamed — they still exist at this point).
+    # Only canonical direct-line folders (digits followed by a space) populate
+    # the prefix map; suffix folders like '040b Thomas' share the same numeric
+    # prefix and would overwrite the canonical entry.
+    all_couple_dirs = list(_couple_folder_dirs(archive_root))
     folder_by_prefix: dict[int, Path] = {}
-    for folder in _couple_folder_dirs(archive_root):
+    for folder in all_couple_dirs:
         prefix = _folder_numeric_prefix(folder.name)
-        if prefix is not None:
+        if prefix is not None and folder.name.startswith(f'{prefix} '):
             folder_by_prefix[prefix] = folder
 
     for pid, pos in pid_to_pos.items():
@@ -1014,44 +1016,46 @@ def _check_w110_ahnentafel(
             continue
         expected_prefix = pos if pos % 2 == 0 else pos - 1
 
-        current_folder = _person_couple_folder(conn, archive_root, pid)
-        if current_folder is None:
-            continue
-        actual_prefix = _folder_numeric_prefix(current_folder.name)
-        if actual_prefix is None or actual_prefix == expected_prefix:
-            continue
+        profile_folder = _person_couple_folder(conn, archive_root, pid)
 
-        # If this folder is being renamed by check 2, check whether the renamed
-        # result lands on the correct prefix.  If so, the file placement will be
-        # correct after the rename and no file-move is needed.
-        if current_folder in folders_being_renamed:
-            dest_of_rename = folders_being_renamed[current_folder]
-            if _folder_numeric_prefix(dest_of_rename.name) == expected_prefix:
-                continue
-
-        # Determine or derive the target folder.
+        # Determine the destination folder (or derive its name from the profile folder).
         dest_folder = folder_by_prefix.get(expected_prefix)
         if dest_folder is None:
-            new_fname = re.sub(r'^\d+', str(expected_prefix).zfill(3), current_folder.name)
+            if profile_folder is None:
+                continue
+            new_fname = re.sub(r'^\d+', str(expected_prefix).zfill(3), profile_folder.name)
             dest_folder = archive_root / 'people' / new_fname
 
-        # Scan disk for all companion files — profile, research, and generated.
         person_name = _person_name_from_db(conn, pid)
-        for src_path in _companion_files_in_folder(current_folder, pid):
-            dst_path = dest_folder / src_path.name
-            issues.append({
-                'code': 'W110',
-                'kind': 'file_move',
-                'src_path': src_path,
-                'dst_path': dst_path,
-                'expected_folder': dest_folder,
-                'msg': (
-                    f'W110 people/{current_folder.name}/{src_path.name}: '
-                    f'{person_name} (Ahnentafel {pos}) '
-                    f'is in folder prefix {actual_prefix}, '
-                    f'expected {expected_prefix}'
-                ),
-            })
+
+        # Scan ALL couple dirs for companion files that belong to this person but
+        # are not in the expected folder — catches strays even when the profile
+        # itself is already correctly placed.
+        for folder in all_couple_dirs:
+            if folder == dest_folder:
+                continue
+            # If this folder is about to be renamed to the correct prefix, the
+            # rename will fix placement; no move needed.
+            if folder in folders_being_renamed:
+                dest_of_rename = folders_being_renamed[folder]
+                if _folder_numeric_prefix(dest_of_rename.name) == expected_prefix:
+                    continue
+            for src_path in _companion_files_in_folder(folder, pid):
+                dst_path = dest_folder / src_path.name
+                actual_prefix = _folder_numeric_prefix(folder.name)
+                issues.append({
+                    'code': 'W110',
+                    'kind': 'file_move',
+                    'src_path': src_path,
+                    'dst_path': dst_path,
+                    'expected_folder': dest_folder,
+                    'msg': (
+                        f'W110 people/{folder.name}/{src_path.name}: '
+                        f'{person_name} (Ahnentafel {pos}) '
+                        f'is in folder prefix {actual_prefix}, '
+                        f'expected {expected_prefix}'
+                    ),
+                })
 
     return issues
 
@@ -1825,7 +1829,8 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     found: list[Path] = []
     for p in sorted(people_dir.rglob('*.md')):
         try:
-            head = p.read_text(encoding='utf-8', errors='ignore')[:200]
+            with open(p, encoding='utf-8', errors='ignore') as fh:
+                head = fh.read(200)
         except OSError:
             continue
         if '<!-- GENERATED by fha views' in head:
@@ -1845,6 +1850,8 @@ def _cmd_clean(args: argparse.Namespace) -> int:
 
     verb = 'Would remove' if dry_run else 'Removed'
     print(f'{verb} {len(found)} generated file(s).')
+    if not dry_run:
+        print('Note: deleted files still appear in .cache/index.sqlite — run `fha index` to update the cache.')
     return EXIT_CLEAN
 
 
@@ -1879,8 +1886,9 @@ def _cmd_refresh(args: argparse.Namespace) -> int:
 
         for folder_path, pids_in_folder in _couple_folders(conn, archive_root):
             out = _generate_sources_index_couple_folder(conn, folder_path, pids_in_folder)
-            print(f'  sources-index  ->{out.relative_to(archive_root)}')
-            count += 1
+            if out:
+                print(f'  sources-index  ->{out.relative_to(archive_root)}')
+                count += 1
 
         print(f'Generated {count} view file(s).')
         return EXIT_CLEAN

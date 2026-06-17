@@ -628,21 +628,20 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     conn.execute('DELETE FROM relationships')
 
     rows = conn.execute(
-        '''SELECT c.id, c.type, c.subtype, c.date_edtf, c.date_min, c.date_max,
-                  cp.person_id, cp.role
+        '''SELECT c.id, c.type, c.subtype, c.date_edtf, c.date_min, c.date_max
            FROM claims c
-           JOIN claim_persons cp ON cp.claim_id = c.id
            WHERE c.status = 'accepted'
              AND c.type IN ('relationship', 'marriage', 'divorce', 'death')'''
     ).fetchall()
 
-    for (cid, ctype, subtype, date_edtf, dmin, dmax,
-         person_id, role) in rows:
+    for (cid, ctype, subtype, date_edtf, dmin, dmax) in rows:
+        all_persons = conn.execute(
+            'SELECT person_id, role FROM claim_persons WHERE claim_id=?', (cid,)
+        ).fetchall()
+        pids = [p for p, r in all_persons]
+
         if ctype == 'relationship' and subtype == 'child-of':
             # child → parents
-            all_persons = conn.execute(
-                'SELECT person_id, role FROM claim_persons WHERE claim_id=?', (cid,)
-            ).fetchall()
             child_ids = [p for p, r in all_persons if r == 'child']
             parent_ids = [p for p, r in all_persons if r == 'parent']
             for child_id in child_ids:
@@ -656,10 +655,6 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                         (parent_id, 'child', child_id, cid, dmin, dmax),
                     )
         elif ctype in ('relationship',) and subtype in _RELATIONSHIPS_SOCIAL_SUBTYPES:
-            all_persons = conn.execute(
-                'SELECT person_id FROM claim_persons WHERE claim_id=?', (cid,)
-            ).fetchall()
-            pids = [p for (p,) in all_persons]
             for i, p1 in enumerate(pids):
                 for p2 in pids[i+1:]:
                     rel = subtype or 'associate'
@@ -672,10 +667,6 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                         (p2, rel, p1, cid, dmin, dmax),
                     )
         elif ctype == 'marriage':
-            all_persons = conn.execute(
-                'SELECT person_id FROM claim_persons WHERE claim_id=?', (cid,)
-            ).fetchall()
-            pids = [p for (p,) in all_persons]
             for i, p1 in enumerate(pids):
                 for p2 in pids[i+1:]:
                     conn.execute(
@@ -685,6 +676,21 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                     conn.execute(
                         'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                         (p2, 'spouse', p1, cid, dmin, None),
+                    )
+        elif ctype == 'divorce':
+            for i, p1 in enumerate(pids):
+                for p2 in pids[i+1:]:
+                    conn.execute(
+                        '''UPDATE relationships SET date_end = ?
+                           WHERE person_id = ? AND rel = 'spouse' AND other_id = ?
+                             AND (date_end IS NULL OR date_end > ?)''',
+                        (dmin, p1, p2, dmin),
+                    )
+                    conn.execute(
+                        '''UPDATE relationships SET date_end = ?
+                           WHERE person_id = ? AND rel = 'spouse' AND other_id = ?
+                             AND (date_end IS NULL OR date_end > ?)''',
+                        (dmin, p2, p1, dmin),
                     )
 
 
@@ -751,9 +757,8 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
     from disk and inserts fresh rows.  Faster than a full rebuild when only
     one source file has changed.
 
-    Deletion order matters: child tables (claim_persons, claim_links) must be
-    deleted before the parent claims rows; otherwise the subquery in a child
-    DELETE returns nothing because the parent is already gone.
+    Deletion order matters: child tables must be deleted before their parent rows.
+    citations references sources.path, so it is deleted before sources.
 
     Re-derives relationships after the upsert so the relationships table
     reflects any changed claim statuses.  Does not re-index persons or places
@@ -764,6 +769,9 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
 
     sid = normalize_id(source_id)
     with conn:
+        source_row = conn.execute('SELECT path FROM sources WHERE id=?', (sid,)).fetchone()
+        source_path = source_row[0] if source_row else None
+
         existing_claim_ids = [
             row[0] for row in
             conn.execute('SELECT id FROM claims WHERE source_id=?', (sid,)).fetchall()
@@ -773,10 +781,11 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
             conn.execute(f'DELETE FROM claim_persons WHERE claim_id IN ({placeholders})', existing_claim_ids)
             conn.execute(f'DELETE FROM claim_links WHERE claim_id IN ({placeholders})', existing_claim_ids)
         conn.execute('DELETE FROM claims WHERE source_id=?', (sid,))
+        if source_path:
+            conn.execute('DELETE FROM citations WHERE path=?', (source_path,))
         conn.execute('DELETE FROM sources WHERE id=?', (sid,))
         conn.execute('DELETE FROM source_files WHERE source_id=?', (sid,))
         conn.execute('DELETE FROM source_people WHERE source_id=?', (sid,))
-        conn.execute('DELETE FROM citations WHERE path IN (SELECT path FROM sources WHERE id=?)', (sid,))
 
         # Find the source file
         sources_root = archive_root / 'sources'
