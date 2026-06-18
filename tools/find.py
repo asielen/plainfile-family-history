@@ -653,6 +653,26 @@ def _find_text(
             except OSError:
                 pass
 
+    # places/places.yaml is the record store for places (TOOLING) but isn't a
+    # directory of .md files like the scan_dirs above, so it needs its own pass.
+    places_path = archive_root / 'places' / 'places.yaml'
+    if places_path.is_file():
+        rel = str(places_path.relative_to(archive_root))
+        if rel not in seen_paths:
+            try:
+                text = places_path.read_text(encoding='utf-8', errors='ignore')
+                m = pattern.search(text)
+                if m:
+                    line_start = text.rfind('\n', 0, m.start()) + 1
+                    line_end = text.find('\n', m.end())
+                    if line_end == -1:
+                        line_end = len(text)
+                    context = text[line_start:line_end].strip()[:120]
+                    hits.append((rel, context))
+                    seen_paths.add(rel)
+            except OSError:
+                pass
+
     # Photo captions: search photo_fts only when the photo index is verifiably
     # fresh (DB present, schema OK, newer than the photos root). When it is
     # absent/stale/unreadable we skip and say so explicitly — never silently.
@@ -734,8 +754,10 @@ def find_by_id(
     Called by run_find and also directly from fha.py's main() for the
     `fha id check <ID>` alias.  Uses the SQLite index when present; stale
     indexes produce a warning but still give the structured report.  This keeps
-    `find` useful after generated views change their mtimes.  Only an absent
-    or unreadable index falls back to a tree scan.
+    `find` useful after generated views change their mtimes.  An absent or
+    unreadable index falls back to a tree scan outright; a stale index that
+    has no row for the ID also falls back to a scan, since the record may
+    simply have been added since the last `fha index` run.
     """
     id_str = normalize_id(id_str)
     if not is_valid_id(id_str):
@@ -754,13 +776,13 @@ def find_by_id(
 
     try:
         if id_type == 'P':
-            return _find_person(id_str, conn, archive_root, fha_config)
+            result = _find_person(id_str, conn, archive_root, fha_config)
         elif id_type == 'S':
-            return _find_source(id_str, conn, archive_root, fha_config)
+            result = _find_source(id_str, conn, archive_root, fha_config)
         elif id_type == 'C':
-            return _find_claim(id_str, conn, archive_root, fha_config)
+            result = _find_claim(id_str, conn, archive_root, fha_config)
         elif id_type == 'L':
-            return _find_place(id_str, conn, archive_root)
+            result = _find_place(id_str, conn, archive_root)
         elif id_type == 'H':
             return _find_hypothesis(id_str, conn, archive_root)
         else:
@@ -768,6 +790,12 @@ def find_by_id(
             return EXIT_FAILURE
     finally:
         conn.close()
+
+    # A stale index may simply be missing a record added since the last
+    # `fha index` run — rescan the tree before reporting "not found".
+    if result == EXIT_WARNINGS and not fresh:
+        return _find_by_scan(id_str, archive_root)
+    return result
 
 
 def run_find(

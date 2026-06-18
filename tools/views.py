@@ -420,6 +420,11 @@ def _decade_from_edtf(date_edtf: str | None) -> str | None:
     edtf = date_edtf.split('/')[0].strip()
     # Strip qualifiers: ~, ?, [..
     edtf = edtf.lstrip('[.').rstrip('~?]')
+    # EDTF decade form, e.g. '185X' — the century+decade digits are explicit
+    # and the units digit is a literal 'X', so int() on the full year fails.
+    if len(edtf) >= 4 and edtf[:3].isdigit() and edtf[3] in ('X', 'x'):
+        decade = int(edtf[:3]) * 10
+        return f'### {decade}s'
     try:
         year = int(edtf[:4])
         decade = (year // 10) * 10
@@ -612,8 +617,9 @@ def _write_sources_index(
         lines.append(f'\n## {source_type}\n')
         for row in by_type[source_type]:
             sid_token = _format_sid(row['id'])
+            path_text = row['path'].replace('\\', '/')
             lines.append(f'\n**{row["title"]}** {sid_token}  \n')
-            lines.append(f'  {row["path"]}\n')
+            lines.append(f'  {path_text}\n')
 
     _write_view_file(out_path, ''.join(lines))
 
@@ -1595,7 +1601,7 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
         """,
         pids,
     ).fetchall():
-        vitals_map[row['person_id']][row['type']] = row['date_edtf']
+        vitals_map[row['person_id']][row['type']] = row['date_edtf'] or None
 
     return {
         pid: {

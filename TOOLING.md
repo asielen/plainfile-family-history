@@ -254,14 +254,14 @@ Returns hits with their record or asset and context.
 Cheap because the corpus is plain text plus the two SQLite FTS tables; one query spans prose and media metadata.
 
 Together these make `find` the **connection-discovery primitive**: any ID or date or phrase → its neighborhood, ranked, every edge carrying provenance — the raw material the report, the FAN view, and `cooccur` all build on.
-Uses the index when present. If the index is stale, `fha find` prints a warning but still returns the structured index-backed report; if the index is absent or unreadable, it degrades to a tree scan with the same warning.
+Uses the index when present. If the index is stale, `fha find` prints a warning but still returns the structured index-backed report; if the index is absent or unreadable, it degrades to a tree scan with the same warning. If the index is stale *and* has no row for the requested ID, it falls back to a tree scan rather than reporting "not found" — the record may simply have been added since the last `fha index` run.
 (`fha id check` is an alias for the bare locator.)
 
 **Design decision D4 (implemented milestone 2):** `--related` and `--related --date` are deferred to milestone 3.  They are most useful after `fha xref` and `fha cooccur` populate the corroborates/contradicts and social-edge data the neighborhood view depends on.  Passing `--related` in milestone 2 prints a clear deferral message and exits 0.
 
 **Design decision D7 (implemented milestone 2):** `fha find --text` searches record bodies and notes (via FTS tables plus a re.search pass) and **photo/document captions** when `.cache/photos.sqlite` is verifiably fresh (present, schema OK, newer than the photos root).  When the photoindex is absent, stale, or unreadable, captions are skipped and the tool prints an explicit note.  The `transcripts_fts` table is provisioned but transcript content is **not yet populated** — transcript search is deferred to a later milestone.
 
-**Design decision D9 (implemented milestone 2 audit):** A stale index is still preferable to a bare tree scan for `fha find <ID>` because it preserves structured reports (person companions, claim summaries, source inventories, citation rows) after generated views change mtimes. Staleness is surfaced as a warning; only an absent or unreadable index falls back to grep-style scanning.
+**Design decision D9 (implemented milestone 2 audit):** A stale index is still preferable to a bare tree scan for `fha find <ID>` because it preserves structured reports (person companions, claim summaries, source inventories, citation rows) after generated views change mtimes. Staleness is surfaced as a warning; an absent or unreadable index falls back to grep-style scanning outright, and a stale index that has no row for the requested ID also falls back to a scan (the record may have been added after the last `fha index` run) rather than reporting a false "not found".
 
 ## 5. `fha stubs` — stub minter
 
