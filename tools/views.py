@@ -1055,15 +1055,20 @@ def _check_w110_ahnentafel(
     # pos-20 in folder 020), they claim conflicting prefixes — the folder itself is
     # not misnamed; one person is simply misplaced (check 3 handles that).
 
-    # Step A: collect even-position anchors per folder.
+    # Step A: collect couple-prefix anchors per folder.
+    # Both even- and odd-position persons are included, each mapped to their couple
+    # prefix (even stays even; odd uses pos-1).  This lets a folder whose only
+    # direct-line occupant is an odd-slot person (e.g. a mother at pos 3 with no
+    # spouse profile in that folder) still receive a rename proposal.
     folder_anchors: dict[Path, list[tuple[str, int]]] = {}
     for pid, pos in pid_to_pos.items():
-        if pos < 2 or pos % 2 != 0:
+        if pos < 2:
             continue
+        couple_prefix = pos if pos % 2 == 0 else pos - 1
         current_folder = _person_couple_folder(conn, archive_root, pid)
         if current_folder is None:
             continue
-        folder_anchors.setdefault(current_folder, []).append((pid, pos))
+        folder_anchors.setdefault(current_folder, []).append((pid, couple_prefix))
 
     # Step B: emit a folder_rename only when anchors unanimously claim one prefix.
     folders_being_renamed: dict[Path, Path] = {}
