@@ -47,8 +47,11 @@ from _lib import (
     EXIT_WARNINGS,
     ID_RE,
     TOKEN_RE,
+    FhaConfigError,
     edtf_bounds,
     find_archive_root,
+    id_type_of,
+    is_valid_id,
     load_fha_yaml,
     normalize_id,
     parse_filename,
@@ -193,7 +196,8 @@ CREATE TABLE IF NOT EXISTS relationships(
   other_id TEXT,
   claim_id TEXT,
   date_start TEXT,
-  date_end TEXT
+  date_end TEXT,
+  UNIQUE(person_id, rel, other_id, claim_id)
 );
 
 CREATE TABLE IF NOT EXISTS places(
@@ -666,7 +670,9 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                         'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                         (p2, rel, p1, cid, dmin, dmax),
                     )
-        elif ctype == 'marriage':
+        elif ctype == 'marriage' or (ctype == 'relationship' and subtype == 'spouse-of'):
+            # Both a marriage claim and a relationship claim with subtype
+            # spouse-of produce reciprocal spouse edges (TOOLING §relationships).
             for i, p1 in enumerate(pids):
                 for p2 in pids[i+1:]:
                     conn.execute(
@@ -749,13 +755,68 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
         print(f'Done. Index at {db_path} ({size_kb} KB)')
 
 
-def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
+def _find_source_file(archive_root: Path, sid: str) -> Path | None:
+    """Locate the source record file for canonical source id `sid` by EXACT
+    identity — its filename id (`{slug}_{S-id}.md`), or failing that its
+    frontmatter `id`.  Returns None when no source matches.
+
+    Exact matching (not the old `sid in path.stem` substring test) means a typo
+    or a partial ID can never silently bind to the wrong file.
+    """
+    sources_root = archive_root / 'sources'
+    if not sources_root.exists():
+        return None
+    # Primary: match the id embedded in the canonical filename (cheap, no parse).
+    for path in sources_root.rglob('*.md'):
+        parsed = parse_filename(path)
+        if parsed and normalize_id(parsed.get('id_str', '')) == sid:
+            return path
+    # Fallback: match by frontmatter id (handles non-canonical filenames).
+    for path in sources_root.rglob('*.md'):
+        try:
+            rec = read_record(path)
+        except Exception:
+            continue
+        if normalize_id(str(rec.get('meta', {}).get('id', ''))) == sid:
+            return path
+    return None
+
+
+def _require_existing_index(cache_dir: Path) -> bool:
+    """
+    Return True if a full index exists with the required core tables.
+
+    Called by upsert_source() before any mutation: --source must never
+    create the DB from scratch (that would produce a partial index with
+    only one source's rows, missing persons/places/notes_fts).
+    """
+    db_path = cache_dir / 'index.sqlite'
+    if not db_path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute('SELECT 1 FROM persons LIMIT 1')
+            conn.execute('SELECT 1 FROM sources LIMIT 1')
+            conn.execute('SELECT 1 FROM claims LIMIT 1')
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
     """
     Incremental re-index of one source and its claims.
 
-    Deletes all existing rows for this source, then re-reads the source file
-    from disk and inserts fresh rows.  Faster than a full rebuild when only
-    one source file has changed.
+    Validates `source_id` and locates the matching source file by EXACT identity
+    *before* mutating anything, so a typo or a stale ID never deletes rows or
+    reports false success.  Returns one of:
+      'indexed'       — the source was found and re-indexed.
+      'not_found'     — no source under sources/ matches that exact ID.
+      'invalid_id'    — source_id is not a syntactically valid S- ID.
+      'index_absent'  — no full index exists; run `fha index` first.
 
     Deletion order matters: child tables must be deleted before their parent rows.
     citations references sources.path, so it is deleted before sources.
@@ -764,10 +825,19 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
     reflects any changed claim statuses.  Does not re-index persons or places
     — those only change on a full rebuild.
     """
-    cache_dir = archive_root / '.cache'
-    conn = _get_db(cache_dir)
-
     sid = normalize_id(source_id)
+    if not is_valid_id(sid) or id_type_of(sid) != 'S':
+        return 'invalid_id'
+
+    found = _find_source_file(archive_root, sid)
+    if found is None:
+        return 'not_found'
+
+    cache_dir = archive_root / '.cache'
+    if not _require_existing_index(cache_dir):
+        return 'index_absent'
+
+    conn = _get_db(cache_dir)
     with conn:
         source_row = conn.execute('SELECT path FROM sources WHERE id=?', (sid,)).fetchone()
         source_path = source_row[0] if source_row else None
@@ -787,33 +857,27 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> None:
         conn.execute('DELETE FROM sources WHERE id=?', (sid,))
         conn.execute('DELETE FROM source_files WHERE source_id=?', (sid,))
         conn.execute('DELETE FROM source_people WHERE source_id=?', (sid,))
+        # Forward-safety: drop any transcript rows for this source so a future
+        # transcript-indexing pass cannot leave stale FTS content behind.
+        conn.execute('DELETE FROM transcripts_fts WHERE source_id=?', (sid,))
 
-        # Find the source file
-        sources_root = archive_root / 'sources'
-        found = None
-        if sources_root.exists():
-            for path in sources_root.rglob('*.md'):
-                if sid in path.stem.lower():
-                    found = path
-                    break
-
-        if found:
-            _index_source(conn, found, archive_root, fha_config)
-            # Re-add citation tokens for the re-indexed source file.
-            try:
-                lines = found.read_text(encoding='utf-8', errors='ignore').splitlines()
-            except OSError:
-                lines = []
-            rel = str(found.relative_to(archive_root))
-            for lineno, line in enumerate(lines, start=1):
-                for m in TOKEN_RE.finditer(line):
-                    token = m.group(1).lower()
-                    conn.execute(
-                        'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
-                        (token, token[0].upper(), rel, lineno),
-                    )
+        _index_source(conn, found, archive_root, fha_config)
+        # Re-add citation tokens for the re-indexed source file.
+        try:
+            lines = found.read_text(encoding='utf-8', errors='ignore').splitlines()
+        except OSError:
+            lines = []
+        rel = str(found.relative_to(archive_root))
+        for lineno, line in enumerate(lines, start=1):
+            for m in TOKEN_RE.finditer(line):
+                token = m.group(1).lower()
+                conn.execute(
+                    'INSERT INTO citations(token, kind, path, line) VALUES (?,?,?,?)',
+                    (token, token[0].upper(), rel, lineno),
+                )
 
         _derive_relationships(conn)
+    return 'indexed'
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -844,10 +908,32 @@ def _run_index(args: argparse.Namespace) -> int:
             print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
             return EXIT_FAILURE
 
-    fha_config = load_fha_yaml(archive_root)
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
 
     if getattr(args, 'source', None):
-        upsert_source(archive_root, fha_config, args.source)
+        status = upsert_source(archive_root, fha_config, args.source)
+        if status == 'invalid_id':
+            print(
+                f'ERROR: {args.source!r} is not a valid S- source ID.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
+        if status == 'not_found':
+            print(
+                f'ERROR: source {args.source} not found under sources/ — nothing indexed.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
+        if status == 'index_absent':
+            print(
+                'ERROR: incremental --source requires an existing full index; run `fha index` first.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
         print(f'Upserted source {args.source}')
     else:
         build_index(archive_root, fha_config, verbose=getattr(args, 'verbose', False))

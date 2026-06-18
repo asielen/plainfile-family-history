@@ -51,13 +51,17 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    FhaConfigError,
     configure_utf8_stdout,
+    db_mtime,
     find_archive_root,
     get_roots,
     is_fixture_path,
     load_fha_yaml,
     newest_record_mtime,
     parse_filename,
+    photoindex_status,
+    probe_sqlite,
     read_record,
     resolve_path,
 )
@@ -88,15 +92,7 @@ _BAD  = '✗'
 _WARN = '⚠'
 
 
-# ── Freshness helpers ─────────────────────────────────────────────────────────
-
-def _db_mtime(db_path: Path) -> float | None:
-    """Return mtime of db_path, or None if absent or unreadable."""
-    try:
-        return db_path.stat().st_mtime
-    except OSError:
-        return None
-
+# ── Freshness helpers (db_mtime / probe_sqlite live in _lib, shared with find) ──
 
 def _fmt_delta(seconds: float) -> str:
     """Format a lag in seconds as 'Xh YmZs', 'YmZs', or 'Zs'."""
@@ -110,17 +106,6 @@ def _fmt_delta(seconds: float) -> str:
     return f'{secs}s'
 
 
-def _probe_sqlite(db_path: Path, probe_sql: str) -> bool:
-    """Return True if db_path opens and probe_sql executes without error."""
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.execute(probe_sql)
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
 def _index_freshness(archive_root: Path) -> tuple[str, str]:
     """
     Check .cache/index.sqlite against the newest record mtime.
@@ -131,18 +116,18 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
       'absent' → detail = ''
     """
     db_path = archive_root / '.cache' / 'index.sqlite'
-    db_mtime = _db_mtime(db_path)
-    if db_mtime is None:
+    mtime = db_mtime(db_path)
+    if mtime is None:
         return ('absent', '')
 
     record_mtime = newest_record_mtime(archive_root)
     if record_mtime == 0.0:
         return ('fresh', '')   # no records yet — trivially up-to-date
 
-    if db_mtime < record_mtime:
-        return ('stale', _fmt_delta(record_mtime - db_mtime))
+    if mtime < record_mtime:
+        return ('stale', _fmt_delta(record_mtime - mtime))
 
-    if not _probe_sqlite(db_path, 'SELECT 1 FROM persons LIMIT 1'):
+    if not probe_sqlite(db_path, 'SELECT 1 FROM persons LIMIT 1'):
         return ('absent', '')   # treat corrupt/schema-less as absent
 
     return ('fresh', '')
@@ -152,38 +137,16 @@ def _photoindex_freshness(archive_root: Path, fha_config: dict) -> tuple[str, st
     """
     Check .cache/photos.sqlite against the newest file in the photos root.
 
-    Same return shape as _index_freshness.  If the photos root doesn't exist
-    (no photos yet) and the db doesn't exist either, we still report 'absent'
-    because the user should know to run fha photoindex when they add photos.
+    Delegates to the shared _lib.photoindex_status so find and doctor agree on
+    whether photos.sqlite is usable.  The shared helper probes the schema BEFORE
+    the empty/missing-photo-root short-circuit, so a corrupt DB is reported
+    'unreadable' rather than 'fresh'.  Returns (status, detail) with status in
+    {'fresh', 'stale', 'unreadable', 'absent'}.
     """
-    db_path = archive_root / '.cache' / 'photos.sqlite'
-    db_mtime = _db_mtime(db_path)
-    if db_mtime is None:
-        return ('absent', '')
-
-    photos_root = resolve_path('photos', fha_config, archive_root)
-    if not photos_root.is_dir():
-        return ('fresh', '')   # no photos root — nothing to compare against
-
-    max_mtime = 0.0
-    for p in photos_root.rglob('*'):
-        if p.is_file():
-            try:
-                mtime = p.stat().st_mtime
-                if mtime > max_mtime:
-                    max_mtime = mtime
-            except OSError:
-                pass
-
-    if max_mtime == 0.0:
-        return ('fresh', '')   # photos root exists but empty
-
-    if db_mtime >= max_mtime:
-        if not _probe_sqlite(db_path, 'SELECT 1 FROM photos LIMIT 1'):
-            return ('absent', '')
-        return ('fresh', '')
-
-    return ('stale', _fmt_delta(max_mtime - db_mtime))
+    status, lag = photoindex_status(archive_root, fha_config)
+    if status == 'stale':
+        return ('stale', _fmt_delta(lag))
+    return (status, '')
 
 
 # ── Count helpers ─────────────────────────────────────────────────────────────
@@ -310,6 +273,9 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
     elif photo_status == 'stale':
         print(f'photoindex: {_WARN} stale by {photo_delta} — run fha photoindex')
         worst = max(worst, EXIT_WARNINGS)
+    elif photo_status == 'unreadable':
+        print(f'photoindex: {_BAD} unreadable/corrupt — rebuild with fha photoindex')
+        worst = max(worst, EXIT_WARNINGS)
     else:
         print('photoindex: not yet built — run fha photoindex')
         worst = max(worst, EXIT_WARNINGS)
@@ -426,10 +392,9 @@ def _run_doctor(args: argparse.Namespace) -> int:
         return EXIT_ERRORS
 
     try:
-        with open(fha_yaml_path, encoding='utf-8') as f:
-            fha_config = yaml.safe_load(f) or {}
-    except Exception as exc:
-        print(f'ERROR: fha.yaml parse error: {exc}', file=sys.stderr)
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as exc:
+        print(f'ERROR: fha.yaml: {exc}', file=sys.stderr)
         return EXIT_ERRORS
 
     return run_doctor(archive_root, fha_config)

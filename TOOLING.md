@@ -191,14 +191,14 @@ Runs file-by-file plus cross-file passes over a fresh in-memory index (it builds
 | E015 | `type: relationship` claim missing `roles:` | field check |
 | E016 | New claim references a merged person directly | resolve via `merged_into`; flag for cleanup |
 | E017 | DNA source not `restricted: true`, or DNA file outside `documents/dna/` | field + path check |
-| E018 | Agent-instruction drift | AGENTS.md / skills reference deprecated commands (`fha promote`), stale skill names, or contradict locked rules (photo renames) |
+| E018 | Agent-instruction drift (partial) | AGENTS.md references deprecated commands (`fha promote`) or photo-rename instructions; skills scan and full drift detection are deferred |
 
-Warnings / reports: **W101** vitals gaps per person (the completeness report) · **W102** suggested-claim backlog per source · **W103** stale folder bracket lists vs relationship claims · **W104** summary line without supporting accepted claim · **W105** hand-edits under a GENERATED header · **W106** accepted claims missing Mills analysis fields (informational; cleanup-session fodder) · **W107** direct references to merged persons (gradual cleanup list) · **W108** README.md older than the last SPEC.md change (the README rule) · **W109** non-vital or low-confidence claim missing `notes` context (the context nudge); also used as the catch-all code for unrecognized `source_type` vocabulary and for file-format issues surfaced by `--format-check` (missing final newline, CRLF line endings) — a future cleanup may give these their own codes · **W110** Ahnentafel placement issue (requires `root_person` in `fha.yaml`): a direct-line couple folder's numeric prefix does not match the derived Ahnentafel number, or a direct-line person's files live in the wrong couple folder — `fha views brackets --fix` resolves both. If `root_person` is set but names a person with no existing record, W110 is emitted on `fha.yaml` itself explaining the skip (and placement checks are suppressed).
+Warnings / reports: **W101** vitals gaps per person (the completeness report) · **W102** suggested-claim backlog per source · **W103** stale folder bracket lists vs relationship claims · **W104** summary line without supporting accepted claim · **W105** hand-edits under a GENERATED header (deferred: detection requires mtime tracking; the check is a no-op in milestone 2) · **W106** accepted claims missing Mills analysis fields (informational; cleanup-session fodder) · **W107** direct references to merged persons (gradual cleanup list) · **W108** README.md older than the last SPEC.md change (the README rule) · **W109** non-vital or low-confidence claim missing `notes` context (the context nudge); also used as the catch-all code for unrecognized `source_type` vocabulary and for file-format issues surfaced by `--format-check` (missing final newline, CRLF line endings) — a future cleanup may give these their own codes · **W110** Ahnentafel placement issue (requires `root_person` in `fha.yaml`): a direct-line couple folder's numeric prefix does not match the derived Ahnentafel number, or a direct-line person's files live in the wrong couple folder — `fha views brackets --fix` resolves both. If `root_person` is set but names a person with no existing record, W110 is emitted on `fha.yaml` itself explaining the skip (and placement checks are suppressed).
 
-**Formatter** (`fha lint --format-check` / `--format-write`): conservative normalization only — frontmatter and claim key order, lowercase IDs, blank-line and final-newline hygiene, YAML list indentation.
+**Formatter** (`fha lint --format-check` / `--format-write`): conservative normalization only — final-newline and CRLF line-ending hygiene (milestone 2 subset). Frontmatter key order, lowercase ID normalization, blank-line hygiene, and YAML list indentation are deferred.
 Never rewrites prose beyond trailing whitespace.
 
-**Fix modes** (each gated behind an explicit flag; use `--dry-run` to preview what would change before writing): `--mint-stubs` (E005 → create stubs in `people/stubs/`), `--spawn-questions` (E009 → append templated question to `notes/questions.md`), `--fix-inventory` (E011 → regenerate `files:` from the ID-glob, preserving hand-written `role`/`original_filename` where the path matches).
+**Fix modes** (each gated behind an explicit flag; use `--dry-run` to preview what would change before writing): `--mint-stubs` (E005 → create stubs in `people/stubs/`), `--spawn-questions` (E009 → append templated question to `notes/questions.md`), `--fix-inventory` (E011 → placeholder/deferred; prints a warning and suggests `fha process` instead).
 
 **Required claim fields enforced by E010:** `id`, `type`, `persons`, `value`, `status`. Note: `confidence` is required per SPEC §8.5 but is not in the E010 required-field set for milestone 1 — it is derived by tooling from `source_type` and the linter does not yet enforce its presence. Future work: add `confidence` to E010 enforcement, or emit a dedicated warning for accepted claims lacking it.
 
@@ -225,7 +225,7 @@ A future `fha doctor --fixity` could add optional checksum verification without 
 ## 4. `fha id` — minting
 
 `fha id mint P [-n 5]` → prints fresh IDs.
-Algorithm: draw 10 chars from the Crockford Base32 alphabet `0123456789abcdefghjkmnpqrstvwxyz` via `secrets.choice` (lowercase, omitting `i l o u`); check non-existence by (a) ripgrep-style scan of the tree for the candidate, or (b) the index if fresh (`--fast`); retry on the ~impossible collision. `fha id check <ID>` → where it appears.
+Algorithm: draw 10 chars from the Crockford Base32 alphabet `0123456789abcdefghjkmnpqrstvwxyz` via `secrets.choice` (lowercase, omitting `i l o u`); check non-existence by a ripgrep-style scan of the tree for the candidate; retry on the ~impossible collision. `fha id check <ID>` → where it appears.
 Dice-roll fallback documented in output of `fha id --help` (hand-minting: any 10 Base32 chars from the alphabet above + a search to confirm absence). On input, IDs are normalized to lowercase before matching, so a hand-typed uppercase ID still resolves.
 
 ---
@@ -233,7 +233,7 @@ Dice-roll fallback documented in output of `fha id --help` (hand-minting: any 10
 ## 4a. `fha find` — the universal locator
 
 `fha find <ID>` answers "where does this thing live?" for **any** ID — necessary because photos aren't renamed, so disk search alone can't locate a photo by S-id.
-Output by type: **S-id** → record path, every asset file (paths resolved through `fha.yaml`, located via filename for documents / inventory+keyword for photos), citation sites, claim count by status. **P-id** → person file, couple folder, claims naming them, photo count (via §9 resolution), citation sites. **C-id** → its source record + line, status, links in/out. **L-id/H-id** → record + every reference. `fha find <text>` falls through to FTS across notes, transcripts, captions, and comments.
+Output by type: **S-id** → record path, every asset file (paths resolved through `fha.yaml`, located via filename for documents / inventory+keyword for photos), citation sites, claim count by status. **P-id** → person file, couple folder, claims naming them, photo count (via §9 resolution), citation sites. **C-id** → its source record + line, status, links in/out. **L-id/H-id** → record + every reference. `fha find <text>` falls through to text search (records, notes, and configured documents root; photo captions when photoindex is fresh; transcripts deferred).
 (`fha id check` is an alias.)
 
 **`fha find --related <ID>`** — "show me everything adjacent to this," for **any** ID type, ranked, pure query over the index (no schema change).
@@ -249,7 +249,7 @@ What counts as *adjacent* depends on what you point at — each type has a natur
 "Who and what was active 1869–1874."
 Combinable: `--related <L-id> --date 187X` = the place, narrowed to a decade.
 
-**`fha find --text "…"`** — full-text search across everything textual: record bodies and notes, transcripts, and the **photo/document index** caption/comment/keyword fields (§9).
+**`fha find --text "…"`** — full-text search across record bodies and notes, plus the **photo/document index** caption/comment/keyword fields (§9) when the photoindex is fresh.  (The `transcripts_fts` table is provisioned but not yet populated — transcript search is deferred; see D7.)
 Returns hits with their record or asset and context.
 Cheap because the corpus is plain text plus the two SQLite FTS tables; one query spans prose and media metadata.
 
@@ -259,7 +259,7 @@ Uses the index when present. If the index is stale, `fha find` prints a warning 
 
 **Design decision D4 (implemented milestone 2):** `--related` and `--related --date` are deferred to milestone 3.  They are most useful after `fha xref` and `fha cooccur` populate the corroborates/contradicts and social-edge data the neighborhood view depends on.  Passing `--related` in milestone 2 prints a clear deferral message and exits 0.
 
-**Design decision D7 (implemented milestone 2):** `fha find --text` scope in milestone 2 is record bodies + notes + transcripts (via FTS tables and a re.search pass).  Photo and document captions are automatically added to the search scope once `fha photoindex` is built — the tool degrades gracefully and notifies the user when the photoindex is absent.
+**Design decision D7 (implemented milestone 2):** `fha find --text` searches record bodies and notes (via FTS tables plus a re.search pass) and **photo/document captions** when `.cache/photos.sqlite` is verifiably fresh (present, schema OK, newer than the photos root).  When the photoindex is absent, stale, or unreadable, captions are skipped and the tool prints an explicit note.  The `transcripts_fts` table is provisioned but transcript content is **not yet populated** — transcript search is deferred to a later milestone.
 
 **Design decision D9 (implemented milestone 2 audit):** A stale index is still preferable to a bare tree scan for `fha find <ID>` because it preserves structured reports (person companions, claim summaries, source inventories, citation rows) after generated views change mtimes. Staleness is surfaced as a warning; only an absent or unreadable index falls back to grep-style scanning.
 
@@ -601,7 +601,7 @@ This pair handles both, and both are **generic glue** (they move operating-layer
 This is the single source of truth for "what gets copied" — when the package grows (a second tools folder, a fifth doc), it's added to the manifest, and `update-tools` automatically knows to copy it.
 The list lives in versioned data, never hardcoded in prose or memory.
 
-The manifest covers the **operating layer** — `tools/` (and any future tool folders), `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md` — and the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
+The manifest covers the **operating layer** — `tools/` (and any future tool folders), `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md` — and the **skeleton** (`fha.yaml`, the empty record dirs, a seeded `places.yaml`).
 It explicitly **excludes** spec-repo furniture (`example-archive/`, `archive-template/`, `tests/`, `.github/`, the public `README.md`, `PRIVACY.md`, `RELEASE_CHECKLIST.md`), which never enters an archive.
 
 **`fha install <archive-path>`** — the first-time bootstrap, **run from a clone of the public repo** (the only place the code exists before anything is copied).
@@ -779,7 +779,7 @@ Organized by how often *you* touch it — the skills are the real working surfac
 | `fha find <ID\|text>` (T C) | "Where does this live?" Records + assets + citations for any ID; FTS for text. |
 | `fha find --related <ID>` (T C) | "What's adjacent to this?" Neighborhood of any ID — person/place/source/claim/hypothesis — ranked, with provenance. The connection-discovery primitive. |
 | `fha find --related --date <EDTF>` (T C) | The time neighborhood: everyone/everything active in a date range. Combinable with an ID. |
-| `fha find --text "…"` (T C) | Full-text search across record bodies, notes, transcripts, and photo/document caption+keyword fields. |
+| `fha find --text "…"` (T C) | Full-text search across record bodies, notes, and documents root; photo captions when photoindex is fresh. (`transcripts_fts` provisioned but not yet populated.) |
 
 ### Occasional (setup, migration, publication moments)
 

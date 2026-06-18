@@ -21,6 +21,7 @@ import datetime
 import itertools
 import os
 import re
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -139,16 +140,45 @@ def find_archive_root(start: str | Path | None = None) -> Path | None:
         p = parent
 
 
-def load_fha_yaml(archive_root: str | Path) -> dict:
-    """Load fha.yaml; return the parsed dict (empty dict on missing/error)."""
+class FhaConfigError(Exception):
+    """Raised by load_fha_yaml(strict=True) when fha.yaml is malformed.
+
+    A silent empty-dict fallback can make tools ignore external documents/photos
+    roots without telling the user, quietly changing which files are considered
+    truth — strict mode surfaces that instead.
+    """
+
+
+def load_fha_yaml(archive_root: str | Path, *, strict: bool = False) -> dict:
+    """Load fha.yaml and return the parsed dict.
+
+    A missing file returns {} (running without fha.yaml on default roots is
+    legitimate).  A *malformed* file is handled per `strict`:
+      - strict=False (default): return {} (permissive/legacy behavior).
+      - strict=True: raise FhaConfigError so the caller can fail loudly rather
+        than silently dropping configured roots.
+    """
     path = Path(archive_root) / 'fha.yaml'
     if not path.exists():
         return {}
     try:
         with open(path, encoding='utf-8') as f:
-            data = yaml.safe_load(f) or {}
+            data = yaml.safe_load(f)
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise FhaConfigError(
+                f'{path}: top-level YAML must be a mapping, '
+                f'got {type(data).__name__}.'
+            )
         return data
-    except Exception:
+    except FhaConfigError:
+        if strict:
+            raise
+        return {}
+    except Exception as e:
+        if strict:
+            raise FhaConfigError(f'{path}: invalid YAML — {e}') from e
         return {}
 
 
@@ -187,6 +217,73 @@ def resolve_path(
         base = archive_root / alias
 
     return (base / rest) if rest else base
+
+
+def db_mtime(db_path: Path) -> float | None:
+    """Return the mtime of db_path, or None if it is absent/unreadable."""
+    try:
+        return db_path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def probe_sqlite(db_path: str | Path, probe_sql: str) -> bool:
+    """Return True if db_path opens and probe_sql executes without error."""
+    try:
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(probe_sql)
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, float]:
+    """Classify the photo index (.cache/photos.sqlite) for find/doctor.
+
+    Returns (status, lag_seconds):
+      'absent'     → no photos.sqlite               (lag 0.0)
+      'unreadable' → exists but fails a basic schema query — corrupt/incompatible (lag 0.0)
+      'stale'      → older than the newest file in the photos root (lag = seconds behind)
+      'fresh'      → schema OK and not older than the photos root (lag 0.0)
+
+    The schema is probed *before* the empty/missing-photo-root short-circuit, so a
+    corrupt database is never reported fresh just because there are no photos to
+    compare against.  Shared by `find --text` (caption search gating) and
+    `doctor` (freshness report) so both agree on whether photos.sqlite is usable.
+    """
+    archive_root = Path(archive_root)
+    db_path = archive_root / '.cache' / 'photos.sqlite'
+    mtime = db_mtime(db_path)
+    if mtime is None:
+        return ('absent', 0.0)
+
+    # Probe both required tables — photos (metadata) and photo_fts (caption search).
+    # A DB missing photo_fts would cause find --text to fail with a misleading error.
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photos LIMIT 1'):
+        return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_fts LIMIT 1'):
+        return ('unreadable', 0.0)
+
+    photos_root = resolve_path('photos', fha_config, archive_root)
+    if not photos_root.is_dir():
+        return ('fresh', 0.0)          # no photos root — nothing to compare against
+
+    max_mtime = 0.0
+    for p in photos_root.rglob('*'):
+        if p.is_file():
+            try:
+                m = p.stat().st_mtime
+                if m > max_mtime:
+                    max_mtime = m
+            except OSError:
+                pass
+
+    if max_mtime == 0.0 or mtime >= max_mtime:
+        return ('fresh', 0.0)          # empty root, or db newer than newest photo
+    return ('stale', max_mtime - mtime)
 
 
 # ── Record parsing ────────────────────────────────────────────────────────────
@@ -496,10 +593,16 @@ def is_fixture_path(path: str | Path) -> bool:
     """
     Return True if the path is under example-archive/ or tests/fixtures/.
     Files there may use status: missing-fixture (W-level, not E-level).
+
+    Only an actual `tests/fixtures/` prefix qualifies — an arbitrary directory
+    named `tests` elsewhere in a real archive is NOT fixture space.
     """
     parts = Path(path).parts
+    if 'example-archive' in parts:
+        return True
     return any(
-        p in ('example-archive', 'tests') for p in parts
+        parts[i] == 'tests' and parts[i + 1] == 'fixtures'
+        for i in range(len(parts) - 1)
     )
 
 

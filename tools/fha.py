@@ -88,7 +88,7 @@ def _intercept_id_check(argv: list[str]) -> int | None:
     if pos >= len(argv) or argv[pos] != 'id':
         return None
 
-    from _lib import find_archive_root, load_fha_yaml, normalize_id
+    from _lib import FhaConfigError, find_archive_root, load_fha_yaml, normalize_id
     from find import find_by_id as _find_by_id
 
     rest = argv[pos + 1:]
@@ -119,7 +119,11 @@ def _intercept_id_check(argv: list[str]) -> int | None:
             print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
             return EXIT_FAILURE
 
-    fha_config = load_fha_yaml(archive_root)
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
     return _find_by_id(normalize_id(parsed.id_value), archive_root, fha_config)
 
 

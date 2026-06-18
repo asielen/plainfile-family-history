@@ -211,7 +211,7 @@ one bad file.
 | W102 | `suggested` claim backlog per source |
 | W103 | Couple-folder bracket list `[child, …]` doesn't match accepted relationship claims |
 | W104 | Summary block line with no supporting accepted claim |
-| W105 | `.md` file with GENERATED header modified after the header's date (>60s grace window) |
+| W105 | Hand-edits under a GENERATED header (deferred in milestone 2 — detection requires mtime tracking; check is a no-op) |
 | W106 | Accepted claim missing Mills analysis fields |
 | W107 | Direct reference to a merged person |
 | W108 | `README.md` older than last `SPEC.md` change |
@@ -222,18 +222,17 @@ one bad file.
 `**Label:**` pattern — do NOT split by line (inline multi-label form exists). Extract
 `[S-id]` and `[P-id]` tokens per segment; compare to accepted claims of the matching type.
 
-**E011 `missing-fixture` suppression.** Suppress entirely when the archive path contains
-`example-archive/` or any directory named `tests` — stub asset references are intentional
-in those fixtures.
+**E011 `missing-fixture` suppression.** Suppress entirely when the archive path is under
+`example-archive/` or `tests/fixtures/` — stub asset references are intentional in those
+fixtures. (An arbitrary directory merely *named* `tests` in a real archive is not fixture
+space; see `is_fixture_path`.)
 
 **Fix modes** (gated behind explicit flags; always diff-previewed with `--dry-run`):
 - `--mint-stubs` (E005): create stubs in `people/stubs/`
 - `--spawn-questions` (E009): append templated question to `notes/questions.md`
-- `--fix-inventory` (E011): rebuild `files:` block from ID-glob scan of disk; preserve
-  hand-written `role` and `original_filename` entries whose paths still match
+- `--fix-inventory` (E011): placeholder/deferred — prints a warning and suggests `fha process`; full ID-glob rebuild is not yet implemented
 
-**Formatter** (`--format-check` / `--format-write`): frontmatter key order per SPEC §13,
-lowercase ID normalization, blank-line and final-newline hygiene, YAML list indentation.
+**Formatter** (`--format-check` / `--format-write`): final-newline and CRLF line-ending hygiene (milestone 2 subset). Frontmatter key order, lowercase ID normalization, blank-line hygiene, and YAML list indentation are deferred.
 `--format-write` applies what `--format-check` reports. Never rewrites prose.
 
 **Done when:**
@@ -454,10 +453,12 @@ grep source file); claim status, type, value; `corroborates`/`contradicts` links
 `<H-id>`: hypothesis entry from `hypotheses` table (status, basis, verified_claim); research
 file path; every record body mentioning `[H-id]` token.
 
-**`--text "…"`**: query `notes_fts` and `transcripts_fts` FTS tables (if index present).
-For each hit: path + FTS snippet (2 lines context). Also do a `re.search` pass over record
-bodies for fresh archives where FTS tables may be empty. If photoindex absent: print
-`Note: photo captions not searched — run fha photoindex to include.`
+**`--text "…"`**: query `notes_fts` FTS table (if index present) then do a `re.search` pass
+over sources, people, notes, and configured documents root. For each hit: path + context
+snippet. `transcripts_fts` is provisioned but not yet populated — transcript search is
+deferred. Photo captions are searched only when `.cache/photos.sqlite` is verifiably fresh
+(present, schema includes `photo_fts`, newer than the photos root); absent/stale/unreadable
+photoindex prints an explicit status-specific skip note.
 
 **`--related <ID>`**: print a clear deferral message and exit 0. This feature requires
 `fha xref` and `fha cooccur` (layer 4); implement fully in that layer's PR.
@@ -1113,10 +1114,11 @@ the tool suite is substantially complete.
 root (TOOLING §13c).
 
 **`manifest.json`:** one JSON object listing every operating-layer file with `path`, `sha256`,
-`spec_version`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `CLAUDE.md`,
-`BUILD.md`, skeleton (`fha.yaml` template, `archive-template/`, seeded `places.yaml`).
-Excludes `example-archive/`, `tests/`, `.github/`, public `README.md`, `PRIVACY.md`,
-`RELEASE_CHECKLIST.md`.
+`spec_version`. Covers `tools/`, `SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`,
+`CLAUDE.md`, `BUILD.md`, and the skeleton (`fha.yaml` template, the empty record dirs, seeded
+`places.yaml`). Excludes spec-repo furniture: `example-archive/`, `archive-template/` (its
+*contents* seed the skeleton, but the folder itself is never copied into an archive — matching
+TOOLING §13c), `tests/`, `.github/`, public `README.md`, `PRIVACY.md`, `RELEASE_CHECKLIST.md`.
 
 **`fha install <archive-path>`** (run from repo clone): create skeleton; copy all manifest
 files; write `.plainfile-version` with manifest version + per-file SHA256 checksums.

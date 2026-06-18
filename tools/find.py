@@ -16,8 +16,10 @@ implementation of "where does this ID live?" now lives here.  TOOLING §4a.
 
 Design decisions in TOOLING §4a:
   D4: --related deferred to milestone 3 (after fha xref / fha cooccur).
-  D7: --text scope is records + notes + transcripts in milestone 2;
-      photo captions added once photoindex is built.
+  D7: --text searches records + notes; photo captions are searched when
+      .cache/photos.sqlite is fresh (else find prints a skip note). The
+      transcripts_fts table exists but is not yet populated — transcript
+      search is deferred to a later milestone.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    FhaConfigError,
     configure_utf8_stdout,
     find_archive_root,
     id_type_of,
@@ -42,6 +45,7 @@ from _lib import (
     load_fha_yaml,
     newest_record_mtime,
     normalize_id,
+    photoindex_status,
     read_record,
     resolve_path,
 )
@@ -461,8 +465,10 @@ def _find_hypothesis(
         (hid,)
     ).fetchone()
     if row is None:
-        print(f'{hid}: not found in index.')
-        return EXIT_WARNINGS
+        # Hypothesis indexing is deferred — the index builder never populates the
+        # `hypotheses` table — so a structured miss is expected. Fall back to a
+        # tree scan so real H-ids documented in research files are still located.
+        return _find_by_scan(hid, archive_root)
 
     print(f'{hid}')
     print(f'  file:   {row["path"]}')
@@ -564,17 +570,19 @@ def _find_text(
     conn: sqlite3.Connection | None,
 ) -> int:
     """
-    Search records, notes, and transcripts for query text.
+    Search records and notes for query text, plus photo captions when available.
 
-    When the index is fresh: query notes_fts and transcripts_fts FTS tables
-    first (fast, ranked), then do a re.search pass to catch anything the FTS
-    tables may not cover (e.g. fresh lint-only run without FTS populated).
+    When the index is fresh: query notes_fts (and transcripts_fts, currently
+    empty — transcript population is deferred) first, then a re.search pass to
+    catch anything the FTS tables may not cover (e.g. a fresh lint-only run
+    without FTS populated).
 
     When the index is absent: re.search only.
 
-    Design decision D7 (TOOLING §4a): photo/document captions are not searched
-    in milestone 2 — they require the photoindex.  A note is printed when the
-    photoindex is absent so the user knows the scope.
+    Design decision D7 (TOOLING §4a): photo captions ARE searched when
+    .cache/photos.sqlite is verifiably fresh (DB present, schema OK, newer than
+    the photos root).  When the photoindex is absent/stale/unreadable, captions
+    are skipped and an explicit note tells the user why.
     """
     hits: list[tuple[str, str]] = []   # (relative path, context snippet)
     seen_paths: set[str] = set()
@@ -645,11 +653,14 @@ def _find_text(
             except OSError:
                 pass
 
-    photos_db = archive_root / '.cache' / 'photos.sqlite'
-    photos_db_absent = not photos_db.exists()
-    if not photos_db_absent:
+    # Photo captions: search photo_fts only when the photo index is verifiably
+    # fresh (DB present, schema OK, newer than the photos root). When it is
+    # absent/stale/unreadable we skip and say so explicitly — never silently.
+    photo_note: str | None = None
+    photo_status, _ = photoindex_status(archive_root, fha_config)
+    if photo_status == 'fresh':
         try:
-            pconn = sqlite3.connect(str(photos_db))
+            pconn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
             pconn.row_factory = sqlite3.Row
             try:
                 for row in pconn.execute(
@@ -663,13 +674,20 @@ def _find_text(
                         seen_paths.add(rel)
             finally:
                 pconn.close()
-        except Exception:
-            pass
+        except sqlite3.OperationalError:
+            # Malformed FTS MATCH query (e.g. unbalanced quotes) — report, don't crash.
+            photo_note = 'Note: photo caption search skipped — query is not valid FTS syntax.'
+    elif photo_status == 'stale':
+        photo_note = 'Note: photo captions not searched — photo index is stale; run fha photoindex.'
+    elif photo_status == 'unreadable':
+        photo_note = 'Note: photo captions not searched — photo index is unreadable; rebuild with fha photoindex.'
+    else:  # 'absent'
+        photo_note = 'Note: photo captions not searched — run fha photoindex to include.'
 
     if not hits:
         print(f'No results for: {query!r}')
-        if photos_db_absent:
-            print('Note: photo captions not searched — run fha photoindex to include.')
+        if photo_note:
+            print(photo_note)
         return EXIT_CLEAN
 
     print(f'Found {len(hits)} result(s) for: {query!r}')
@@ -677,8 +695,8 @@ def _find_text(
         print(f'\n  {rel_path}')
         if context:
             print(f'    … {context} …')
-    if photos_db_absent:
-        print('\nNote: photo captions not searched — run fha photoindex to include.')
+    if photo_note:
+        print(f'\n{photo_note}')
 
     return EXIT_CLEAN
 
@@ -841,7 +859,11 @@ def _run_find(args: argparse.Namespace) -> int:
             print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
             return EXIT_FAILURE
 
-    fha_config = load_fha_yaml(archive_root)
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
 
     text_query = getattr(args, 'text', None)
     related = getattr(args, 'related', None)

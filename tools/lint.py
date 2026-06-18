@@ -72,6 +72,7 @@ from _lib import (
     is_fixture_path,
     is_valid_edtf,
     is_valid_id,
+    FhaConfigError,
     load_fha_yaml,
     normalize_id,
     parse_filename,
@@ -498,10 +499,20 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         findings.append(Finding('W', 'W109', path,
             f'Unknown source_type: {source_type!r} (not in controlled vocabulary)'))
 
-    # E017: DNA must be restricted
-    if source_type == 'dna' and meta.get('restricted') not in (True, 'true'):
-        findings.append(Finding('E', 'E017', path,
-            'DNA source must have restricted: true'))
+    # E017: DNA sources must be restricted AND keep their raw files under
+    # documents/dna/ (SPEC §8.5.5).
+    if source_type == 'dna':
+        if meta.get('restricted') not in (True, 'true'):
+            findings.append(Finding('E', 'E017', path,
+                'DNA source must have restricted: true'))
+        for f in (meta.get('files') or []):
+            if not isinstance(f, dict):
+                continue
+            fpath = str(f.get('file', '')).replace('\\', '/')
+            parts = [seg for seg in fpath.split('/') if seg]
+            if len(parts) < 2 or parts[0] != 'documents' or parts[1] != 'dna':
+                findings.append(Finding('E', 'E017', path,
+                    f'DNA source file must be under documents/dna/: {fpath!r}'))
 
     # E014: source_date EDTF check
     source_date = str(meta.get('source_date', ''))
@@ -692,17 +703,22 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
             if m else []
         )
 
-        # Derive expected children names
+        # Derive expected children names.  Mirror views.py _check_w103_brackets
+        # exactly: drop stray occupants (a folder member who is a child of another
+        # member) from the PARENT set, then take all children of the remaining
+        # members.  Subtracting a stray's children instead would also drop a
+        # grandchild that ALSO has a direct child-of edge to a folder parent —
+        # views keeps that child, so lint must too.
+        member_children = {
+            cpid
+            for ppid in folder_pids
+            for cpid in children_of.get(ppid, set())
+        }
+        stray_pids = member_children & folder_pids
+        parents = folder_pids - stray_pids
         child_pids: set[str] = set()
-        for ppid in folder_pids:
+        for ppid in parents:
             child_pids.update(children_of.get(ppid, set()))
-
-        # Stray occupants (folder members who are themselves direct children here)
-        # would contribute their own children (grandchildren of the couple) to
-        # child_pids.  Remove the children of any such strays.
-        stray_pids = child_pids & folder_pids
-        for stray_pid in stray_pids:
-            child_pids -= children_of.get(stray_pid, set())
 
         derived_names = sorted(
             str(registry.person_meta.get(cp, {}).get('name', '')).split()[0]
@@ -910,6 +926,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                             f'Claim {cid} contradicts {tid} but no open question references both'))
 
     # E013: summary block drift for curated profiles
+    children_of = _build_children_of(registry)   # parent_pid → {child_pids}
     for pid, paths in registry.person_profile_paths.items():
         profile_path = paths[0]
         meta = registry.person_meta.get(pid, {})
@@ -926,7 +943,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
         for label, text, p_ids, s_ids in summary:
             _check_summary_line(label, text, p_ids, s_ids, person_claims,
-                                registry, profile_path, findings)
+                                registry, profile_path, findings,
+                                profile_pid=pid, children_of=children_of)
 
     # W101: vitals gaps for curated people
     for pid in registry.person_profile_paths:
@@ -1178,11 +1196,15 @@ def _check_summary_line(
     registry: Registry,
     profile_path: Path,
     findings: list[Finding],
+    profile_pid: str = '',
+    children_of: dict[str, set[str]] | None = None,
 ) -> None:
     """
     Verify one summary-block label segment against accepted claims (E013 / W104).
     Each [S-id] citation must have a matching accepted claim of the right type for
     this person; each [P-id] cross-link must resolve to a known person record.
+    For Parents/Children, each [P-id] must also be supported by an accepted
+    child-of relationship claim (E013), not merely exist as a record.
     """
     label_to_types = {
         'Born': ['birth', 'baptism'],
@@ -1210,6 +1232,21 @@ def _check_summary_line(
         if not registry.has_person(ref_pid):
             findings.append(Finding('E', 'E004', profile_path,
                 f'Summary block {label} references unknown person {ref_pid}'))
+
+    # E013: Parents/Children cross-links must match an accepted child-of relationship
+    # claim (TOOLING §E013), not merely resolve to a person record.
+    if label in ('Parents', 'Children') and children_of is not None and profile_pid:
+        for ref_pid in p_ids:
+            if not registry.has_person(ref_pid):
+                continue   # already reported as E004 above
+            if label == 'Parents':
+                supported = profile_pid in children_of.get(ref_pid, set())
+            else:  # Children
+                supported = ref_pid in children_of.get(profile_pid, set())
+            if not supported:
+                findings.append(Finding('E', 'E013', profile_path,
+                    f'Summary **{label}:** lists {ref_pid} but no accepted child-of '
+                    f'relationship claim links them to {profile_pid}'))
 
 
 def _check_generated_headers(archive_root: Path, findings: list[Finding]) -> None:
@@ -1543,7 +1580,11 @@ def _run_lint(args: argparse.Namespace) -> int:
             print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
             return EXIT_FAILURE
 
-    fha_config = load_fha_yaml(archive_root)
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return EXIT_FAILURE
     spec_root = getattr(args, 'spec_root', None)
 
     return run_lint(

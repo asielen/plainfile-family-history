@@ -44,10 +44,13 @@ Core contract, modes overview, research workflows, format reference, and tools: 
    "not yet implemented," or whose flags the getting-started guide misdescribes, is a
    documentation bug. (The README rule from the decision log §21a binds tool-building as
    much as spec-refinement.)
-8. **Spec and Tooling review.** Next review `SPEC.md` and `TOOLING.md` to make sure that
-   any new decisions made during the build process are captured in those docs. With the
-   goal that those docs should be all that is required to build the tooling from scratch
-   again in the future. Make updates to those docs as appropriate to support this goal.
+8. **Spec and Tooling review.** Review `SPEC.md` and `TOOLING.md` for any decision made
+   during the build that they do not yet capture — the goal is that those docs alone can
+   regenerate the tooling. In **tool-building** mode you do NOT edit SPEC/TOOLING directly:
+   record each gap as a *proposed* decision-log entry for the human, then switch to
+   **spec-refinement** mode (with approval) to make the edit. When mode boundaries conflict,
+   **AGENTS.md wins** — it limits tool-building to `tools/`/`tests/` and forbids SPEC/TOOLING
+   edits outside spec-refinement.
 9. **Handoff:** demo the commands, note any deviation (there should be none unlogged).
 
 ### Spec-discovery protocol

@@ -18,7 +18,7 @@ They are the "replaceable glue" of the philosophy — disposable, regenerable fr
 | `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; `--format html` deferred (D6) |
 | `fha doctor` | `doctor.py` | ✓ all 11 checks; D5 applied (absent index/photoindex = warning, not error) |
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent |
-| `fha find --text "…"` | `find.py` | ✓ FTS (notes_fts + transcripts_fts) + re.search pass; photo-caption scope deferred (D7) |
+| `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated — transcript search deferred (D7) |
 | `fha find --related <ID>` | `find.py` | ⚑ deferred to milestone 3 (D4); prints deferral message, exits 0 |
 | `fha id check <ID>` | `fha.py` alias | ✓ re-routed through `find.find_by_id` in fha.py dispatcher |
 
@@ -34,7 +34,7 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 | exiftool on PATH | ✓ | ✗ → exit 1 (warning; not a hard dep for most commands) |
 | Python deps (PyYAML) | ✓ | ✗ → exit 2 |
 | Index freshness | ✓ | absent/stale → exit 1 (D5) |
-| Photoindex freshness | ✓ | absent/stale → exit 1 (D5) |
+| Photoindex freshness | ✓ | schema probed before "fresh"; absent/stale/unreadable → exit 1 (D5) |
 | Lint summary | ✓ | import-and-call `run_lint_silent`; E-level findings → exit 2 |
 | Inbox aging (14 days) | ✓ | printed only when inbox/ dir exists |
 | Counts | ✓ | from index when fresh, else quick scan |
@@ -50,7 +50,7 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 | `<C-id>` lookup | ✓ | source record + approx line, status, value, corroborates/contradicts |
 | `<L-id>` lookup | ✓ | place entry, claims referencing it, prose mentions |
 | `<H-id>` lookup | ✓ | hypothesis entry, section heading, status, prose mentions |
-| `--text "…"` | ✓ | FTS + re.search pass; photo captions ⚑ deferred (D7) |
+| `--text "…"` | ✓ | notes_fts + re.search; photo captions searched when photoindex is fresh, else explicit skip-note; transcript FTS ⚑ deferred (D7) |
 | `--related <ID>` | ⚑ deferred | prints deferral message, exits 0 (D4) |
 | Index fallback | ✓ | stale index warns but remains structured; absent/unreadable index tree-scans with "WARNING: index not fresh" header |
 
