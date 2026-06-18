@@ -413,7 +413,14 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
                 f'Filename ID {file_id!r} ≠ record id {pid!r}'))
 
     if not pid:
-        return   # can't do cross-reference checks without an id
+        # Generated companion files (timeline, sources-index, draft-queue) carry
+        # no frontmatter `id:`, but their filename still encodes the P-id; derive
+        # it from there so W110 placement checks (which scan person_companion_paths)
+        # still see these files instead of silently missing stray ones.
+        if is_companion and parsed:
+            pid = normalize_id(parsed['id_str'])
+            registry.person_companion_paths.setdefault(pid, []).append(path)
+        return   # can't do further cross-reference checks without record metadata
 
     # Register in registry
     if is_companion:

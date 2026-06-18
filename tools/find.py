@@ -736,6 +736,11 @@ def _text_search(query: str, archive_root: Path, fha_config: dict) -> int:
     if not fresh:
         print('WARNING: index not fresh, results may be incomplete')
     conn = _open_index(archive_root)
+    if conn is None and fresh:
+        # _index_is_fresh only compares mtimes; a corrupt/schema-less index can
+        # still look fresh by that measure. Warn here so the silent scan-only
+        # fallback below isn't mistaken for a full structured search.
+        print('WARNING: index not readable, results may be incomplete')
     try:
         return _find_text(query, archive_root, fha_config, conn)
     finally:
@@ -772,6 +777,11 @@ def find_by_id(
 
     conn = _open_index(archive_root)
     if conn is None:
+        if fresh:
+            # _index_is_fresh only compares mtimes; a corrupt/schema-less index
+            # can still look fresh by that measure. Warn here so the silent
+            # scan-only fallback below isn't mistaken for an index-backed result.
+            print('WARNING: index not readable, results may be incomplete')
         return _find_by_scan(id_str, archive_root)
 
     try:
@@ -896,6 +906,15 @@ def _run_find(args: argparse.Namespace) -> int:
     text_query = getattr(args, 'text', None)
     related = getattr(args, 'related', None)
     query = getattr(args, 'query', None)
+    date = getattr(args, 'date', None)
+
+    if date is not None and related is None:
+        print(
+            'ERROR: --date is only valid together with --related '
+            '(it filters --related results; both are deferred to milestone 3).',
+            file=sys.stderr,
+        )
+        return EXIT_FAILURE
 
     if text_query is not None:
         return run_find(text_query, archive_root, fha_config, text_mode=True)

@@ -271,15 +271,25 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     if not photos_root.is_dir():
         return ('fresh', 0.0)          # no photos root — nothing to compare against
 
+    # Directory mtimes are included (not just file mtimes) so that a deletion or
+    # rename — which bumps the parent directory's mtime but touches no remaining
+    # file — still makes the index look stale instead of silently staying 'fresh'
+    # with photo_fts rows pointing at files that no longer exist.
     max_mtime = 0.0
     for p in photos_root.rglob('*'):
-        if p.is_file():
+        if p.is_file() or p.is_dir():
             try:
                 m = p.stat().st_mtime
                 if m > max_mtime:
                     max_mtime = m
             except OSError:
                 pass
+    try:
+        root_mtime = photos_root.stat().st_mtime
+        if root_mtime > max_mtime:
+            max_mtime = root_mtime
+    except OSError:
+        pass
 
     if max_mtime == 0.0 or mtime >= max_mtime:
         return ('fresh', 0.0)          # empty root, or db newer than newest photo

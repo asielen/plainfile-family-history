@@ -1076,6 +1076,16 @@ def _check_w110_ahnentafel(
             continue
         folder_anchors.setdefault(current_folder, []).append((pid, couple_prefix))
 
+    # Canonical folders that already exist on disk, keyed by numeric prefix.
+    # Needed before Step B so a rename is never proposed onto a prefix that
+    # already has its own couple folder (that would split the couple across
+    # two same-prefix folders; the stray file should move there instead).
+    existing_prefix_folders: dict[int, Path] = {}
+    for folder in _couple_folder_dirs(archive_root):
+        m = re.match(r'^(\d+) ', folder.name)
+        if m:
+            existing_prefix_folders[int(m.group(1))] = folder
+
     # Step B: emit a folder_rename only when anchors unanimously claim one prefix.
     folders_being_renamed: dict[Path, Path] = {}
 
@@ -1090,6 +1100,13 @@ def _check_w110_ahnentafel(
             continue
         claimed_prefix = next(iter(claimed_prefixes))
         if claimed_prefix == actual_prefix:
+            continue
+        existing_canonical = existing_prefix_folders.get(claimed_prefix)
+        if existing_canonical is not None and existing_canonical != folder:
+            # A couple folder for claimed_prefix already exists elsewhere; renaming
+            # this folder onto the same prefix would split the couple into two
+            # folders. Leave this folder alone — check 3's file-move path will
+            # relocate the stray person's files into the existing canonical folder.
             continue
 
         new_name = re.sub(r'^\d+', str(claimed_prefix).zfill(3), folder.name)
@@ -1901,6 +1918,11 @@ def _cmd_timeline(args: argparse.Namespace) -> int:
                     print(f'  timeline ->{out.relative_to(archive_root)}')
                     count += 1
             print(f'Generated {count} timeline file(s).')
+            if count:
+                # Writing a companion file makes the index stale (its mtime now
+                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
+                print('Run `fha index` to update the search index with the new view file(s).')
+                return EXIT_WARNINGS
             return EXIT_CLEAN
 
         person_id = getattr(args, 'person_id', None)
@@ -1912,7 +1934,8 @@ def _cmd_timeline(args: argparse.Namespace) -> int:
         out = _generate_timeline(conn, pid, archive_root)
         if out:
             print(f'  timeline ->{out.relative_to(archive_root)}')
-            return EXIT_CLEAN
+            print('Run `fha index` to update the search index with the new view file.')
+            return EXIT_WARNINGS
         return EXIT_WARNINGS
 
     except _ManualFileRefused as e:
@@ -1951,6 +1974,11 @@ def _cmd_sources_index(args: argparse.Namespace) -> int:
                 count += 1
 
             print(f'Generated {count} sources-index file(s).')
+            if count:
+                # Writing a companion file makes the index stale (its mtime now
+                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
+                print('Run `fha index` to update the search index with the new view file(s).')
+                return EXIT_WARNINGS
             return EXIT_CLEAN
 
         person_id = getattr(args, 'person_id', None)
@@ -1962,7 +1990,8 @@ def _cmd_sources_index(args: argparse.Namespace) -> int:
         out = _generate_sources_index_person(conn, pid, archive_root)
         if out:
             print(f'  sources-index ->{out.relative_to(archive_root)}')
-            return EXIT_CLEAN
+            print('Run `fha index` to update the search index with the new view file.')
+            return EXIT_WARNINGS
         return EXIT_WARNINGS
 
     except _ManualFileRefused as e:
@@ -1993,6 +2022,11 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
                     print(f'  draft-queue ->{out.relative_to(archive_root)}')
                     count += 1
             print(f'Generated {count} draft-queue file(s).')
+            if count:
+                # Writing a companion file makes the index stale (its mtime now
+                # post-dates .cache/index.sqlite); warn the same way `refresh` does.
+                print('Run `fha index` to update the search index with the new view file(s).')
+                return EXIT_WARNINGS
             return EXIT_CLEAN
 
         person_id = getattr(args, 'person_id', None)
@@ -2004,7 +2038,8 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
         out = _generate_draft_queue(conn, pid, archive_root)
         if out:
             print(f'  draft-queue ->{out.relative_to(archive_root)}')
-            return EXIT_CLEAN
+            print('Run `fha index` to update the search index with the new view file.')
+            return EXIT_WARNINGS
         return EXIT_WARNINGS
 
     except _ManualFileRefused as e:
@@ -2053,6 +2088,7 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     print(f'{verb} {len(found)} generated file(s).')
     if not dry_run:
         print('Note: deleted files still appear in .cache/index.sqlite — run `fha index` to update the cache.')
+        return EXIT_WARNINGS
     return EXIT_CLEAN
 
 
