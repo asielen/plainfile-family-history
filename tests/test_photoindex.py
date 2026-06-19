@@ -917,6 +917,37 @@ class PhotoindexTests(unittest.TestCase):
 
             self.assertEqual([r['path'] for r in result['rows']], ['photos/portrait_1880.jpg'])
 
+    def test_find_files_expands_matched_group_to_all_variants(self) -> None:
+        """--files lists sibling variants of a matched group even if they didn't match.
+
+        The front scan carries the DATE keyword and the back scan is untagged, so
+        only the front raw-matches --edtf; --files must still return both files
+        because they are variants of one matched logical photo.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                    'portrait_1880-back.jpg': {'Caption-Abstract': 'untagged back'},
+                    'wedding_1902.jpg': {'Keywords': ['DATE: 1902!']},
+                    'family_reunion.jpg': {'Caption-Abstract': 'Family reunion'},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, edtf='188X', files=True,
+            )
+
+            self.assertEqual(
+                sorted(r['path'] for r in result['rows']),
+                ['photos/portrait_1880-back.jpg', 'photos/portrait_1880.jpg'],
+            )
+
     def test_find_rejects_invalid_edtf(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

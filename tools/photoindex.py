@@ -737,8 +737,9 @@ def run_find(
 
     Default output is one row per group (the group's primary_path) — search
     results and packet-style gathering always treat variants of one physical
-    photo as a single hit (TOOLING §9). `--files` exposes every matching raw
-    row instead, including non-primary variants.
+    photo as a single hit (TOOLING §9). `--files` instead returns every raw row
+    of each matched group, including sibling variants that did not themselves
+    match a filter (the matched group, not the matched path, is the unit).
 
     photoindex_status only probes that the cache's tables exist, not that every
     selected column does; an older or partially written schema can therefore pass
@@ -776,11 +777,23 @@ def run_find(
             if not matched_groups:
                 return {'status': status, 'rows': []}
 
-            qualifying = {p for p in all_paths if group_key[p] in matched_groups}
-
             if files:
-                paths = sorted(qualifying)
+                # --files lists every raw row of each matched group, including
+                # variants that did not themselves match a filter: the group is
+                # the unit of matching and all its files are one physical photo.
+                matched: set[str] = set()
+                for key in matched_groups:
+                    if isinstance(key, str):     # real group — pull all members
+                        matched.update(
+                            row[0] for row in conn.execute(
+                                'SELECT path FROM photos WHERE group_id=?', (key,)
+                            )
+                        )
+                    else:                        # singleton — the path itself
+                        matched.add(key[1])
+                paths = sorted(matched)
             else:
+                qualifying = {p for p in all_paths if group_key[p] in matched_groups}
                 primaries: set[str] = set()
                 for path in qualifying:
                     key = group_key[path]
