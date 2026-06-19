@@ -409,16 +409,15 @@ def _resolve_photo_people(
             add(normalize_id(kw), 'pid-keyword')
 
     matched_names = {n for n, _ in face_regions}
-    ambiguous_tags: set[str] = set()
+    face_tag_resolved: set[str] = set()
     for region_name, _region_type in face_regions:
         pids = face_tags.get(region_name)
         if pids:
+            face_tag_resolved.add(region_name)
             if len(pids) == 1:
                 add(next(iter(pids)), 'face-tag')
-            else:
-                ambiguous_tags.add(region_name)
 
-    for region_name in matched_names - ambiguous_tags:
+    for region_name in matched_names - face_tag_resolved:
         pids = names.get(region_name)
         if pids and len(pids) == 1:
             add(next(iter(pids)), 'name-match')
@@ -557,20 +556,45 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     would silently miss a newly-added sibling joining an existing group.
     """
     rows = conn.execute('SELECT path, source_id, edtf FROM photos').fetchall()
-    groups: dict[str, list[str]] = {}
     parsed_by_path: dict[str, ParsedName] = {}
     edtf_by_path: dict[str, str | None] = {}
+    parent: dict[str, str] = {}
 
+    def find(x: str) -> str:
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # A shared S-id and a shared stem are both grouping signals (TOOLING §9);
+    # union both so a source-tagged file still joins an untagged sibling that
+    # only matches it on the stem pass (e.g. a tagged front + untagged back).
+    by_stem_key: dict[str, list[str]] = {}
+    by_source_key: dict[str, list[str]] = {}
     for path, source_id, edtf in rows:
         p = Path(path)
         parsed = parse_media_filename(p.stem)
         parsed_by_path[path] = parsed
         edtf_by_path[path] = edtf
+        parent[path] = path
+        by_stem_key.setdefault(f'{p.parent.as_posix()}:{_grouping_stem(parsed)}', []).append(path)
         if source_id:
-            key = f'SOURCE:{source_id}'
-        else:
-            key = f'STEM:{p.parent.as_posix()}:{_grouping_stem(parsed)}'
-        groups.setdefault(key, []).append(path)
+            by_source_key.setdefault(source_id, []).append(path)
+
+    for paths in (*by_stem_key.values(), *by_source_key.values()):
+        for p in paths[1:]:
+            union(paths[0], p)
+
+    groups: dict[str, list[str]] = {}
+    for path in parsed_by_path:
+        groups.setdefault(find(path), []).append(path)
 
     conn.execute('DELETE FROM photo_groups')
 
@@ -728,14 +752,23 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
 
     on_disk: dict[Path, tuple[float, int]] = {}
     alias_by_path: dict[Path, str] = {}
+    stat_failures: list[Path] = []
     for p in photos_root.rglob('*'):
         if p.is_file() and p.suffix.lower() in PHOTO_EXTENSIONS:
             try:
                 st = p.stat()
-                on_disk[p] = (st.st_mtime, st.st_size)
-                alias_by_path[p] = path_to_alias(p, 'photos', fha_config, archive_root)
             except OSError:
-                pass
+                stat_failures.append(p)
+                continue
+            on_disk[p] = (st.st_mtime, st.st_size)
+            alias_by_path[p] = path_to_alias(p, 'photos', fha_config, archive_root)
+
+    if stat_failures:
+        sample = ', '.join(str(p) for p in stat_failures[:5])
+        more = f' and {len(stat_failures) - 5} more' if len(stat_failures) > 5 else ''
+        raise RuntimeError(
+            f'cannot stat {len(stat_failures)} photo file(s): {sample}{more}'
+        )
 
     conn, needs_face_backfill = _get_db(archive_root / '.cache')
     try:
@@ -906,7 +939,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
     try:
         summary = run_scan(archive_root, fha_config, full=getattr(args, 'full', False))
-    except RuntimeError as e:
+    except (RuntimeError, sqlite3.Error) as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 

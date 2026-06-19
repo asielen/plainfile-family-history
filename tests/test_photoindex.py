@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -139,6 +140,32 @@ class PhotoindexTests(unittest.TestCase):
                 negative_copy, negative_role = rows['portrait_1880b-negative.jpg']
                 self.assertIsNone(negative_copy)
                 self.assertEqual(negative_role, 'negative')
+            finally:
+                conn.close()
+
+    def test_source_tagged_file_groups_with_untagged_stem_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d) / '.cache'
+            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            try:
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, is_primary, '
+                    'variant_copy, variant_role) VALUES (?,0,0,?,NULL,0,NULL,NULL)',
+                    ('wedding_1902.jpg', 'S-123456789a'),
+                )
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, is_primary, '
+                    'variant_copy, variant_role) VALUES (?,0,0,NULL,NULL,0,NULL,NULL)',
+                    ('wedding_1902-back.jpg',),
+                )
+                photoindex._group_photos(conn)
+                group_ids = {
+                    path: group_id
+                    for path, group_id in conn.execute('SELECT path, group_id FROM photos')
+                }
+                self.assertEqual(group_ids['wedding_1902.jpg'], group_ids['wedding_1902-back.jpg'])
+                group_count = conn.execute('SELECT COUNT(*) FROM photo_groups').fetchone()[0]
+                self.assertEqual(group_count, 1)
             finally:
                 conn.close()
 
@@ -305,6 +332,15 @@ class PhotoindexTests(unittest.TestCase):
             {'Grandma': {'p-aaaaaaaaaa'}},
         )
         self.assertEqual(rows, [])
+
+    def test_resolved_face_tag_does_not_also_fall_back_to_name_match(self) -> None:
+        rows = photoindex._resolve_photo_people(
+            [],
+            [('Jack', 'Face')],
+            {'Jack': {'p-aaaaaaaaaa'}},
+            {'Jack': {'p-bbbbbbbbbb'}},
+        )
+        self.assertEqual(rows, [('p-aaaaaaaaaa', 'face-tag')])
 
     def test_stale_index_is_not_used_for_weak_face_or_name_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -602,6 +638,27 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_stat_failure_during_scan_raises_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            bad_path = archive / 'photos' / 'wedding_1902.jpg'
+            orig_stat = Path.stat
+            calls = {'n': 0}
+
+            def flaky_stat(self: Path, *args, **kwargs):
+                # Let the rglob loop's is_file() check pass (first stat call),
+                # then fail the explicit stat() that actually records the
+                # file, simulating a file disappearing mid-walk.
+                if self == bad_path:
+                    calls['n'] += 1
+                    if calls['n'] > 1:
+                        raise OSError('permission denied')
+                return orig_stat(self, *args, **kwargs)
+
+            with mock.patch.object(Path, 'stat', flaky_stat):
+                with self.assertRaisesRegex(RuntimeError, 'cannot stat'):
+                    photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
     def test_cache_directory_creation_failure_raises_runtime_error(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -681,6 +738,22 @@ class PhotoindexTests(unittest.TestCase):
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn('deferred to a follow-up photoindex PR', proc.stdout)
+
+    def test_sqlite_write_failure_cli_returns_clean_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            args = type('Args', (), {
+                'root': str(archive),
+                'full': False,
+            })()
+
+            with mock.patch.object(
+                photoindex, 'run_scan',
+                side_effect=sqlite3.OperationalError('database is locked'),
+            ):
+                code = photoindex._cmd_scan(args)
+
+            self.assertEqual(code, 3)
 
     def test_missing_photos_root_cli_returns_warning(self) -> None:
         with tempfile.TemporaryDirectory() as d:
