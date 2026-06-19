@@ -1007,6 +1007,49 @@ class PhotoindexTests(unittest.TestCase):
 
             self.assertEqual(code, photoindex.EXIT_FAILURE)
 
+    def test_find_text_treats_punctuation_as_literal(self) -> None:
+        """--text with punctuation matches the literal string, not FTS operators.
+
+        Pre-fix, splicing `P-de957bcda1` into the FTS expression made `-` parse as
+        syntax and raised OperationalError; the term must instead match the cached
+        keyword literally.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, text='P-de957bcda1',
+            )
+
+            self.assertEqual([r['path'] for r in result['rows']], ['photos/family_reunion.jpg'])
+
+    def test_find_stale_when_person_record_newer_than_photo_cache(self) -> None:
+        """A profile edited after the last scan makes photo_people stale → warn.
+
+        photo_people's face-tag/name-match tiers derive from person records via
+        index.sqlite. If a profile changes but `fha index`/`fha photoindex` aren't
+        rerun, find would otherwise serve stale weak matches as 'fresh'.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            profile = people_dir / 'hartley__thomas_edward_P-de957bcda1.md'
+            profile.write_text('---\nid: P-de957bcda1\n---\n', encoding='utf-8')
+            photos_mtime = (archive / '.cache' / 'photos.sqlite').stat().st_mtime
+            os.utime(profile, (photos_mtime + 10, photos_mtime + 10))
+
+            status, _lag = photoindex_status(archive, {'roots': {'photos': 'photos'}})
+            self.assertEqual(status, 'stale')
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, person='p-de957bcda1',
+            )
+            self.assertEqual(result['status'], 'stale')
+
     def test_find_rejects_invalid_edtf(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

@@ -690,10 +690,21 @@ def _paths_by_text(conn: sqlite3.Connection, query: str) -> set[str]:
     file, but `--text` is documented as searching title/caption/comment/keywords
     only; an unscoped MATCH would let a descriptive filename or folder produce a
     hit whose metadata never mentions the term. Restrict the match to the four
-    metadata columns with an FTS5 column filter, parenthesizing the user's query
-    so the filter applies to the whole expression rather than just its first token.
+    metadata columns with an FTS5 column filter.
+
+    --text is a metadata search, not an FTS expression: the CLI does not ask the
+    user to know FTS5 syntax. Each whitespace-separated token is therefore quoted
+    as a literal phrase (doubling embedded quotes) so punctuation like `-`, `:`,
+    `"`, `*` or bare AND/OR/NOT is matched literally instead of parsed as an
+    operator — `--text Smith-Jones` and `--text P-de957bcda1` find those strings
+    rather than raising. Tokens are space-joined, preserving implicit-AND across
+    words; a whitespace-only query matches nothing.
     """
-    scoped = f'{{title caption user_comment keywords}} : ({query})'
+    tokens = query.split()
+    if not tokens:
+        return set()
+    quoted = ' '.join('"' + token.replace('"', '""') + '"' for token in tokens)
+    scoped = f'{{title caption user_comment keywords}} : ({quoted})'
     try:
         return {
             row[0] for row in conn.execute(
