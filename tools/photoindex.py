@@ -939,6 +939,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
 
     on_disk: dict[Path, tuple[float, int]] = {}
     alias_by_path: dict[Path, str] = {}
+    stat_failures: list[Path] = []
     for p in photos_root.rglob('*'):
         if p.is_file() and p.suffix.lower() in PHOTO_EXTENSIONS:
             try:
@@ -946,7 +947,14 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
                 on_disk[p] = (st.st_mtime, st.st_size)
                 alias_by_path[p] = path_to_alias(p, 'photos', fha_config, archive_root)
             except OSError:
-                pass
+                stat_failures.append(p)
+
+    if stat_failures:
+        sample = ', '.join(str(p) for p in stat_failures[:5])
+        more = f' and {len(stat_failures) - 5} more' if len(stat_failures) > 5 else ''
+        raise RuntimeError(
+            f'could not stat {len(stat_failures)} photo file(s): {sample}{more}'
+        )
 
     conn, needs_face_backfill = _get_db(archive_root / '.cache')
     try:

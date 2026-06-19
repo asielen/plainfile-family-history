@@ -627,6 +627,32 @@ class PhotoindexTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
 
+    def test_stat_failure_during_scan_raises_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            target = archive / 'photos' / 'family_reunion.jpg'
+
+            orig_stat = Path.stat
+            calls = {'count': 0}
+
+            def failing_stat(self, *a, **k):
+                # is_file() also calls stat(); let that first call through so
+                # the file is still discovered, then fail the second call
+                # (the one run_scan uses to read mtime/size).
+                if self.name == 'family_reunion.jpg':
+                    calls['count'] += 1
+                    if calls['count'] > 1:
+                        raise OSError('permission denied')
+                return orig_stat(self, *a, **k)
+
+            Path.stat = failing_stat
+            try:
+                with self.assertRaisesRegex(RuntimeError, 'could not stat'):
+                    photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            finally:
+                Path.stat = orig_stat
+            self.assertTrue(target.exists())
+
     def test_missing_exiftool_row_fails_without_refreshing_stale_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
