@@ -653,6 +653,28 @@ class PhotoindexTests(unittest.TestCase):
                 Path.stat = orig_stat
             self.assertTrue(target.exists())
 
+    def test_cmd_scan_cli_reports_clean_error_on_sqlite_write_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [{'SourceFile': str(p)} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+
+            orig_group_photos = photoindex._group_photos
+
+            def failing_group_photos(conn):
+                raise sqlite3.OperationalError('database is locked')
+
+            photoindex._group_photos = failing_group_photos
+            try:
+                args = type('Args', (), {'root': str(archive), 'full': False})()
+                code = photoindex._cmd_scan(args)
+                self.assertEqual(code, photoindex.EXIT_FAILURE)
+            finally:
+                photoindex._group_photos = orig_group_photos
+
     def test_missing_exiftool_row_fails_without_refreshing_stale_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
