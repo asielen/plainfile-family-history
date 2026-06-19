@@ -361,6 +361,52 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_photo_fts_with_wrong_columns_is_recreated(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cache = archive / '.cache'
+            cache.mkdir()
+            db_path = cache / 'photos.sqlite'
+            conn = sqlite3.connect(db_path)
+            try:
+                # A queryable but schema-incompatible photo_fts (missing 'keywords')
+                # must not be reused: the scanner inserts into all four FTS columns.
+                conn.executescript(
+                    """
+                    CREATE TABLE photos(path TEXT PRIMARY KEY, mtime REAL, size INTEGER,
+                      title TEXT, caption TEXT, user_comment TEXT, exif_date TEXT,
+                      date_pattern TEXT, edtf TEXT, sublocation TEXT, city TEXT,
+                      state TEXT, country TEXT, gps_lat REAL, gps_lon REAL,
+                      source_id TEXT, group_id TEXT, is_primary INTEGER, variant_copy TEXT,
+                      variant_role TEXT);
+                    CREATE TABLE photo_groups(group_id TEXT PRIMARY KEY, primary_path TEXT,
+                      edtf_resolved TEXT, date_conflict INTEGER, file_count INTEGER);
+                    CREATE TABLE photo_keywords(path TEXT, keyword TEXT);
+                    CREATE TABLE photo_face_regions(path TEXT, name TEXT, region_type TEXT, area_json TEXT);
+                    CREATE TABLE photo_people(path TEXT, person_ref TEXT, via TEXT);
+                    CREATE VIRTUAL TABLE photo_fts USING fts5(path, title, caption);
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [{'SourceFile': str(p)} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            summary = photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            self.assertEqual(summary['scraped'], 4)
+            conn = sqlite3.connect(db_path)
+            try:
+                columns = {
+                    row[1] for row in conn.execute('PRAGMA table_info(photo_fts)').fetchall()
+                }
+                self.assertIn('keywords', columns)
+            finally:
+                conn.close()
+
     def test_corrupt_photos_sqlite_is_recreated(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

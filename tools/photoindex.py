@@ -144,6 +144,7 @@ _REQUIRED_SCHEMA = {
     'photo_keywords': {'path', 'keyword'},
     'photo_face_regions': {'path', 'name', 'region_type', 'area_json'},
     'photo_people': {'path', 'person_ref', 'via'},
+    'photo_fts': {'path', 'title', 'caption', 'user_comment', 'keywords'},
 }
 
 # ── exiftool integration ──────────────────────────────────────────────────
@@ -626,7 +627,7 @@ def _open_and_apply_schema(db_path: Path) -> tuple[sqlite3.Connection, bool]:
 
 
 def _schema_is_usable(conn: sqlite3.Connection) -> bool:
-    """Check every _REQUIRED_SCHEMA column (plus the FTS table) is present and queryable."""
+    """Check every _REQUIRED_SCHEMA table has all its required columns (incl. photo_fts)."""
     for table, required_columns in _REQUIRED_SCHEMA.items():
         try:
             rows = conn.execute(f'PRAGMA table_info({table})').fetchall()
@@ -635,10 +636,6 @@ def _schema_is_usable(conn: sqlite3.Connection) -> bool:
         columns = {row[1] for row in rows}
         if not required_columns.issubset(columns):
             return False
-    try:
-        conn.execute('SELECT 1 FROM photo_fts LIMIT 1')
-    except sqlite3.DatabaseError:
-        return False
     return True
 
 
