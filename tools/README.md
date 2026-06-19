@@ -29,7 +29,8 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 
 | Tool | File | Status |
 |---|---|---|
-| `fha photoindex [--full]` | `photoindex.py` | ✓ M3.1 — schema, exiftool scan (incremental by mtime/size; `--full` rescans all), variation grouping, person resolution. `fha photoindex find` (M3.2) and the triage/reconcile/tag-person/report sub-commands (M3.3–M3.4) are ⚑ deferred to follow-up PRs |
+| `fha photoindex [--full]` | `photoindex.py` | ✓ M3.1 — schema, exiftool scan (incremental by mtime/size; `--full` rescans all), variation grouping, person resolution |
+| `fha photoindex find` | `photoindex.py` | ✓ M3.2 — `--person`/`--keyword`/`--edtf`/`--text` filters (AND'd when combined); one path per group by default, `--files` for raw rows. The triage/reconcile/tag-person/report sub-commands (M3.3–M3.4) remain ⚑ deferred to follow-up PRs |
 
 ## fha photoindex — implementation status
 
@@ -41,8 +42,8 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 | Variation grouping | ✓ | Pass 1: shared `SOURCE:` keyword. Pass 2: same directory + same filename `base_id` (`_lib.parse_media_filename`). `is_primary`, `variant_copy`, `variant_role` populated; grouping is recomputed in full on every scan |
 | Date resolution (`edtf_resolved`, `date_conflict`) | ✓ | Best-confidence variant wins ties broken by the group's primary file, then by path; non-overlapping bounds across variants set `date_conflict=1` |
 | Person resolution | ✓ | Rebuilt every scan from cached `photo_keywords` + `photo_face_regions`: `pid-keyword` (regex-only, no index needed) → `face-tag` (exact match against `person_face_tags`, skipped if ambiguous) → `name-match`. The latter two require a fresh `.cache/index.sqlite`; absent/stale/unreadable index degrades to pid-keyword only |
-| `fha photoindex find` | ⚑ deferred (BUILD.md M3.2) | CLI stub registered (prints "deferred to a follow-up photoindex PR", exits 0) so the command tree is coherent; query logic lands in M3.2 |
-| `fha photoindex triage` + `report` | ⚑ deferred (BUILD.md M3.3) | Same CLI-stub treatment |
+| `fha photoindex find` | ✓ (BUILD.md M3.2) | `--person P-id`, `--keyword TERM` (case-insensitive substring), `--edtf EDTF` (bounds-overlap against each photo's own `edtf`), `--text "…"` (`photo_fts`); filters AND together. Default dedupes matches to one row per group (`primary_path`); `--files` returns every matching raw row. Absent/unreadable `.cache/photos.sqlite` → clear error, exit 3; stale → warns but still queries |
+| `fha photoindex triage` + `report` | ⚑ deferred (BUILD.md M3.3) | CLI stub registered (prints "deferred to a follow-up photoindex PR", exits 0) so the command tree is coherent |
 | `fha photoindex reconcile` + `tag-person` | ⚑ deferred (BUILD.md M3.4) | Same CLI-stub treatment |
 
 Test fixture: `tests/fixtures/photo-fixture/` — 4 placeholder JPEGs with real embedded metadata (written via exiftool, not a code-level stub): a front/back variation pair with disagreeing `DATE:` keywords (exercises `date_conflict`), a photo carrying a `SOURCE:` keyword (exercises source-id grouping), and one ungrouped photo.

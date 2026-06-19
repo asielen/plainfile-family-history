@@ -652,9 +652,6 @@ class PhotoindexTests(unittest.TestCase):
 
     def test_deferred_photoindex_subcommands_accept_documented_arguments(self) -> None:
         commands = [
-            ['find', '--person', 'P-de957bcda1', '--root', 'tests/fixtures/photo-fixture'],
-            ['find', '--text', 'cemetery', '--root', 'tests/fixtures/photo-fixture'],
-            ['find', '--files', '--root', 'tests/fixtures/photo-fixture'],
             ['triage', '--top', '10', '--root', 'tests/fixtures/photo-fixture'],
             ['tag-person', 'P-de957bcda1', '--root', 'tests/fixtures/photo-fixture'],
             [
@@ -681,6 +678,215 @@ class PhotoindexTests(unittest.TestCase):
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
                 self.assertIn('deferred to a follow-up photoindex PR', proc.stdout)
+
+    def _scan_with_find_fixture(self, archive: Path) -> None:
+        """Scan with a fixed exiftool payload exercising person/keyword/edtf/text filters."""
+        def fake_exiftool(paths: list[Path]) -> list[dict]:
+            rows = {
+                'portrait_1880.jpg': {
+                    'Keywords': ['DATE: 1880!'], 'Title': 'Portrait front',
+                },
+                'portrait_1880-back.jpg': {
+                    'Keywords': ['DATE: 1880!'], 'Caption-Abstract': 'cemetery visit',
+                },
+                'wedding_1902.jpg': {
+                    'Keywords': ['SOURCE: S-123456789a', 'DATE: 1902!'],
+                    'Caption-Abstract': 'Wedding party',
+                },
+                'family_reunion.jpg': {
+                    'Keywords': ['P-de957bcda1'], 'Caption-Abstract': 'Family reunion',
+                },
+            }
+            return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+        photoindex._run_exiftool = fake_exiftool
+        photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+    def test_find_by_person_returns_groups_primary_path(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, person='p-de957bcda1',
+            )
+
+            self.assertEqual(result['status'], 'fresh')
+            self.assertEqual([r['path'] for r in result['rows']], ['photos/family_reunion.jpg'])
+
+    def test_find_by_text_returns_caption_hit_at_group_primary(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, text='cemetery',
+            )
+
+            # 'cemetery' is only on the back variant, but the group's
+            # primary (front) path is what the default, deduped view returns.
+            self.assertEqual([r['path'] for r in result['rows']], ['photos/portrait_1880.jpg'])
+
+    def test_find_by_edtf_bounds_overlap_dedupes_to_one_group(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, edtf='188X',
+            )
+
+            self.assertEqual([r['path'] for r in result['rows']], ['photos/portrait_1880.jpg'])
+
+            files_result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, edtf='188X', files=True,
+            )
+            self.assertEqual(
+                sorted(r['path'] for r in files_result['rows']),
+                ['photos/portrait_1880-back.jpg', 'photos/portrait_1880.jpg'],
+            )
+
+    def test_find_combines_filters_with_and(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, edtf='188X', text='cemetery',
+            )
+
+            self.assertEqual([r['path'] for r in result['rows']], ['photos/portrait_1880.jpg'])
+
+            no_match = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, edtf='1902', text='cemetery',
+            )
+            self.assertEqual(no_match['rows'], [])
+
+    def test_find_requires_at_least_one_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            with self.assertRaises(ValueError):
+                photoindex.run_find(archive, {'roots': {'photos': 'photos'}})
+
+    def test_find_on_absent_index_reports_absent_status(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, keyword='date',
+            )
+
+            self.assertEqual(result['status'], 'absent')
+            self.assertEqual(result['rows'], [])
+
+    def test_cmd_find_cli_prints_match_and_exits_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            args = type('Args', (), {
+                'root': str(archive),
+                'person': 'P-de957bcda1',
+                'keyword': None,
+                'edtf': None,
+                'text': None,
+                'files': False,
+            })()
+
+            code = photoindex._cmd_find(args)
+
+            self.assertEqual(code, 0)
+
+    def test_cmd_find_cli_invalid_person_id_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            args = type('Args', (), {
+                'root': str(archive),
+                'person': 'not-an-id',
+                'keyword': None,
+                'edtf': None,
+                'text': None,
+                'files': False,
+            })()
+
+            code = photoindex._cmd_find(args)
+
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    def test_find_normalizes_person_id_case(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            result = photoindex.run_find(
+                archive, {'roots': {'photos': 'photos'}}, person='P-DE957BCDA1',
+            )
+
+            self.assertEqual([r['path'] for r in result['rows']], ['photos/family_reunion.jpg'])
+
+    def test_cmd_find_cli_on_absent_index_exits_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            args = type('Args', (), {
+                'root': str(archive),
+                'person': None,
+                'keyword': 'date',
+                'edtf': None,
+                'text': None,
+                'files': False,
+            })()
+
+            code = photoindex._cmd_find(args)
+
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    def test_cmd_find_cli_on_corrupt_index_exits_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+            (archive / '.cache' / 'photos.sqlite').write_bytes(b'not a sqlite database')
+
+            args = type('Args', (), {
+                'root': str(archive),
+                'person': None,
+                'keyword': 'date',
+                'edtf': None,
+                'text': None,
+                'files': False,
+            })()
+
+            code = photoindex._cmd_find(args)
+
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    def test_cmd_find_cli_on_stale_index_warns_but_still_returns_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            cache = archive / '.cache'
+            index_db = cache / 'index.sqlite'
+            sqlite3.connect(index_db).close()
+            photos_mtime = (cache / 'photos.sqlite').stat().st_mtime
+            os.utime(index_db, (photos_mtime + 10, photos_mtime + 10))
+
+            args = type('Args', (), {
+                'root': str(archive),
+                'person': 'P-de957bcda1',
+                'keyword': None,
+                'edtf': None,
+                'text': None,
+                'files': False,
+            })()
+
+            code = photoindex._cmd_find(args)
+
+            self.assertEqual(code, photoindex.EXIT_CLEAN)
 
     def test_missing_photos_root_cli_returns_warning(self) -> None:
         with tempfile.TemporaryDirectory() as d:
