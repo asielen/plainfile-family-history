@@ -63,7 +63,10 @@ CODE MAP
 
   Query (fha photoindex find — M3.2)
     _paths_by_person/_keyword/_edtf/_text — one matching-path set per filter
-    run_find                  — AND the requested filters; group-dedupe unless --files
+    _group_keys_for           — map each path to its group key (group_id or singleton)
+    _primary_path_for         — the primary_path of a group_id
+    run_find                  — AND the requested filters at the group level;
+                                 group-dedupe unless --files
 
   Scan orchestration
     _get_db                   — open (or create) .cache/photos.sqlite, apply DDL
@@ -102,6 +105,7 @@ from _lib import (
     ParsedName,
     edtf_bounds,
     find_archive_root,
+    id_type_of,
     is_valid_edtf,
     is_valid_id,
     load_fha_yaml,
@@ -662,7 +666,14 @@ def _paths_by_keyword(conn: sqlite3.Connection, term: str) -> set[str]:
 
 
 def _paths_by_edtf(conn: sqlite3.Connection, query: str) -> set[str]:
-    """Bounds-overlap filter (TOOLING §1 edtf_bounds) against each photo's own edtf."""
+    """Bounds-overlap filter (TOOLING §1 edtf_bounds) against each photo's own edtf.
+
+    The query string must itself be valid EDTF. edtf_bounds() silently widens an
+    unparseable string to the open range 0001..9999, which would turn a typo like
+    --edtf banana into a match-every-dated-photo query; reject it up front instead.
+    """
+    if not is_valid_edtf(query):
+        raise ValueError(f'--edtf value is not a valid EDTF date: {query!r}')
     q_min, q_max = edtf_bounds(query)
     out: set[str] = set()
     for path, edtf in conn.execute('SELECT path, edtf FROM photos WHERE edtf IS NOT NULL'):
@@ -683,6 +694,28 @@ def _paths_by_text(conn: sqlite3.Connection, query: str) -> set[str]:
         raise RuntimeError(f'--text query is not valid FTS syntax: {e}') from e
 
 
+def _group_keys_for(conn: sqlite3.Connection, paths: set[str]) -> dict[str, object]:
+    """Map each path to its group key for group-level set operations.
+
+    A grouped photo's key is its `group_id` (a string); an ungrouped photo is its
+    own singleton, keyed by the tuple ('path', path) so it can never collide with
+    a real group_id. Used to AND filters at the logical-photo level — see run_find.
+    """
+    keys: dict[str, object] = {}
+    for path in paths:
+        row = conn.execute('SELECT group_id FROM photos WHERE path=?', (path,)).fetchone()
+        group_id = row['group_id'] if row and row['group_id'] else None
+        keys[path] = group_id if group_id else ('path', path)
+    return keys
+
+
+def _primary_path_for(conn: sqlite3.Connection, group_id: str) -> str | None:
+    row = conn.execute(
+        'SELECT primary_path FROM photo_groups WHERE group_id=?', (group_id,)
+    ).fetchone()
+    return row['primary_path'] if row else None
+
+
 def run_find(
     archive_root: Path,
     fha_config: dict,
@@ -696,10 +729,22 @@ def run_find(
     Apply the requested filters (AND'd together when more than one is given)
     and return {'status': photoindex_status, 'rows': [...]}.
 
+    Filters are AND'd at the GROUP level, not the raw-path level: two filters may
+    each match a different variant of one physical photo (e.g. --edtf hits the
+    front scan's DATE keyword while --text hits the back scan's caption), and those
+    variants are a single logical hit. Intersecting raw paths would wrongly drop
+    such a group, so each filter's hits are widened to their groups before the AND.
+
     Default output is one row per group (the group's primary_path) — search
     results and packet-style gathering always treat variants of one physical
     photo as a single hit (TOOLING §9). `--files` exposes every matching raw
     row instead, including non-primary variants.
+
+    photoindex_status only probes that the cache's tables exist, not that every
+    selected column does; an older or partially written schema can therefore pass
+    the freshness gate yet raise inside a query. Those sqlite errors are mapped to
+    the same 'unreadable' status as a corrupt cache so the caller reports the
+    documented rebuild message instead of leaking a traceback.
     """
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
@@ -708,51 +753,54 @@ def run_find(
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     conn.row_factory = sqlite3.Row
     try:
-        filters: list[set[str]] = []
-        if person:
-            filters.append(_paths_by_person(conn, normalize_id(person)))
-        if keyword:
-            filters.append(_paths_by_keyword(conn, keyword))
-        if edtf:
-            filters.append(_paths_by_edtf(conn, edtf))
-        if text:
-            filters.append(_paths_by_text(conn, text))
-        if not filters:
-            raise ValueError('at least one of --person/--keyword/--edtf/--text is required')
+        try:
+            filters: list[set[str]] = []
+            if person:
+                filters.append(_paths_by_person(conn, normalize_id(person)))
+            if keyword:
+                filters.append(_paths_by_keyword(conn, keyword))
+            if edtf:
+                filters.append(_paths_by_edtf(conn, edtf))
+            if text:
+                filters.append(_paths_by_text(conn, text))
+            if not filters:
+                raise ValueError('at least one of --person/--keyword/--edtf/--text is required')
 
-        matched = filters[0]
-        for f in filters[1:]:
-            matched &= f
-        if not matched:
-            return {'status': status, 'rows': []}
+            all_paths: set[str] = set().union(*filters)
+            group_key = _group_keys_for(conn, all_paths)
 
-        if files:
-            paths = sorted(matched)
-        else:
-            primaries: set[str] = set()
-            for path in matched:
-                group_row = conn.execute(
-                    'SELECT group_id FROM photos WHERE path=?', (path,)
+            group_sets = [{group_key[p] for p in f} for f in filters]
+            matched_groups = group_sets[0]
+            for gs in group_sets[1:]:
+                matched_groups &= gs
+            if not matched_groups:
+                return {'status': status, 'rows': []}
+
+            qualifying = {p for p in all_paths if group_key[p] in matched_groups}
+
+            if files:
+                paths = sorted(qualifying)
+            else:
+                primaries: set[str] = set()
+                for path in qualifying:
+                    key = group_key[path]
+                    if isinstance(key, str):     # grouped — collapse to the group primary
+                        primaries.add(_primary_path_for(conn, key) or path)
+                    else:                        # singleton — the path is its own primary
+                        primaries.add(path)
+                paths = sorted(primaries)
+
+            rows = []
+            for path in paths:
+                row = conn.execute(
+                    'SELECT path, title, caption, edtf, source_id, group_id, is_primary, '
+                    'variant_role FROM photos WHERE path=?', (path,)
                 ).fetchone()
-                group_id = group_row['group_id'] if group_row else None
-                if group_id:
-                    prim_row = conn.execute(
-                        'SELECT primary_path FROM photo_groups WHERE group_id=?', (group_id,)
-                    ).fetchone()
-                    primaries.add(prim_row['primary_path'] if prim_row else path)
-                else:
-                    primaries.add(path)
-            paths = sorted(primaries)
-
-        rows = []
-        for path in paths:
-            row = conn.execute(
-                'SELECT path, title, caption, edtf, source_id, group_id, is_primary, '
-                'variant_role FROM photos WHERE path=?', (path,)
-            ).fetchone()
-            if row:
-                rows.append(dict(row))
-        return {'status': status, 'rows': rows}
+                if row:
+                    rows.append(dict(row))
+            return {'status': status, 'rows': rows}
+        except sqlite3.Error:
+            return {'status': 'unreadable', 'rows': []}
     finally:
         conn.close()
 
@@ -979,9 +1027,14 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
     p.set_defaults(func=_cmd_scan)
     deferred = p.add_subparsers(dest='photoindex_command', metavar='SUBCOMMAND')
 
+    # default=SUPPRESS so omitting the child --root/--spec-root does NOT clobber a
+    # value already parsed from the parent `photoindex` form
+    # (`fha photoindex --root X find ...`); argparse otherwise resets the shared
+    # dest back to the subparser's default. The attribute stays absent when neither
+    # form supplies it, which `_cmd_find`'s getattr(..., None) handles.
     find_p = deferred.add_parser('find', help='Query the photo catalog')
-    find_p.add_argument('--root', metavar='PATH', help='Archive root (overrides auto-detection)')
-    find_p.add_argument('--spec-root', metavar='PATH', help=argparse.SUPPRESS)
+    find_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help='Archive root (overrides auto-detection)')
+    find_p.add_argument('--spec-root', metavar='PATH', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     find_p.add_argument('--person', metavar='P-ID', help='Photos resolved to this P-id (any confidence tier)')
     find_p.add_argument('--keyword', metavar='TERM', help='Case-insensitive substring match against cached keywords')
     find_p.add_argument('--edtf', metavar='EDTF', help='Bounds-overlap filter against each photo\'s resolved date')
@@ -991,8 +1044,8 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
 
     for name in ('triage', 'reconcile', 'tag-person', 'report'):
         child = deferred.add_parser(name, help='Deferred to a follow-up photoindex PR')
-        child.add_argument('--root', metavar='PATH', help=argparse.SUPPRESS)
-        child.add_argument('--spec-root', metavar='PATH', help=argparse.SUPPRESS)
+        child.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+        child.add_argument('--spec-root', metavar='PATH', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
         if name == 'triage':
             child.add_argument('--top', metavar='N', help=argparse.SUPPRESS)
         elif name == 'tag-person':
@@ -1073,8 +1126,10 @@ def _cmd_find(args: argparse.Namespace) -> int:
     person = getattr(args, 'person', None)
     if person:
         person = normalize_id(person)
-        if not is_valid_id(person):
-            print(f'ERROR: {person!r} is not a valid archive ID.', file=sys.stderr)
+        # --person filters photo_people, which only ever holds P-ids; a valid but
+        # wrong-type id (S-/C-/…) would otherwise pass and silently match nothing.
+        if not is_valid_id(person) or id_type_of(person) != 'P':
+            print(f'ERROR: {person!r} is not a valid P-id.', file=sys.stderr)
             return EXIT_FAILURE
 
     try:
