@@ -143,6 +143,36 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_source_tagged_file_groups_with_untagged_stem_sibling(self) -> None:
+        # Only the front carries a SOURCE: S-id; the back is an untagged stem
+        # sibling in the same directory. They must land in one group, not
+        # split into a SOURCE: group and a separate STEM: group.
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d) / '.cache'
+            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            try:
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                    'is_primary, variant_copy, variant_role) '
+                    "VALUES ('wedding_1902.jpg',0,0,'S-123456789a',NULL,0,NULL,NULL)"
+                )
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                    'is_primary, variant_copy, variant_role) '
+                    "VALUES ('wedding_1902-back.jpg',0,0,NULL,NULL,0,NULL,NULL)"
+                )
+                photoindex._group_photos(conn)
+                rows = conn.execute(
+                    'SELECT path, group_id FROM photos ORDER BY path'
+                ).fetchall()
+                group_ids = {path: group_id for path, group_id in rows}
+                self.assertEqual(
+                    group_ids['wedding_1902-back.jpg'], group_ids['wedding_1902.jpg']
+                )
+                self.assertEqual(group_ids['wedding_1902.jpg'], 'SOURCE:S-123456789a')
+            finally:
+                conn.close()
+
     def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))

@@ -570,19 +570,33 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     would silently miss a newly-added sibling joining an existing group.
     """
     rows = conn.execute('SELECT path, source_id, edtf FROM photos').fetchall()
-    groups: dict[str, list[str]] = {}
     parsed_by_path: dict[str, ParsedName] = {}
     edtf_by_path: dict[str, str | None] = {}
+    stem_key_by_path: dict[str, str] = {}
+    source_id_by_path: dict[str, str | None] = {}
 
     for path, source_id, edtf in rows:
         p = Path(path)
         parsed = parse_media_filename(p.stem)
         parsed_by_path[path] = parsed
         edtf_by_path[path] = edtf
+        source_id_by_path[path] = source_id
+        stem_key_by_path[path] = f'{p.parent.as_posix()}:{_grouping_stem(parsed)}'
+
+    # A SOURCE: S-id keyword wins for every file sharing a stem group, not
+    # just the file(s) that carry the keyword themselves — a front/back/crop
+    # set is one logical photo even when only one member has been processed
+    # into a source record.
+    source_id_by_stem_key: dict[str, str] = {}
+    for path, source_id in source_id_by_path.items():
         if source_id:
-            key = f'SOURCE:{source_id}'
-        else:
-            key = f'STEM:{p.parent.as_posix()}:{_grouping_stem(parsed)}'
+            source_id_by_stem_key.setdefault(stem_key_by_path[path], source_id)
+
+    groups: dict[str, list[str]] = {}
+    for path in parsed_by_path:
+        stem_key = stem_key_by_path[path]
+        resolved_source_id = source_id_by_path[path] or source_id_by_stem_key.get(stem_key)
+        key = f'SOURCE:{resolved_source_id}' if resolved_source_id else f'STEM:{stem_key}'
         groups.setdefault(key, []).append(path)
 
     conn.execute('DELETE FROM photo_groups')
