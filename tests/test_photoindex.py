@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import photoindex
-from _lib import parse_media_filename, photoindex_status
+from _lib import newest_person_record_mtime, parse_media_filename, photoindex_status
 
 
 def _copy_fixture(tmp: Path) -> Path:
@@ -142,6 +142,41 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_person_match_on_one_variant_propagates_to_whole_group(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {},
+                    'portrait_1880-back.jpg': {'Keywords': ['P-de957bcda1']},
+                    'wedding_1902.jpg': {},
+                    'family_reunion.jpg': {},
+                }
+                return [
+                    {'SourceFile': str(p), **rows[p.name]}
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                people = conn.execute(
+                    "SELECT path, person_ref, via FROM photo_people "
+                    "WHERE path LIKE '%portrait_1880%' ORDER BY path"
+                ).fetchall()
+                self.assertEqual(
+                    people,
+                    [
+                        ('photos/portrait_1880-back.jpg', 'p-de957bcda1', 'pid-keyword'),
+                        ('photos/portrait_1880.jpg', 'p-de957bcda1', 'pid-keyword'),
+                    ],
+                )
+            finally:
+                conn.close()
+
     def test_media_filename_parser_covers_documented_suffixes(self) -> None:
         back = parse_media_filename('portrait_1880_back')
         self.assertEqual(back.base_id, 'portrait_1880')
@@ -168,6 +203,44 @@ class PhotoindexTests(unittest.TestCase):
         self.assertEqual(dash_variant_crop.variant_id, 'b')
         self.assertTrue(dash_variant_crop.is_crop)
         self.assertIsNone(dash_variant_crop.freeform_role)
+
+    def test_underscore_letter_suffix_is_not_a_copy_variant(self) -> None:
+        # TOOLING §6 only documents '-b' (dash) or a bare letter right after a
+        # digit ('034b') as copy-variant grammar — 'scan_a'/'scan_b' must stay
+        # distinct base_ids instead of collapsing into variants of 'scan'.
+        scan_a = parse_media_filename('scan_a')
+        self.assertEqual(scan_a.base_id, 'scan_a')
+        self.assertIsNone(scan_a.variant_id)
+
+        scan_b = parse_media_filename('scan_b')
+        self.assertEqual(scan_b.base_id, 'scan_b')
+        self.assertIsNone(scan_b.variant_id)
+
+    def test_newest_person_record_mtime_ignores_companion_files(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = Path(d)
+            people_dir = archive / 'people'
+            people_dir.mkdir()
+            profile = people_dir / 'hartley__thomas_edward_P-de957bcda1.md'
+            profile.write_text('---\nid: P-de957bcda1\n---\n', encoding='utf-8')
+            os.utime(profile, (1, 1))
+
+            baseline = newest_person_record_mtime(archive)
+            self.assertEqual(baseline, 1.0)
+
+            for companion_path in (
+                people_dir / 'hartley__thomas_edward_timeline_P-de957bcda1.md',
+                people_dir / 'hartley__thomas_edward_research_P-de957bcda1.md',
+                people_dir / 'hartley__thomas_edward_sources-index_P-de957bcda1.md',
+                people_dir / 'hartley__thomas_edward_draft-queue_P-de957bcda1.md',
+                people_dir / 'sources-index.md',
+            ):
+                companion_path.write_text('GENERATED\n', encoding='utf-8')
+                os.utime(companion_path, (baseline + 100, baseline + 100))
+
+            # Touching only generated companion files must not bump the
+            # profile-record freshness watermark.
+            self.assertEqual(newest_person_record_mtime(archive), baseline)
 
     def test_photoindex_status_is_stale_after_person_index_rebuild(self) -> None:
         with tempfile.TemporaryDirectory() as d:

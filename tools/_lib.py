@@ -292,6 +292,12 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
         return ('unreadable', 0.0)
     if not probe_sqlite(db_path, 'SELECT 1 FROM photo_fts LIMIT 1'):
         return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_groups LIMIT 1'):
+        return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_keywords LIMIT 1'):
+        return ('unreadable', 0.0)
+    if not probe_sqlite(db_path, 'SELECT 1 FROM photo_people LIMIT 1'):
+        return ('unreadable', 0.0)
 
     # photo_people is derived from .cache/index.sqlite (face_tags/name_variants),
     # so a person record edit that's been folded into a rebuilt index.sqlite
@@ -494,7 +500,7 @@ _BACK_SUFFIX_RE = re.compile(r'[-_]back$', re.I)
 _FRONT_SUFFIX_RE = re.compile(r'[-_]front$', re.I)
 _BW_SUFFIX_RE = re.compile(r'[-_]bw$', re.I)
 _PAGE_SUFFIX_RE = re.compile(r'[-_]page[-_]?(\d+)$', re.I)
-_VARIANT_DASH_RE = re.compile(r'[-_]([a-z])$', re.I)
+_VARIANT_DASH_RE = re.compile(r'-([a-z])$', re.I)
 _VARIANT_BARE_RE = re.compile(r'(?<=[0-9])([a-z])$', re.I)
 _FREEFORM_ROLE_RE = re.compile(r'[-_]([a-z][a-z0-9-]*)$', re.I)
 
@@ -547,7 +553,12 @@ def parse_media_filename(stem: str) -> ParsedName:
         remaining = _BW_SUFFIX_RE.sub('', remaining)
     else:
         freeform_m = _FREEFORM_ROLE_RE.search(remaining)
-        if freeform_m and not _VARIANT_DASH_RE.search(remaining) and not _VARIANT_BARE_RE.search(remaining):
+        # A single trailing letter is never a freeform role — it's either a
+        # documented copy variant ('-b', '034b') or, for an undocumented form
+        # like '_a', not a suffix at all (TOOLING §6: only dash or
+        # bare-after-digit is copy-variant grammar; underscore-letter must
+        # stay part of base_id rather than being swallowed as a "role").
+        if freeform_m and len(freeform_m.group(1)) > 1:
             part_kind = 'freeform'
             freeform_role = freeform_m.group(1).lower()
             remaining = _FREEFORM_ROLE_RE.sub('', remaining)
@@ -798,11 +809,13 @@ def newest_record_mtime(archive_root: Path) -> float:
 
 
 def newest_person_record_mtime(archive_root: Path) -> float:
-    """Max mtime (epoch seconds) across people/*.md files only.
+    """Max mtime (epoch seconds) across person *profile* records only.
 
-    Narrower than `newest_record_mtime`: face-tag/name matching only needs to
-    know whether person records changed, so an edit to an unrelated source,
-    note, or place file must not be treated as busting that freshness check.
+    Narrower than `newest_record_mtime`: face-tag/name matching only reads
+    `face_tags`/`name_variants` from profile records, so generated companion
+    files (research/timeline/sources-index/draft-queue) and folder-level
+    `sources-index.md` files under people/ must not bust this freshness
+    check just because `fha views refresh` touched them.
     Returns 0.0 on a brand-new archive that has no person records yet.
     """
     max_mtime = 0.0
@@ -810,6 +823,9 @@ def newest_person_record_mtime(archive_root: Path) -> float:
     if not people_dir.is_dir():
         return max_mtime
     for p in people_dir.rglob('*.md'):
+        parsed = parse_filename(p)
+        if parsed is None or parsed['id_type'] != 'P' or parsed['kind'] != 'profile':
+            continue
         try:
             mtime = p.stat().st_mtime
             if mtime > max_mtime:

@@ -444,6 +444,9 @@ def _load_face_regions_by_path(conn: sqlite3.Connection) -> dict[str, list[tuple
     return by_path
 
 
+_VIA_PRIORITY = {'pid-keyword': 0, 'face-tag': 1, 'name-match': 2}
+
+
 def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     """
     Recompute photo_people for every cached photo from SQLite metadata.
@@ -453,19 +456,40 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     table in one pass keeps incremental scans equivalent to full scans: a
     changed person record can alter weak matches without forcing exiftool to
     re-read unchanged image files.
+
+    Person matches are aggregated at the group level (TOOLING §9): grouped
+    photos are one logical photo, so a match found on any variant (e.g. a
+    P-id keyword on the back of a print) is recorded for every variant in
+    the group, not just the path that carries it. When variants disagree on
+    `via` for the same person, the most confident one wins.
     """
     face_tags, names = _load_face_tag_index(archive_root)
     keywords_by_path = _load_keywords_by_path(conn)
     face_regions_by_path = _load_face_regions_by_path(conn)
     conn.execute('DELETE FROM photo_people')
-    for (path,) in conn.execute('SELECT path FROM photos ORDER BY path'):
+
+    matches_by_path: dict[str, list[tuple[str, str]]] = {}
+    paths_by_group: dict[str, list[str]] = {}
+    for path, group_id in conn.execute('SELECT path, group_id FROM photos ORDER BY path'):
         keywords = keywords_by_path.get(path, [])
         face_regions = face_regions_by_path.get(path, [])
-        for pid, via in _resolve_photo_people(keywords, face_regions, face_tags, names):
-            conn.execute(
-                'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
-                (path, pid, via),
-            )
+        matches_by_path[path] = _resolve_photo_people(keywords, face_regions, face_tags, names)
+        key = group_id if group_id is not None else path
+        paths_by_group.setdefault(key, []).append(path)
+
+    for paths in paths_by_group.values():
+        best: dict[str, str] = {}
+        for path in paths:
+            for pid, via in matches_by_path[path]:
+                current = best.get(pid)
+                if current is None or _VIA_PRIORITY[via] < _VIA_PRIORITY[current]:
+                    best[pid] = via
+        for path in paths:
+            for pid, via in best.items():
+                conn.execute(
+                    'INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                    (path, pid, via),
+                )
 
 
 # ── Variation grouping ───────────────────────────────────────────────────
