@@ -461,16 +461,15 @@ def _resolve_photo_people(
             add(normalize_id(kw), 'pid-keyword')
 
     matched_names = {n for n, _ in face_regions}
-    ambiguous_tags: set[str] = set()
+    resolved_via_face_tags: set[str] = set()
     for region_name, _region_type in face_regions:
         pids = face_tags.get(region_name)
         if pids:
+            resolved_via_face_tags.add(region_name)
             if len(pids) == 1:
                 add(next(iter(pids)), 'face-tag')
-            else:
-                ambiguous_tags.add(region_name)
 
-    for region_name in matched_names - ambiguous_tags:
+    for region_name in matched_names - resolved_via_face_tags:
         pids = names.get(region_name)
         if pids and len(pids) == 1:
             add(next(iter(pids)), 'name-match')
@@ -609,19 +608,33 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     would silently miss a newly-added sibling joining an existing group.
     """
     rows = conn.execute('SELECT path, source_id, edtf FROM photos').fetchall()
-    groups: dict[str, list[str]] = {}
     parsed_by_path: dict[str, ParsedName] = {}
     edtf_by_path: dict[str, str | None] = {}
+    stem_key_by_path: dict[str, str] = {}
+    source_id_by_path: dict[str, str | None] = {}
 
     for path, source_id, edtf in rows:
         p = Path(path)
         parsed = parse_media_filename(p.stem)
         parsed_by_path[path] = parsed
         edtf_by_path[path] = edtf
+        source_id_by_path[path] = source_id
+        stem_key_by_path[path] = f'{p.parent.as_posix()}:{_grouping_stem(parsed)}'
+
+    # A SOURCE: S-id keyword wins for every file sharing a stem group, not
+    # just the file(s) that carry the keyword themselves — a front/back/crop
+    # set is one logical photo even when only one member has been processed
+    # into a source record.
+    source_id_by_stem_key: dict[str, str] = {}
+    for path, source_id in source_id_by_path.items():
         if source_id:
-            key = f'SOURCE:{source_id}'
-        else:
-            key = f'STEM:{p.parent.as_posix()}:{_grouping_stem(parsed)}'
+            source_id_by_stem_key.setdefault(stem_key_by_path[path], source_id)
+
+    groups: dict[str, list[str]] = {}
+    for path in parsed_by_path:
+        stem_key = stem_key_by_path[path]
+        resolved_source_id = source_id_by_path[path] or source_id_by_stem_key.get(stem_key)
+        key = f'SOURCE:{resolved_source_id}' if resolved_source_id else f'STEM:{stem_key}'
         groups.setdefault(key, []).append(path)
 
     conn.execute('DELETE FROM photo_groups')
@@ -1519,13 +1532,21 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
 
     on_disk: dict[Path, tuple[float, int]] = {}
     alias_by_path: dict[Path, str] = {}
+    stat_failures: list[Path] = []
     for p in _iter_photo_files(photos_root):
         try:
             st = p.stat()
             on_disk[p] = (st.st_mtime, st.st_size)
             alias_by_path[p] = path_to_alias(p, 'photos', fha_config, archive_root)
         except OSError:
-            pass
+            stat_failures.append(p)
+
+    if stat_failures:
+        sample = ', '.join(str(p) for p in stat_failures[:5])
+        more = f' and {len(stat_failures) - 5} more' if len(stat_failures) > 5 else ''
+        raise RuntimeError(
+            f'could not stat {len(stat_failures)} photo file(s): {sample}{more}'
+        )
 
     conn, needs_face_backfill = _get_db(archive_root / '.cache')
     try:
@@ -1753,7 +1774,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
     try:
         summary = run_scan(archive_root, fha_config, full=getattr(args, 'full', False))
-    except RuntimeError as e:
+    except (RuntimeError, sqlite3.Error) as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 

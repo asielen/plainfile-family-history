@@ -1,5 +1,6 @@
 import argparse
 import builtins
+import inspect
 import os
 import subprocess
 import shutil
@@ -141,6 +142,36 @@ class PhotoindexTests(unittest.TestCase):
                 negative_copy, negative_role = rows['portrait_1880b-negative.jpg']
                 self.assertIsNone(negative_copy)
                 self.assertEqual(negative_role, 'negative')
+            finally:
+                conn.close()
+
+    def test_source_tagged_file_groups_with_untagged_stem_sibling(self) -> None:
+        # Only the front carries a SOURCE: S-id; the back is an untagged stem
+        # sibling in the same directory. They must land in one group, not
+        # split into a SOURCE: group and a separate STEM: group.
+        with tempfile.TemporaryDirectory() as d:
+            cache_dir = Path(d) / '.cache'
+            conn, _needs_face_backfill = photoindex._get_db(cache_dir)
+            try:
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                    'is_primary, variant_copy, variant_role) '
+                    "VALUES ('wedding_1902.jpg',0,0,'S-123456789a',NULL,0,NULL,NULL)"
+                )
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id, '
+                    'is_primary, variant_copy, variant_role) '
+                    "VALUES ('wedding_1902-back.jpg',0,0,NULL,NULL,0,NULL,NULL)"
+                )
+                photoindex._group_photos(conn)
+                rows = conn.execute(
+                    'SELECT path, group_id FROM photos ORDER BY path'
+                ).fetchall()
+                group_ids = {path: group_id for path, group_id in rows}
+                self.assertEqual(
+                    group_ids['wedding_1902-back.jpg'], group_ids['wedding_1902.jpg']
+                )
+                self.assertEqual(group_ids['wedding_1902.jpg'], 'SOURCE:S-123456789a')
             finally:
                 conn.close()
 
@@ -357,6 +388,19 @@ class PhotoindexTests(unittest.TestCase):
             {'Grandma': {'p-aaaaaaaaaa'}},
         )
         self.assertEqual(rows, [])
+
+    def test_unique_face_tag_does_not_also_fall_back_to_name_match(self) -> None:
+        # 'Jack' resolves uniquely via person_face_tags to P-a. Face-tag
+        # resolution is the higher-confidence tier, so name/name_variant
+        # matching must not also run for the same region name and attach an
+        # unrelated person (P-b) to the same face.
+        rows = photoindex._resolve_photo_people(
+            [],
+            [('Jack', 'Face')],
+            {'Jack': {'p-aaaaaaaaaa'}},
+            {'Jack': {'p-bbbbbbbbbb'}},
+        )
+        self.assertEqual(rows, [('p-aaaaaaaaaa', 'face-tag')])
 
     def test_stale_index_is_not_used_for_weak_face_or_name_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -664,6 +708,55 @@ class PhotoindexTests(unittest.TestCase):
 
             with self.assertRaises(RuntimeError):
                 photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+    def test_stat_failure_during_scan_raises_runtime_error(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            target = archive / 'photos' / 'family_reunion.jpg'
+
+            orig_stat = Path.stat
+
+            def failing_stat(self, *a, **k):
+                # Target only the explicit `p.stat()` call run_scan's loop
+                # makes to read mtime/size, not whatever stat-like check
+                # is_file() does during file discovery (`_iter_photo_files`)
+                # — on some platforms/pathlib versions is_file() resolves
+                # to a C-level syscall that never reaches Path.stat() at
+                # all, so counting total calls to this file is not
+                # portable; identifying run_scan's own frame is.
+                if self.name == 'family_reunion.jpg' and inspect.stack()[1].function == 'run_scan':
+                    raise OSError('permission denied')
+                return orig_stat(self, *a, **k)
+
+            Path.stat = failing_stat
+            try:
+                with self.assertRaisesRegex(RuntimeError, 'could not stat'):
+                    photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            finally:
+                Path.stat = orig_stat
+            self.assertTrue(target.exists())
+
+    def test_cmd_scan_cli_reports_clean_error_on_sqlite_write_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [{'SourceFile': str(p)} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+
+            orig_group_photos = photoindex._group_photos
+
+            def failing_group_photos(conn):
+                raise sqlite3.OperationalError('database is locked')
+
+            photoindex._group_photos = failing_group_photos
+            try:
+                args = type('Args', (), {'root': str(archive), 'full': False})()
+                code = photoindex._cmd_scan(args)
+                self.assertEqual(code, photoindex.EXIT_FAILURE)
+            finally:
+                photoindex._group_photos = orig_group_photos
 
     def test_missing_exiftool_row_fails_without_refreshing_stale_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as d:
