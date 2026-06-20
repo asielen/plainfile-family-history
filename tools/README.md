@@ -36,6 +36,36 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 | `fha photoindex reconcile [--with-exif]` | `photoindex.py` | ✓ M3.4 — re-matches a moved file by its embedded `SOURCE:` keyword (`--with-exif` only); unmatchable rows are flagged `MISSING:` in the cache; new on-disk files are counted, not scraped; `photo_fts` is re-keyed alongside every other path-keyed table |
 | `fha photoindex tag-person <P-id> [--from-face-tag TAG \| --paths PATH...] [--dry-run]` | `photoindex.py` | ✓ M3.4 — preview -> interactive `[y/N]` confirm (or `--dry-run`) -> one `exiftool -keywords+=` write per candidate -> `photo_people`/`photo_keywords`/`photo_fts` cache update for whichever candidates' writes succeeded |
 
+## Implemented tools (milestone 4, in progress)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha xref` | `xref.py` | ✓ M4.1 — corroboration/contradiction candidate pairs: same person + same claim `type` + different source + not already linked (`claim_links`); classified by `edtf_bounds` overlap, plus a vital-type (`birth`/`death`/`marriage`) place mismatch check when bounds overlap (`place_text`, falling back to conservative place phrases in `value`). Read-only; never writes `claim_links`. Absent/unreadable index → exit 3; stale → warns, still queries. |
+| `fha cooccur [--threshold N]` | `cooccur.py` | ✓ M4.2 — two candidate detectors: (1) person co-occurrence — person-pairs sharing ≥`--threshold` (default 2) sources via `source_people`, excluding pairs with an existing `relationships` edge or a dismissed-tombstone entry (`.cache/cooccur_dismissed.json`, read-only), ranked by source count then source-type variety; (2) org/entity recurrence — `occupation`, `military`, and membership-style `event`/`note` claims grouped by `(category, normalized value)`, emitted when ≥2 people or ≥2 sources share the same category/value hub. Read-only; never mints claims or writes the tombstone. Same absent/unreadable/stale handling as `xref`. |
+
+Both tools follow the TOOLING §14a/§14a2 "deterministic candidates, human-confirm gate"
+discipline: they only print suggestions. Confirming a pair (writing `corroborates:`/
+`contradicts:` links, minting a `relationship` claim, or writing a dismissal) is left to a
+future skill layer — out of scope for M4.1/M4.2.
+
+## fha xref / fha cooccur — implementation status
+
+| Feature | Status | Notes |
+|---|---|---|
+| Corroboration/contradiction classification | ✓ | Bounds-overlap via `edtf_bounds`; vital types additionally compared on normalized `place_text`, falling back to conservative place phrases in `value`, when bounds overlap |
+| Already-linked exclusion | ✓ | Any existing `claim_links` row between the two claims (either rel) suppresses the candidate |
+| Person co-occurrence ranking | ✓ | `(source_count desc, source_type variety desc)` |
+| Existing-relationship exclusion | ✓ | Any `relationships` row between the pair (either direction) suppresses the candidate |
+| Dismissed-pairs tombstone | ✓ (read-only) | `.cache/cooccur_dismissed.json`; missing file = empty set, not an error; this tool never writes it |
+| Org/entity recurrence | ✓ | Groups `occupation`, `military`, and membership-style `event`/`note` claims by `(category, normalized value)` |
+| `--threshold N` | ✓ | Minimum distinct shared sources for a person co-occurrence candidate (default 2); rejects `< 1` |
+
+Automated tests: `tests/test_xref.py`, `tests/test_cooccur.py` (stdlib `unittest`) build a
+synthetic `.cache/index.sqlite` directly from `index.py`'s `_DDL` schema and exercise
+corroboration/contradiction classification, same-source and already-linked exclusion,
+threshold filtering, existing-relationship exclusion, the dismissed-tombstone read path,
+and org-recurrence grouping — without needing a full archive fixture or `exiftool`.
+
 ## fha photoindex — implementation status
 
 | Feature | Status | Notes |
