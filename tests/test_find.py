@@ -614,10 +614,201 @@ class PhotoIndexFreshnessInRelatedTests(unittest.TestCase):
         self.assertNotIn('photos/old.jpg', out)
 
 
+class PersonSourceCountDateTests(unittest.TestCase):
+    """Covers the _person_source_count `--date` fix: dated person slices
+    must not count sources whose only claim about the person falls outside
+    the window."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        _add_source(self.conn, 's-1111111111', 'Census 1880')
+        _add_source(self.conn, 's-2222222222', 'Obituary 1950')
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_dated_slice_counts_only_in_window_sources(self) -> None:
+        _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'residence', 'lived',
+                    ['p-aaaaaaaaaa'], date_edtf='1880',
+                    date_min='1880-01-01', date_max='1880-12-31')
+        _add_claim(self.conn, 'c-2222222222', 's-2222222222', 'event', 'died',
+                    ['p-aaaaaaaaaa'], date_edtf='1950',
+                    date_min='1950-01-01', date_max='1950-12-31')
+        self.conn.commit()
+
+        rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None, self.archive_root, {})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('sources: 2', out)
+
+        rc, out = _run(find.run_related, 'p-aaaaaaaaaa', '1880', self.archive_root, {})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('sources: 1', out)
+
+
+class RelatedSourceDateTests(unittest.TestCase):
+    """Covers the _related_source date-narrowing fixes:
+    - source_people frontmatter rows excluded when date_bounds is set
+    - sibling sources filtered to claim-backed in-window sources only"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        _add_person(self.conn, 'p-bbbbbbbbbb', 'Bob')
+        _add_source(self.conn, 's-1111111111', 'Selected 1880')
+        _add_source(self.conn, 's-2222222222', 'Sibling 1880')
+        _add_source(self.conn, 's-3333333333', 'Sibling 1950')
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def test_source_people_skipped_in_dated_slice(self) -> None:
+        # Bob is only on s-1111111111 via frontmatter source_people — no
+        # in-window claim ties him to it. A dated slice must not list him.
+        _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'residence', 'lived',
+                    ['p-aaaaaaaaaa'], date_edtf='1880',
+                    date_min='1880-01-01', date_max='1880-12-31')
+        self.conn.execute(
+            "INSERT INTO source_people(source_id, person_id) VALUES "
+            "('s-1111111111', 'p-bbbbbbbbbb')"
+        )
+        self.conn.commit()
+
+        rc, out = _run(find.run_related, 's-1111111111', '1880', self.archive_root, {})
+        self.assertEqual(rc, EXIT_CLEAN)
+        # Alice (in-window claim) yes; Bob (frontmatter-only) no.
+        self.assertIn('Alice [p-aaaaaaaaaa]', out)
+        self.assertNotIn('Bob', out)
+
+    def test_sibling_sources_filtered_by_date(self) -> None:
+        # Selected source has Alice in 1880. Sibling 1880 has Alice in 1880.
+        # Sibling 1950 has Alice in 1950. A 1880 slice must drop Sibling 1950.
+        _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'residence', 'in selected',
+                    ['p-aaaaaaaaaa'], date_edtf='1880',
+                    date_min='1880-01-01', date_max='1880-12-31')
+        _add_claim(self.conn, 'c-2222222222', 's-2222222222', 'residence', 'in sibling 1880',
+                    ['p-aaaaaaaaaa'], date_edtf='1880',
+                    date_min='1880-01-01', date_max='1880-12-31')
+        _add_claim(self.conn, 'c-3333333333', 's-3333333333', 'event', 'in sibling 1950',
+                    ['p-aaaaaaaaaa'], date_edtf='1950',
+                    date_min='1950-01-01', date_max='1950-12-31')
+        self.conn.commit()
+
+        rc, out = _run(find.run_related, 's-1111111111', '1880', self.archive_root, {})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('s-2222222222', out)
+        self.assertNotIn('s-3333333333', out)
+
+
+class RelatedPhotoDateTests(unittest.TestCase):
+    """Covers _print_person_photos / _print_place_photos date filtering:
+    when `--date` is given, photos whose own EDTF falls outside the window
+    must not appear in the neighborhood."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = _make_index(self.archive_root)
+        _add_person(self.conn, 'p-aaaaaaaaaa', 'Alice')
+        self.conn.execute(
+            "INSERT INTO places(id, name, lat, lon) VALUES ('l-1111111111', 'Fairview', 39.0, -95.0)"
+        )
+        self.conn.commit()
+        self._make_fresh_photo_db()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+        self._tmp.cleanup()
+
+    def _make_fresh_photo_db(self) -> None:
+        cache = self.archive_root / '.cache'
+        cache.mkdir(exist_ok=True)
+        pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
+        pconn.executescript(
+            '''
+            CREATE TABLE photos(path TEXT PRIMARY KEY, group_id INTEGER,
+                                gps_lat REAL, gps_lon REAL, edtf TEXT);
+            CREATE TABLE photo_groups(group_id INTEGER PRIMARY KEY,
+                                       primary_path TEXT, edtf_resolved TEXT);
+            CREATE TABLE photo_people(path TEXT, person_ref TEXT);
+            CREATE TABLE photo_face_regions(path TEXT);
+            CREATE TABLE photo_keywords(path TEXT);
+            CREATE VIRTUAL TABLE photo_fts USING fts5(path, name, caption);
+            INSERT INTO photo_groups VALUES (1, 'photos/p1880.jpg', '1880');
+            INSERT INTO photo_groups VALUES (2, 'photos/p1950.jpg', '1950');
+            INSERT INTO photos VALUES ('photos/p1880.jpg', 1, 39.0, -95.0, '1880');
+            INSERT INTO photos VALUES ('photos/p1950.jpg', 2, 39.0, -95.0, '1950');
+            INSERT INTO photo_people VALUES ('photos/p1880.jpg', 'p-aaaaaaaaaa');
+            INSERT INTO photo_people VALUES ('photos/p1950.jpg', 'p-aaaaaaaaaa');
+            '''
+        )
+        pconn.commit()
+        pconn.close()
+
+    def test_person_photos_filtered_by_date_window(self) -> None:
+        rc, out = _run(find.run_related, 'p-aaaaaaaaaa', '1880',
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('photos/p1880.jpg', out)
+        self.assertNotIn('photos/p1950.jpg', out)
+
+    def test_place_photos_filtered_by_date_window(self) -> None:
+        rc, out = _run(find.run_related, 'l-1111111111', '1880',
+                       self.archive_root, {'photos': {'root': 'photos'}})
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('photos/p1880.jpg', out)
+        self.assertNotIn('photos/p1950.jpg', out)
+
+
+class RelatedSchemaFailureTests(unittest.TestCase):
+    """Covers the run_related sqlite3.OperationalError guard: a partial /
+    incompatible schema (table exists but a column the query uses doesn't)
+    must surface the documented unreadable-index error and exit 3 instead
+    of tracebacking out of dispatch."""
+
+    def test_missing_relationships_date_start_returns_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive_root = Path(tmp)
+            cache = archive_root / '.cache'
+            cache.mkdir()
+            conn = sqlite3.connect(str(cache / 'index.sqlite'))
+            from index import _DDL
+            conn.executescript(_DDL)
+            # Drop+recreate `relationships` without date_start/date_end so
+            # the related-person query's _overlap_clause raises mid-dispatch.
+            conn.executescript(
+                '''
+                DROP TABLE relationships;
+                CREATE TABLE relationships(
+                    person_id TEXT, rel TEXT, other_id TEXT, claim_id TEXT
+                );
+                INSERT INTO persons(id, name, living, tier, path)
+                  VALUES ('p-aaaaaaaaaa', 'Alice', 'false', 'curated', 'p.md');
+                '''
+            )
+            conn.commit()
+            conn.close()
+
+            buf = io.StringIO()
+            from contextlib import redirect_stderr
+            with redirect_stdout(io.StringIO()), redirect_stderr(buf):
+                rc = find.run_related('p-aaaaaaaaaa', '1900', archive_root, {})
+            self.assertEqual(rc, EXIT_FAILURE)
+            self.assertIn('unreadable or has an incompatible schema', buf.getvalue())
+
+
 class OpenIndexDbFailureTests(unittest.TestCase):
-    """Covers the _lib.open_index_db connect-failure fix: a non-file at
-    `.cache/index.sqlite` (e.g. a directory) used to crash before reaching
-    the try block; should now return None with the documented message."""
+    """Covers the _lib.open_index_db and find._open_index connect-failure
+    fixes: a non-file at `.cache/index.sqlite` (e.g. a directory) used to
+    crash before reaching the try block; should now return None cleanly so
+    the documented behavior (unreadable-index error for --related, silent
+    tree-scan fallback for bare ID/--text) still holds."""
 
     def test_directory_at_index_path_returns_none(self) -> None:
         from _lib import open_index_db
@@ -630,6 +821,14 @@ class OpenIndexDbFailureTests(unittest.TestCase):
                 conn = open_index_db(root, ('persons',))
             self.assertIsNone(conn)
             self.assertIn('unreadable', buf.getvalue())
+
+    def test_find_open_index_directory_returns_none_silently(self) -> None:
+        # find._open_index is the bare-ID/--text fallback path: should
+        # degrade silently to a tree scan instead of tracebacking out.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.cache' / 'index.sqlite').mkdir(parents=True)
+            self.assertIsNone(find._open_index(root))
 
 
 if __name__ == '__main__':
