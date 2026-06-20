@@ -135,7 +135,6 @@ from _lib import (
     db_mtime,
     ParsedName,
     edtf_bounds,
-    find_archive_root,
     id_type_of,
     is_valid_edtf,
     is_valid_id,
@@ -147,6 +146,7 @@ from _lib import (
     photoindex_status,
     probe_sqlite,
     resolve_path,
+    resolve_root_arg,
     scan_person_record_ids,
 )
 
@@ -1905,14 +1905,9 @@ def _resolve_root_and_config(args: argparse.Namespace) -> tuple[Path, dict] | in
     caller should return immediately — callers do
     `resolved = _resolve_root_and_config(args); if isinstance(resolved, int): return resolved`.
     """
-    root = getattr(args, 'root', None)
-    if root:
-        archive_root = Path(root).resolve()
-    else:
-        archive_root = find_archive_root()
-        if archive_root is None:
-            print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
-            return EXIT_FAILURE
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
 
     try:
         fha_config = load_fha_yaml(archive_root, strict=True)

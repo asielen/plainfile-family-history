@@ -2,9 +2,10 @@
 """
 find.py — fha find: the universal locator.
 
-  fha find <ID>                Locate any archive ID (P/S/C/L/H)
-  fha find --text "phrase"     Full-text search across records, notes, transcripts
-  fha find --related <ID>      Neighborhood of any ID  [deferred to milestone 3]
+  fha find <ID>                       Locate any archive ID (P/S/C/L/H)
+  fha find --text "phrase"            Full-text search across records, notes, transcripts
+  fha find --related <ID> [--date E]  Neighborhood of any ID, optionally time-sliced
+  fha find --related --date <EDTF>    Standalone time-slice neighborhood (no ID)
 
 Detects ID type from its prefix letter and prints structured output.
 Uses the SQLite index when present.  If the index is stale, it prints a
@@ -15,7 +16,11 @@ fha id check <ID> is wired as an alias in fha.py.  The canonical
 implementation of "where does this ID live?" now lives here.  TOOLING §4a.
 
 Design decisions in TOOLING §4a:
-  D4: --related deferred to milestone 3 (after fha xref / fha cooccur).
+  D4: --related implemented (BUILD.md M4.3), after fha xref / fha cooccur.
+      It is a pure read-only query over the index — no schema change, no
+      writes. Unlike find_by_id, --related requires a real index (the
+      relational joins it runs have no meaningful tree-scan fallback): an
+      absent or unreadable index is a hard error (exit 3), not a degrade.
   D7: --text searches records + notes; photo captions are searched when
       .cache/photos.sqlite is fresh (else find prints a skip note). The
       transcripts_fts table exists but is not yet populated — transcript
@@ -39,12 +44,16 @@ from _lib import (
     EXIT_WARNINGS,
     FhaConfigError,
     configure_utf8_stdout,
+    edtf_bounds,
     find_archive_root,
     id_type_of,
+    is_valid_edtf,
     is_valid_id,
     load_fha_yaml,
     newest_record_mtime,
     normalize_id,
+    normalize_place_text,
+    open_index_db,
     photoindex_status,
     read_record,
     resolve_path,
@@ -71,6 +80,24 @@ configure_utf8_stdout()
 #  Text search
 #    _find_text                — FTS (when index fresh) + re.search over record bodies
 #
+#  --related (M4.3): neighborhood queries over the relational index
+#    (opened via _lib.open_index_db with the full relational table set — see
+#    _RELATED_REQUIRED_TABLES below)
+#    _related_person           — P-id world: edges, co-occurrence, places, hubs, sources, photos
+#    _person_cooccur_neighbors — co-occurring persons with no existing relationship edge
+#    _person_places            — places ranked by this person's claim frequency
+#    _person_org_hubs          — recurring occupation/military/membership affiliations shared
+#                                 with others
+#    _person_source_count      — distinct source count for a person
+#    _print_person_photos      — photo_people lookup in .cache/photos.sqlite
+#    _related_place            — L-id world: claims, people, sources, micro-places, photos
+#    _print_place_photos       — GPS-proximity photo lookup for a place
+#    _related_source           — S-id world: claims, persons, places, linked/sibling sources
+#    _related_claim            — C-id neighborhood: source, persons, place, links, siblings
+#    _related_hypothesis       — H-id neighborhood: person, referencing claims, verifying claim
+#    _related_date             — standalone --date time-slice neighborhood
+#    run_related                — top-level dispatcher for all of the above
+#
 #  Public API
 #    find_by_id                — locate a single ID; called by fha id check alias in fha.py
 #    run_find                  — full dispatcher (id | text | --related)
@@ -89,6 +116,12 @@ _REL_INVERSE: dict[str, str] = {
     'corroborates': 'corroborated-by',
     'contradicts':  'contradicted-by',
 }
+
+# Sentinel distinguishing "--related not given at all" from "--related given
+# with no ID value" (the standalone `--related --date EDTF` form). Both end
+# up routed to run_related, but only the latter sets related_requested=True
+# with related_id=None.
+_NO_RELATED = object()
 
 
 # ── Index freshness ───────────────────────────────────────────────────────────
@@ -109,11 +142,26 @@ def _index_is_fresh(archive_root: Path) -> bool:
 
 
 def _open_index(archive_root: Path) -> sqlite3.Connection | None:
-    """Open .cache/index.sqlite for reading; return None if missing, corrupt, or schema-less."""
+    """
+    Open .cache/index.sqlite for reading; return None if missing, corrupt, or
+    schema-less — silently, with no printed message.
+
+    Deliberately not `_lib.open_index_db`: this is the find_by_id / --text
+    path, where an absent or unreadable index is *not* fatal — the caller
+    falls back to a tree scan and prints its own warning about that
+    fallback. `open_index_db` (used by --related, which has no tree-scan
+    fallback) prints its own ERROR/WARNING and is meant to be the final
+    word on whether the index is usable.
+    """
     db_path = archive_root / '.cache' / 'index.sqlite'
     if not db_path.exists():
         return None
+    conn: sqlite3.Connection | None = None
     try:
+        # sqlite3.connect() itself can raise (path is a directory, permission
+        # denied, locked) — keep it inside the guard so this fallback-eligible
+        # path returns None and lets find_by_id/_text_search degrade to a tree
+        # scan instead of raising a traceback.
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
         # Probe for a required table so empty/corrupt files fail fast here
@@ -121,6 +169,8 @@ def _open_index(archive_root: Path) -> sqlite3.Connection | None:
         conn.execute('SELECT 1 FROM persons LIMIT 1')
         return conn
     except Exception:
+        if conn is not None:
+            conn.close()
         return None
 
 
@@ -721,6 +771,942 @@ def _find_text(
     return EXIT_CLEAN
 
 
+# ── --related (M4.3): neighborhood queries over the relational index ────────
+
+# Unlike _open_index (used by find_by_id, which can fall back to a tree
+# scan), --related's joins across relationships/claim_links/claim_persons
+# have no meaningful tree-scan equivalent — a missing or incompatible index
+# is a hard error (caller returns exit 3), so --related uses _lib's shared
+# open_index_db (same as xref.py/cooccur.py) instead of the quieter
+# _open_index above. A stale index still warns but is queried, since
+# --related is read-only and a slightly stale index is more useful than no
+# answer at all.
+_RELATED_REQUIRED_TABLES = (
+    'persons', 'sources', 'claims', 'claim_persons', 'claim_links',
+    'relationships', 'places', 'source_people', 'hypotheses',
+)
+
+
+def _overlap_clause(start_col: str, end_col: str) -> str:
+    """
+    SQL predicate for "this row's [start_col, end_col] range overlaps the
+    caller's date_bounds", with both ends NULL-and-empty-string safe.
+
+    index.py stores an undated claim's date_min/date_max as '' (not the
+    unbounded sentinel edtf_bounds() would return for None) — see TOOLING
+    §1 / edtf_bounds docstring. A raw `end_col >= ?` comparison would treat
+    '' as the lowest possible value and exclude every undated row from a
+    --date filter; the explicit '' / NULL checks restore the intended
+    "undated = unbounded" semantics for the relational queries here.
+    """
+    return (
+        f"({start_col} IS NULL OR {start_col} = '' OR {start_col} <= ?) "
+        f"AND ({end_col} IS NULL OR {end_col} = '' OR {end_col} >= ?)"
+    )
+
+
+def _person_cooccur_neighbors(
+    conn: sqlite3.Connection,
+    pid: str,
+    exclude_others: set[str],
+    date_bounds: tuple[str, str] | None,
+) -> list[dict]:
+    """
+    Other persons sharing a source with pid that have no existing
+    relationship edge — the person-pair half of TOOLING §4a's "people tied by
+    ... co-occurrence" bullet, narrowed to one person's neighborhood.
+
+    This duplicates cooccur.py's person co-occurrence grouping logic
+    (TOOLING §690) rather than importing it — tools never import other tools.
+
+    When date_bounds is set, only claim_persons participation is considered:
+    each row carries a date via its backing claim, but source_people (a
+    source's optional frontmatter `people:` list) has no per-claim date, so
+    it's excluded from the date-filtered path rather than silently treated
+    as always-in-range.
+    """
+    persons_by_source: dict[str, set[str]] = {}
+    sources_for_pid: set[str] = set()
+
+    if date_bounds:
+        rows = conn.execute(
+            f'''
+            SELECT DISTINCT c.source_id AS source_id, cp.person_id AS person_id
+            FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+            WHERE c.status IN ('accepted', 'needs-review')
+              AND {_overlap_clause('c.date_min', 'c.date_max')}
+            ''',
+            (date_bounds[1], date_bounds[0]),
+        ).fetchall()
+    else:
+        rows = list(conn.execute(
+            '''
+            SELECT DISTINCT c.source_id AS source_id, cp.person_id AS person_id
+            FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+            WHERE c.status IN ('accepted', 'needs-review')
+            '''
+        )) + list(conn.execute('SELECT source_id, person_id FROM source_people'))
+
+    for row in rows:
+        persons_by_source.setdefault(row['source_id'], set()).add(row['person_id'])
+        if row['person_id'] == pid:
+            sources_for_pid.add(row['source_id'])
+
+    counts: dict[str, int] = {}
+    for sid in sources_for_pid:
+        for other in persons_by_source.get(sid, ()):
+            if other == pid or other in exclude_others:
+                continue
+            counts[other] = counts.get(other, 0) + 1
+
+    out = [{'other_id': oid, 'source_count': n} for oid, n in counts.items()]
+    out.sort(key=lambda c: (-c['source_count'], c['other_id']))
+    return out
+
+
+def _person_places(
+    conn: sqlite3.Connection, pid: str, date_bounds: tuple[str, str] | None
+) -> list[dict]:
+    """
+    Places this person's claims name, ranked by claim frequency
+    (TOOLING §4a "places they recur in"). Grouped on structured place_id
+    when present, else normalized place_text — same precedence cooccur.py's
+    shared-place detector uses, so the two tools agree on what counts as
+    "the same place."
+    """
+    # Same accepted/needs-review gate as _person_cooccur_neighbors and
+    # _person_org_hubs use — without it, `suggested`/`rejected` draft
+    # placed claims silently get promoted into the person's place ranking.
+    sql = '''
+        SELECT c.place_id, c.place_text
+        FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+        WHERE cp.person_id = ?
+          AND c.status IN ('accepted', 'needs-review')
+          AND ((c.place_id IS NOT NULL AND c.place_id != '')
+               OR (c.place_text IS NOT NULL AND c.place_text != ''))
+    '''
+    params: list = [pid]
+    if date_bounds:
+        sql += ' AND ' + _overlap_clause('c.date_min', 'c.date_max')
+        params += [date_bounds[1], date_bounds[0]]
+
+    counts: dict[str, dict] = {}
+    for row in conn.execute(sql, params):
+        key = (row['place_id'] or '').strip().lower() or normalize_place_text(row['place_text'])
+        if not key:
+            continue
+        entry = counts.setdefault(key, {'label': row['place_text'] or row['place_id'], 'count': 0})
+        entry['count'] += 1
+
+    out = list(counts.values())
+    out.sort(key=lambda p: (-p['count'], p['label'] or ''))
+    return out
+
+
+def _person_org_hubs(
+    conn: sqlite3.Connection, pid: str, date_bounds: tuple[str, str] | None
+) -> list[dict]:
+    """
+    Recurring occupation/military/membership affiliations this person shares
+    with at least one other person — TOOLING §4a's "shared entities ...
+    ranked by how many others share each" bullet.
+
+    Duplicates cooccur.py's (category, normalized value) grouping for org/
+    entity recurrence (occupation and military are direct categories;
+    membership rides the subtype of event/note claims), filtered to hubs
+    that include pid.
+
+    With a date window, the same overlap predicate the rest of the
+    neighborhood uses (`_overlap_clause` on `date_min/date_max`) narrows
+    affiliations — otherwise a person's 1880 job would still parade their
+    1950 club membership in `fha find --related P-… --date 1880`.
+    """
+    sql = '''
+        SELECT c.type, c.subtype, c.value, cp.person_id
+        FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+        WHERE c.status IN ('accepted', 'needs-review')
+          AND (c.negated IS NULL OR c.negated = 0)
+          AND (c.type IN ('occupation', 'military')
+               OR (c.type IN ('event', 'note') AND LOWER(COALESCE(c.subtype, '')) = 'membership'))
+    '''
+    params: list = []
+    if date_bounds:
+        sql += ' AND ' + _overlap_clause('c.date_min', 'c.date_max')
+        params += [date_bounds[1], date_bounds[0]]
+    rows = conn.execute(sql, params).fetchall()
+
+    groups: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        category = row['type'] if row['type'] in ('occupation', 'military') else 'membership'
+        label = (row['value'] or '').strip()
+        # occupation/military values follow the documented "role, entity"
+        # convention (SPEC §8.4) — split on the FIRST comma so an entity name
+        # that itself contains a comma stays intact (same rule as cooccur.py).
+        if category in ('occupation', 'military') and ',' in label:
+            label = label.split(',', 1)[1].strip()
+        normalized = normalize_place_text(label)
+        if not normalized:
+            continue
+        key = (category, normalized)
+        group = groups.setdefault(key, {'label': label, 'category': category, 'persons': set()})
+        group['persons'].add(row['person_id'])
+
+    out = []
+    for group in groups.values():
+        if pid in group['persons'] and len(group['persons']) > 1:
+            others = sorted(p for p in group['persons'] if p != pid)
+            out.append({'label': group['label'], 'category': group['category'], 'others': others})
+    out.sort(key=lambda h: (-len(h['others']), h['label']))
+    return out
+
+
+def _person_source_count(
+    conn: sqlite3.Connection,
+    pid: str,
+    date_bounds: tuple[str, str] | None = None,
+) -> int:
+    """Distinct sources naming pid, via claim_persons (claims) or source_people (frontmatter).
+
+    With a date window, only the claim-backed half is counted (with the same
+    `_overlap_clause` the rest of the neighborhood uses) — source_people is a
+    frontmatter-level list with no date and can't be filtered, so a person's
+    1880 source count would otherwise still include a 1950-only source whose
+    frontmatter merely names them.
+    """
+    if date_bounds is not None:
+        rows = conn.execute(
+            f'''
+            SELECT DISTINCT c.source_id AS sid
+            FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+            WHERE cp.person_id = ?
+              AND {_overlap_clause('c.date_min', 'c.date_max')}
+            ''',
+            (pid, date_bounds[1], date_bounds[0]),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            '''
+            SELECT DISTINCT c.source_id AS sid
+            FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+            WHERE cp.person_id = ?
+            UNION
+            SELECT source_id AS sid FROM source_people WHERE person_id = ?
+            ''',
+            (pid, pid),
+        ).fetchall()
+    return len(rows)
+
+
+def _photo_edtf_overlaps(edtf_str: str | None, date_bounds: tuple[str, str]) -> bool:
+    """True if a photo's EDTF overlaps the user's `--date` window.
+
+    Undated photos are treated as unbounded (always included), mirroring the
+    `_overlap_clause` convention used for claim/relationship rows: a missing
+    EDTF means "no documented date," not "definitely outside the window."
+    Unparseable EDTF gets the same benefit of the doubt.
+    """
+    if not edtf_str:
+        return True
+    try:
+        pmin, pmax = edtf_bounds(edtf_str)
+    except Exception:
+        return True
+    lo, hi = date_bounds
+    return pmax >= lo and pmin <= hi
+
+
+def _print_person_photos(
+    pid: str,
+    archive_root: Path,
+    fha_config: dict,
+    date_bounds: tuple[str, str] | None,
+) -> None:
+    """
+    Photos tagged to this person via any resolution confidence
+    (pid-keyword/face-tag/name-match — photo_people already records the
+    winning method per photo). Mirrors _find_person's photo-count lookup but
+    lists the group's primary_path so the photos are actually locatable.
+
+    Gated on `photoindex_status()` so a stale photos.sqlite — e.g. after a
+    name-variant change or photo rename/delete — is reported as stale rather
+    than silently surfacing old `photo_people`/`photo_groups` rows that may
+    point to renamed people or missing files.
+
+    With `date_bounds`, each candidate group is filtered against
+    `photo_groups.edtf_resolved` (which already merges variant EDTF agreement)
+    so a 1950 photo doesn't appear in `fha find --related P-… --date 1880`.
+    """
+    status, _ = photoindex_status(archive_root, fha_config)
+    if status == 'absent':
+        print('  photos: not indexed (run fha photoindex)')
+        return
+    if status == 'stale':
+        print('  photos: photo index is stale — run fha photoindex')
+        return
+    if status == 'unreadable':
+        print('  photos: photo index is unreadable; rebuild with fha photoindex')
+        return
+    photos_db = archive_root / '.cache' / 'photos.sqlite'
+    try:
+        pconn = sqlite3.connect(str(photos_db))
+        try:
+            pconn.row_factory = sqlite3.Row
+            rows = pconn.execute(
+                '''
+                SELECT DISTINCT pg.primary_path, pg.edtf_resolved
+                FROM photo_people pp
+                JOIN photos p ON p.path = pp.path
+                JOIN photo_groups pg ON pg.group_id = p.group_id
+                WHERE pp.person_ref = ?
+                ''',
+                (pid,),
+            ).fetchall()
+        finally:
+            pconn.close()
+    except Exception:
+        print('  photos: not indexed (run fha photoindex)')
+        return
+    if date_bounds is not None:
+        rows = [r for r in rows if _photo_edtf_overlaps(r['edtf_resolved'], date_bounds)]
+    if rows:
+        print(f'  photos ({len(rows)}):')
+        for r in rows[:10]:
+            print(f"    {r['primary_path']}")
+    else:
+        print('  photos: none')
+
+
+def _related_person(
+    pid: str,
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    fha_config: dict,
+    date_bounds: tuple[str, str] | None,
+) -> int:
+    """Print a P-id's neighborhood: relationship edges, co-occurrence, places, shared affiliations, sources, photos."""
+    person = conn.execute('SELECT id, name FROM persons WHERE id = ?', (pid,)).fetchone()
+    if person is None:
+        print(f'{pid}: not found in index.')
+        return EXIT_WARNINGS
+
+    print(f"{pid}'s world  [{person['name']}]")
+    names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
+
+    if date_bounds:
+        # Filter on the edge's own date_start/date_end, not the originating
+        # claim's date_min/date_max: for spouse edges, date_end is backfilled
+        # from a later divorce/death claim (TOOLING §relationships) and can
+        # extend well past the marriage claim's own narrow date bounds. NULL
+        # means open-ended (no divorce/death recorded yet).
+        edge_rows = conn.execute(
+            f'''
+            SELECT r.rel, r.other_id, COUNT(DISTINCT c.source_id) AS source_count
+            FROM relationships r JOIN claims c ON c.id = r.claim_id
+            WHERE r.person_id = ?
+              AND {_overlap_clause('r.date_start', 'r.date_end')}
+            GROUP BY r.rel, r.other_id
+            ORDER BY r.rel, r.other_id
+            ''',
+            (pid, date_bounds[1], date_bounds[0]),
+        ).fetchall()
+    else:
+        edge_rows = conn.execute(
+            '''
+            SELECT r.rel, r.other_id, COUNT(DISTINCT c.source_id) AS source_count
+            FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id
+            WHERE r.person_id = ?
+            GROUP BY r.rel, r.other_id
+            ORDER BY r.rel, r.other_id
+            ''',
+            (pid,),
+        ).fetchall()
+
+    if edge_rows:
+        print('  relationships:')
+        for r in edge_rows:
+            other_name = names.get(r['other_id'], r['other_id'])
+            print(f"    {r['rel']}: {other_name} [{r['other_id']}] — {r['source_count']} source(s)")
+    else:
+        print('  relationships: none')
+
+    # Existing edges exclude a candidate from co-occurrence regardless of the
+    # date window — a confirmed relationship doesn't stop being confirmed
+    # just because this particular time slice predates the backing claim.
+    all_edge_others = {
+        row['other_id'] for row in
+        conn.execute('SELECT other_id FROM relationships WHERE person_id = ?', (pid,))
+    }
+    cooccur_rows = _person_cooccur_neighbors(conn, pid, all_edge_others, date_bounds)
+    if cooccur_rows:
+        print('  co-occurring persons (no relationship edge yet):')
+        for c in cooccur_rows[:10]:
+            other_name = names.get(c['other_id'], c['other_id'])
+            print(f"    {other_name} [{c['other_id']}] — {c['source_count']} shared source(s)")
+    else:
+        print('  co-occurring persons: none')
+
+    place_rows = _person_places(conn, pid, date_bounds)
+    if place_rows:
+        print('  places (by claim frequency):')
+        for p in place_rows[:10]:
+            print(f"    {p['label']} — {p['count']} claim(s)")
+    else:
+        print('  places: none')
+
+    hub_rows = _person_org_hubs(conn, pid, date_bounds)
+    if hub_rows:
+        print('  shared affiliations:')
+        for h in hub_rows:
+            others = ', '.join(f"{names.get(o, o)} [{o}]" for o in h['others'][:5])
+            print(f"    {h['label']} [{h['category']}] — also: {others}")
+    else:
+        print('  shared affiliations: none')
+
+    print(f'  sources: {_person_source_count(conn, pid, date_bounds)}')
+    _print_person_photos(pid, archive_root, fha_config, date_bounds)
+
+    return EXIT_CLEAN
+
+
+def _print_place_photos(
+    place: sqlite3.Row,
+    archive_root: Path,
+    fha_config: dict,
+    date_bounds: tuple[str, str] | None,
+) -> None:
+    """
+    Photos geotagged within ~0.002 degrees of the place's coords
+    (roughly 200m at mid-latitudes — TOOLING §4a "photos geotagged within
+    it"). Coordinate-only proximity; a place with no within: children and no
+    coords simply has no photo neighborhood to report.
+
+    Same `photoindex_status()` gating as `_print_person_photos` so stale GPS
+    rows (after photos move or get re-geotagged) aren't surfaced silently.
+
+    With `date_bounds`, each photo is filtered against its own `photos.edtf`
+    via `_photo_edtf_overlaps`, so a 1950 photo near the place doesn't appear
+    in a 1880 slice.
+    """
+    if place['lat'] is None or place['lon'] is None:
+        print('  photos: place has no coordinates')
+        return
+    status, _ = photoindex_status(archive_root, fha_config)
+    if status == 'absent':
+        print('  photos: not indexed (run fha photoindex)')
+        return
+    if status == 'stale':
+        print('  photos: photo index is stale — run fha photoindex')
+        return
+    if status == 'unreadable':
+        print('  photos: photo index is unreadable; rebuild with fha photoindex')
+        return
+    photos_db = archive_root / '.cache' / 'photos.sqlite'
+    try:
+        pconn = sqlite3.connect(str(photos_db))
+        try:
+            pconn.row_factory = sqlite3.Row
+            rows = pconn.execute(
+                '''
+                SELECT DISTINCT pg.primary_path,
+                       COALESCE(pg.edtf_resolved, p.edtf) AS edtf
+                FROM photos p JOIN photo_groups pg ON pg.group_id = p.group_id
+                WHERE p.gps_lat IS NOT NULL AND p.gps_lon IS NOT NULL
+                  AND ABS(p.gps_lat - ?) <= 0.002 AND ABS(p.gps_lon - ?) <= 0.002
+                ''',
+                (place['lat'], place['lon']),
+            ).fetchall()
+        finally:
+            pconn.close()
+    except Exception:
+        print('  photos: not indexed (run fha photoindex)')
+        return
+    if date_bounds is not None:
+        rows = [r for r in rows if _photo_edtf_overlaps(r['edtf'], date_bounds)]
+    if rows:
+        print(f'  photos near coords ({len(rows)}):')
+        for r in rows[:10]:
+            print(f"    {r['primary_path']}")
+    else:
+        print('  photos near coords: none')
+
+
+def _related_place(
+    lid: str,
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    fha_config: dict,
+    date_bounds: tuple[str, str] | None,
+) -> int:
+    """Print an L-id's neighborhood: claims naming it, people ranked by frequency, sources, micro-places, photos."""
+    place = conn.execute(
+        'SELECT id, name, hierarchy, lat, lon, within FROM places WHERE id = ?', (lid,)
+    ).fetchone()
+    if place is None:
+        print(f'{lid}: not found in index.')
+        return EXIT_WARNINGS
+
+    print(f"{lid}'s world  [{place['name']}]")
+
+    sql = '''
+        SELECT c.id, c.type, c.value, c.status, c.date_edtf, c.source_id,
+               GROUP_CONCAT(DISTINCT cp.person_id) AS persons
+        FROM claims c LEFT JOIN claim_persons cp ON cp.claim_id = c.id
+        WHERE c.place_id = ?
+    '''
+    params: list = [lid]
+    if date_bounds:
+        sql += ' AND ' + _overlap_clause('c.date_min', 'c.date_max')
+        params += [date_bounds[1], date_bounds[0]]
+    sql += ' GROUP BY c.id ORDER BY c.date_min'
+    claim_rows = conn.execute(sql, params).fetchall()
+
+    if claim_rows:
+        print(f'  claims ({len(claim_rows)}):')
+        for c in claim_rows:
+            date_str = f"  {c['date_edtf']}" if c['date_edtf'] else ''
+            value_preview = c['value'][:60] + ('…' if len(c['value']) > 60 else '')
+            print(f"    {c['id']}  {c['type']}{date_str}: {value_preview}  [{c['status']}]")
+    else:
+        print('  claims: none')
+
+    person_freq: dict[str, int] = {}
+    source_ids: set[str] = set()
+    for c in claim_rows:
+        source_ids.add(c['source_id'])
+        if c['persons']:
+            for p in c['persons'].split(','):
+                person_freq[p] = person_freq.get(p, 0) + 1
+
+    if person_freq:
+        names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
+        print('  people (by frequency):')
+        for pid, n in sorted(person_freq.items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
+            print(f"    {names.get(pid, pid)} [{pid}] — {n} claim(s)")
+    else:
+        print('  people: none')
+
+    print(f'  sources: {len(source_ids)}')
+
+    micro = conn.execute('SELECT id, name FROM places WHERE within = ?', (lid,)).fetchall()
+    if micro:
+        print('  micro-places:')
+        for m in micro:
+            print(f"    {m['name']} [{m['id']}]")
+    else:
+        print('  micro-places: none')
+
+    _print_place_photos(place, archive_root, fha_config, date_bounds)
+
+    return EXIT_CLEAN
+
+
+def _related_source(
+    sid: str,
+    conn: sqlite3.Connection,
+    date_bounds: tuple[str, str] | None,
+) -> int:
+    """Print an S-id's neighborhood: claims by status, persons, places, linked sources, sibling sources."""
+    source = conn.execute(
+        'SELECT id, title, repository FROM sources WHERE id = ?', (sid,)
+    ).fetchone()
+    if source is None:
+        print(f'{sid}: not found in index.')
+        return EXIT_WARNINGS
+
+    print(f"{sid}'s world  [{source['title']}]")
+
+    sql = 'SELECT id, status FROM claims WHERE source_id = ?'
+    params: list = [sid]
+    if date_bounds:
+        sql += ' AND ' + _overlap_clause('date_min', 'date_max')
+        params += [date_bounds[1], date_bounds[0]]
+    claim_rows = conn.execute(sql, params).fetchall()
+
+    by_status: dict[str, int] = {}
+    for c in claim_rows:
+        by_status[c['status']] = by_status.get(c['status'], 0) + 1
+    print('  claims: ' + (', '.join(f'{k}: {v}' for k, v in sorted(by_status.items())) or 'none'))
+
+    claim_ids = [c['id'] for c in claim_rows]
+    persons: set[str] = set()
+    places: set[str] = set()
+    if claim_ids:
+        placeholders = ','.join('?' * len(claim_ids))
+        for row in conn.execute(
+            f'SELECT DISTINCT person_id FROM claim_persons WHERE claim_id IN ({placeholders})', claim_ids
+        ):
+            persons.add(row['person_id'])
+        for row in conn.execute(
+            f'SELECT place_id, place_text FROM claims WHERE id IN ({placeholders})', claim_ids
+        ):
+            if row['place_id']:
+                places.add(row['place_id'])
+            elif row['place_text']:
+                places.add(row['place_text'])
+    # source_people is a frontmatter-level list with no date — including it
+    # in a dated slice would surface persons whose only connection to this
+    # source is an out-of-window claim (or no claim at all). Skip it when
+    # date_bounds is set; otherwise keep the cross-listing as before.
+    if date_bounds is None:
+        for row in conn.execute('SELECT person_id FROM source_people WHERE source_id = ?', (sid,)):
+            persons.add(row['person_id'])
+
+    names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
+    if persons:
+        print('  persons:')
+        for p in sorted(persons):
+            print(f"    {names.get(p, p)} [{p}]")
+    else:
+        print('  persons: none')
+
+    if places:
+        print('  places:')
+        for p in sorted(places):
+            print(f'    {p}')
+    else:
+        print('  places: none')
+
+    # Corroborating/contradicting sources via claim_links — a source's claims
+    # may link out (claim_id) or be linked to (target_id); both directions
+    # have to be checked, with the inverse-rel label for the incoming side
+    # (same convention as _find_claim's links/incoming split).
+    related_sources: dict[str, set[str]] = {}
+    if claim_ids:
+        placeholders = ','.join('?' * len(claim_ids))
+        for row in conn.execute(
+            f'''
+            SELECT cl.rel, c2.source_id AS other_source
+            FROM claim_links cl JOIN claims c2 ON c2.id = cl.target_id
+            WHERE cl.claim_id IN ({placeholders})
+            ''', claim_ids
+        ):
+            if row['other_source'] != sid:
+                related_sources.setdefault(row['rel'], set()).add(row['other_source'])
+        for row in conn.execute(
+            f'''
+            SELECT cl.rel, c2.source_id AS other_source
+            FROM claim_links cl JOIN claims c2 ON c2.id = cl.claim_id
+            WHERE cl.target_id IN ({placeholders})
+            ''', claim_ids
+        ):
+            if row['other_source'] != sid:
+                label = _REL_INVERSE.get(row['rel'], f"{row['rel']}-by")
+                related_sources.setdefault(label, set()).add(row['other_source'])
+
+    if related_sources:
+        print('  linked sources:')
+        for rel, sids in sorted(related_sources.items()):
+            for other in sorted(sids):
+                print(f'    {rel}: {other}')
+    else:
+        print('  linked sources: none')
+
+    # Sibling sources: share a named person, or the same repository.
+    siblings: set[str] = set()
+    if persons:
+        placeholders = ','.join('?' * len(persons))
+        person_list = list(persons)
+        if date_bounds is not None:
+            # Dated slice: only claim-backed sibling links, and only those
+            # whose claim overlaps the window. source_people has no date to
+            # filter on, so dropping it here is consistent with how this
+            # block already drops it from the persons set above.
+            for row in conn.execute(
+                f'''
+                SELECT c.source_id FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+                WHERE cp.person_id IN ({placeholders})
+                  AND {_overlap_clause('c.date_min', 'c.date_max')}
+                ''', person_list + [date_bounds[1], date_bounds[0]]
+            ):
+                if row['source_id'] != sid:
+                    siblings.add(row['source_id'])
+        else:
+            for row in conn.execute(
+                f'''
+                SELECT source_id FROM source_people WHERE person_id IN ({placeholders})
+                UNION
+                SELECT c.source_id FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+                WHERE cp.person_id IN ({placeholders})
+                ''', person_list + person_list
+            ):
+                if row['source_id'] != sid:
+                    siblings.add(row['source_id'])
+    if source['repository']:
+        for row in conn.execute(
+            'SELECT id FROM sources WHERE repository = ? AND id != ?', (source['repository'], sid)
+        ):
+            siblings.add(row['id'])
+
+    if siblings:
+        print(f'  sibling sources ({len(siblings)}):')
+        for s in sorted(siblings)[:15]:
+            print(f'    {s}')
+    else:
+        print('  sibling sources: none')
+
+    return EXIT_CLEAN
+
+
+def _related_claim(cid: str, conn: sqlite3.Connection) -> int:
+    """
+    Print a C-id's neighborhood: source, persons, place, linked claims,
+    sibling claims (same person + same type — the cluster a researcher would
+    weigh together, per TOOLING §4a).
+
+    Unlike the person/place/source neighborhoods, a single claim has no
+    meaningful date-bounds narrowing — its own date_edtf already pins it to
+    one point — so --date is not accepted here.
+    """
+    claim = conn.execute(
+        'SELECT id, source_id, type, value, status, place_id, place_text, date_edtf '
+        'FROM claims WHERE id = ?', (cid,)
+    ).fetchone()
+    if claim is None:
+        print(f'{cid}: not found in index.')
+        return EXIT_WARNINGS
+
+    print(f"{cid}'s neighborhood")
+    print(f"  source: {claim['source_id']}")
+
+    persons = [row['person_id'] for row in conn.execute(
+        'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,)
+    )]
+    names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
+    if persons:
+        print('  persons:')
+        for p in persons:
+            print(f"    {names.get(p, p)} [{p}]")
+    else:
+        print('  persons: none')
+
+    place_label = claim['place_text'] or claim['place_id']
+    print(f"  place: {place_label or '(none)'}")
+
+    links = conn.execute('SELECT rel, target_id FROM claim_links WHERE claim_id = ?', (cid,)).fetchall()
+    incoming = conn.execute('SELECT rel, claim_id FROM claim_links WHERE target_id = ?', (cid,)).fetchall()
+    if links or incoming:
+        print('  linked claims:')
+        for lnk in links:
+            print(f"    {lnk['rel']}: {lnk['target_id']}")
+        for lnk in incoming:
+            label = _REL_INVERSE.get(lnk['rel'], f"{lnk['rel']}-by")
+            print(f"    {label}: {lnk['claim_id']}")
+    else:
+        print('  linked claims: none')
+
+    siblings: set[str] = set()
+    if persons:
+        placeholders = ','.join('?' * len(persons))
+        for row in conn.execute(
+            f'''
+            SELECT DISTINCT c.id FROM claims c
+            JOIN claim_persons cp ON cp.claim_id = c.id
+            WHERE c.type = ? AND c.id != ? AND cp.person_id IN ({placeholders})
+            ''', [claim['type'], cid] + persons
+        ):
+            siblings.add(row['id'])
+
+    if siblings:
+        print(f'  sibling claims (same person + type) ({len(siblings)}):')
+        for s in sorted(siblings):
+            print(f'    {s}')
+    else:
+        print('  sibling claims: none')
+
+    return EXIT_CLEAN
+
+
+def _related_hypothesis(hid: str, conn: sqlite3.Connection) -> int:
+    """
+    Print an H-id's neighborhood: the person it concerns, claims referencing
+    it (claims.hypothesis = hid), and the verifying claim if one is set.
+
+    The `hypotheses` table itself is never populated by the index builder
+    (research-file hypothesis entries aren't parsed into rows — see
+    _find_hypothesis's matching note above) — only claims.hypothesis is. So
+    a missing hypotheses row is the expected case, not a failure: this falls
+    back to deriving the neighborhood entirely from claims.hypothesis and the
+    persons named on those claims.
+    """
+    row = conn.execute(
+        'SELECT id, person_id, status, verified_claim FROM hypotheses WHERE id = ?', (hid,)
+    ).fetchone()
+    claim_rows = conn.execute(
+        'SELECT id, source_id, type, value, status FROM claims WHERE hypothesis = ?', (hid,)
+    ).fetchall()
+
+    print(f"{hid}'s neighborhood")
+    names = {r['id']: r['name'] for r in conn.execute('SELECT id, name FROM persons')}
+
+    if row is None:
+        print('  (no hypotheses-table row — hypothesis indexing is deferred; '
+              'deriving the neighborhood from claims.hypothesis instead)')
+        person_ids: set[str] = set()
+        for c in claim_rows:
+            for p in conn.execute('SELECT person_id FROM claim_persons WHERE claim_id = ?', (c['id'],)):
+                person_ids.add(p['person_id'])
+        if person_ids:
+            print('  person(s) concerned:')
+            for p in sorted(person_ids):
+                print(f"    {names.get(p, p)} [{p}]")
+        else:
+            print('  person(s) concerned: none found')
+    else:
+        if row['person_id']:
+            print(f"  person: {names.get(row['person_id'], row['person_id'])} [{row['person_id']}]")
+        print(f"  status: {row['status'] or '(none)'}")
+        if row['verified_claim']:
+            vrow = conn.execute(
+                'SELECT id, source_id, type, value FROM claims WHERE id = ?', (row['verified_claim'],)
+            ).fetchone()
+            if vrow:
+                print(f"  verifying claim: {vrow['id']}  {vrow['type']}: {vrow['value']}  [{vrow['source_id']}]")
+            else:
+                print(f"  verifying claim: {row['verified_claim']} (not found)")
+
+    if claim_rows:
+        print(f'  claims referencing {hid} ({len(claim_rows)}):')
+        for c in claim_rows:
+            value_preview = c['value'][:60] + ('…' if len(c['value']) > 60 else '')
+            print(f"    {c['id']}  {c['type']}: {value_preview}  [{c['status']}]  ({c['source_id']})")
+    else:
+        print('  claims referencing this hypothesis: none')
+
+    if row is None and not claim_rows:
+        return EXIT_WARNINGS
+    return EXIT_CLEAN
+
+
+def _related_date(date_bounds: tuple[str, str], date_str: str, conn: sqlite3.Connection) -> int:
+    """
+    Print the standalone time-slice neighborhood: every accepted/needs-review
+    claim whose bounds overlap date_bounds, and the people/sources/places
+    behind them (TOOLING §4a's `--related --date` bullet).
+
+    Photos are omitted here (unlike the P-id/L-id neighborhoods) — photo
+    EDTFs live in a separate database with no person/place join key back to
+    this query's claim set, so a meaningful photo count would require a
+    second, unrelated date-overlap pass; TOOLING describes this as a future
+    refinement, not a same-claim join.
+    """
+    rows = conn.execute(
+        f'''
+        SELECT id, source_id, place_id, place_text
+        FROM claims
+        WHERE {_overlap_clause('date_min', 'date_max')}
+          AND status IN ('accepted', 'needs-review')
+        ''',
+        (date_bounds[1], date_bounds[0]),
+    ).fetchall()
+
+    claim_ids = [r['id'] for r in rows]
+    persons: set[str] = set()
+    if claim_ids:
+        placeholders = ','.join('?' * len(claim_ids))
+        for row in conn.execute(
+            f'SELECT DISTINCT person_id FROM claim_persons WHERE claim_id IN ({placeholders})', claim_ids
+        ):
+            persons.add(row['person_id'])
+
+    sources: set[str] = set()
+    places: set[str] = set()
+    for r in rows:
+        sources.add(r['source_id'])
+        if r['place_id']:
+            places.add(r['place_id'])
+        elif r['place_text']:
+            places.add(r['place_text'])
+
+    print(f'Active in {date_str}: {len(rows)} claims, {len(persons)} people, {len(sources)} sources')
+
+    names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
+    if persons:
+        print('  people:')
+        for p in sorted(persons):
+            print(f"    {names.get(p, p)} [{p}]")
+    if sources:
+        print('  sources:')
+        for s in sorted(sources):
+            print(f'    {s}')
+    if places:
+        print('  places:')
+        for p in sorted(places):
+            print(f'    {p}')
+
+    return EXIT_CLEAN
+
+
+def run_related(
+    related_id: str | None,
+    date_filter: str | None,
+    archive_root: Path,
+    fha_config: dict,
+) -> int:
+    """
+    Top-level --related dispatcher.
+
+    related_id is None for the standalone `--related --date EDTF` form;
+    date_filter is None when narrowing isn't requested. At least one of the
+    two must be set (the CLI layer guarantees this — see _run_find).
+    """
+    if related_id is None and date_filter is None:
+        print('ERROR: --related requires an ID, --date EDTF, or both.', file=sys.stderr)
+        return EXIT_FAILURE
+
+    date_bounds = None
+    if date_filter is not None:
+        if not is_valid_edtf(date_filter):
+            print(f'ERROR: {date_filter!r} is not a valid EDTF date.', file=sys.stderr)
+            return EXIT_FAILURE
+        date_bounds = edtf_bounds(date_filter)
+
+    id_norm = None
+    if related_id is not None:
+        id_norm = normalize_id(related_id)
+        if not is_valid_id(id_norm):
+            print(f'ERROR: {related_id!r} is not a valid archive ID.', file=sys.stderr)
+            return EXIT_FAILURE
+
+    conn = open_index_db(archive_root, _RELATED_REQUIRED_TABLES)
+    if conn is None:
+        return EXIT_FAILURE
+
+    try:
+        try:
+            if id_norm is None:
+                return _related_date(date_bounds, date_filter, conn)
+
+            id_type = id_type_of(id_norm)
+            if id_type == 'P':
+                return _related_person(id_norm, conn, archive_root, fha_config, date_bounds)
+            elif id_type == 'L':
+                return _related_place(id_norm, conn, archive_root, fha_config, date_bounds)
+            elif id_type == 'S':
+                return _related_source(id_norm, conn, date_bounds)
+            elif id_type == 'C':
+                return _related_claim(id_norm, conn)
+            elif id_type == 'H':
+                return _related_hypothesis(id_norm, conn)
+            else:
+                print(f'{id_norm}: unknown ID type prefix.', file=sys.stderr)
+                return EXIT_FAILURE
+        except sqlite3.OperationalError:
+            # open_index_db only probes that the required tables exist, not
+            # that every column a related query touches is present. An older
+            # cache (e.g. with `relationships` but no `date_start`) would
+            # otherwise traceback out of dispatch — same incompatible-schema
+            # failure mode xref/cooccur catch with the documented rebuild
+            # message and exit 3.
+            print(
+                'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
+                'Run `fha index` to rebuild.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
+    finally:
+        conn.close()
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def _text_search(query: str, archive_root: Path, fha_config: dict) -> int:
@@ -814,23 +1800,23 @@ def run_find(
     fha_config: dict,
     text_mode: bool = False,
     related_id: str | None = None,
+    related_requested: bool = False,
+    date_filter: str | None = None,
 ) -> int:
     """
     Top-level dispatcher:
-      - --related <ID>        → deferred message (D4)
-      - --text "phrase"       → full-text search
-      - bare valid ID         → find_by_id
-      - bare non-ID string    → treated as text search
+      - --related <ID> [--date E]  → run_related (M4.3, Design decision D4)
+      - --related --date <EDTF>    → run_related, standalone time-slice (related_id None)
+      - --text "phrase"            → full-text search
+      - bare valid ID               → find_by_id
+      - bare non-ID string          → treated as text search
+
+    related_requested distinguishes "--related typed with no ID" (route to
+    run_related's standalone date form) from "--related not typed at all"
+    (related_id is None in both cases, so the flag alone isn't enough).
     """
-    # --related is deferred to milestone 3 (Design decision D4, TOOLING §4a)
-    if related_id is not None:
-        print(
-            '--related is not yet available. It will be implemented in milestone 3 '
-            'after fha xref and fha cooccur are built. '
-            '(--date filtering is also deferred.) '
-            '(Design decision D4, TOOLING §4a)'
-        )
-        return EXIT_CLEAN
+    if related_requested or date_filter is not None:
+        return run_related(related_id, date_filter, archive_root, fha_config)
 
     # Text search path
     if text_mode:
@@ -869,13 +1855,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help='Full-text search across records, notes, transcripts',
     )
     mode.add_argument(
-        '--related', metavar='ID',
-        help='Neighborhood of an ID — people/places/sources adjacent (deferred to milestone 3)',
+        '--related', nargs='?', default=_NO_RELATED, const=None, metavar='ID',
+        help='Neighborhood of an ID — people/places/sources adjacent. '
+             'Combine with --date for a time slice, or pass --related --date EDTF alone '
+             'for the standalone time-slice neighborhood.',
     )
 
     p.add_argument(
         '--date', metavar='EDTF',
-        help='Filter --related results to the given EDTF date expression (deferred to milestone 3)',
+        help='Time-slice filter. With --related <ID>, narrows that neighborhood to the '
+             'given EDTF range; with --related and no ID, reports everything active in that range.',
     )
 
     p.add_argument(
@@ -904,26 +1893,39 @@ def _run_find(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     text_query = getattr(args, 'text', None)
-    related = getattr(args, 'related', None)
+    related = getattr(args, 'related', _NO_RELATED)
     query = getattr(args, 'query', None)
     date = getattr(args, 'date', None)
 
-    if date is not None and related is None:
-        print(
-            'ERROR: --date is only valid together with --related '
-            '(it filters --related results; both are deferred to milestone 3).',
-            file=sys.stderr,
-        )
+    related_requested = related is not _NO_RELATED
+    related_id = related if (related_requested and related) else None
+
+    # --date only has defined behavior alongside --related (TOOLING §4a D4).
+    # Catch it before the --text branch — otherwise `fha find --text "X" --date Y`
+    # silently runs an unfiltered text search and drops the date.
+    if date is not None and not related_requested:
+        print('ERROR: --date requires --related.', file=sys.stderr)
         return EXIT_FAILURE
 
     if text_query is not None:
         return run_find(text_query, archive_root, fha_config, text_mode=True)
-    elif related is not None:
-        return run_find(None, archive_root, fha_config, related_id=related)
+    elif related_requested:
+        # `fha find --related --date 1900 P-…` parses as --related-with-no-value
+        # + --date 1900 + positional query 'P-…'. Without this rescue the
+        # positional silently routes to the standalone date-slice branch and
+        # the user's P-id is dropped on the floor. Treat the leftover positional
+        # as the related ID — that's almost certainly what they meant.
+        if related_id is None and query:
+            related_id = query
+            query = None
+        return run_find(
+            None, archive_root, fha_config,
+            related_id=related_id, related_requested=True, date_filter=date,
+        )
     elif query:
         return run_find(query, archive_root, fha_config)
     else:
-        print('Usage: fha find <ID>  |  fha find --text "phrase"  |  fha find --related <ID>',
+        print('Usage: fha find <ID>  |  fha find --text "phrase"  |  fha find --related <ID> [--date EDTF]',
               file=sys.stderr)
         return EXIT_FAILURE
 
@@ -939,11 +1941,11 @@ def _standalone_main(argv: list[str] | None = None) -> int:
 
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--text', metavar='PHRASE')
-    mode.add_argument('--related', metavar='ID')
+    mode.add_argument('--related', nargs='?', default=_NO_RELATED, const=None, metavar='ID')
 
     parser.add_argument(
         '--date', metavar='EDTF',
-        help='Filter --related results to the given EDTF date expression (deferred to milestone 3)',
+        help='Time-slice filter for --related (alone, or combined with an ID).',
     )
 
     parser.add_argument('query', nargs='?', metavar='ID_OR_TEXT')

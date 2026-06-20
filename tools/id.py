@@ -25,7 +25,7 @@ from _lib import (
     ID_RE,
     EXIT_CLEAN,
     EXIT_FAILURE,
-    find_archive_root,
+    resolve_root_arg,
     scan_ids_in_tree,
     normalize_id,
 )
@@ -138,14 +138,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_id(args: argparse.Namespace) -> int:
-    root = getattr(args, 'root', None)
-    if root:
-        archive_root = Path(root).resolve()
-    else:
-        archive_root = find_archive_root()
-        if archive_root is None:
-            print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
-            return EXIT_FAILURE
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
 
     sub = getattr(args, 'id_command', None)
 

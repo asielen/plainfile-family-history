@@ -21,19 +21,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 import argparse
 
 
-def _require_root(args: argparse.Namespace) -> Path:
-    """Resolve the archive root from --root flag or auto-detection."""
-    from _lib import find_archive_root, EXIT_FAILURE
-    if getattr(args, 'root', None):
-        return Path(args.root).resolve()
-    detected = find_archive_root()
-    if detected is None:
-        print('ERROR: cannot find archive root (no fha.yaml found). '
-              'Use --root to specify.', file=sys.stderr)
-        sys.exit(EXIT_FAILURE)
-    return detected
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='fha',

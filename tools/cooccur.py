@@ -31,21 +31,23 @@ THREE OUTPUTS (TOOLING §690)
 
 CODE MAP
 --------
-  DB / root / tombstone helpers (per-tool copies; tools never import other tools)
-    _open_db, _resolve_root, _load_dismissed
+  DB / root / tombstone helpers
+    open_index_db, resolve_root_arg — shared via _lib.py
+    _load_dismissed                — tombstone reader (unique to cooccur; see below)
 
   Person co-occurrence
     _person_cooccurrence       — pair candidates ranked by source count + variety
 
   Shared-place co-occurrence
-    _normalize_place, _place_cooccurrence — same-place, overlapping-dates pairs
+    _same_place, _place_cooccurrence — same-place, overlapping-dates pairs
+                                  (uses _lib.normalize_place_text)
 
   Org / entity recurrence
     _org_category, _normalize_entity_value — claim -> hub grouping key
     _org_recurrence            — group claims into recurring affiliation hubs
 
   Top-level query / CLI
-    run_cooccur, _fmt_id, _cmd_cooccur, register, _standalone_main
+    run_cooccur, _cmd_cooccur, register, _standalone_main
 """
 
 from __future__ import annotations
@@ -63,74 +65,16 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     edtf_bounds,
-    find_archive_root,
-    newest_record_mtime,
+    fmt_id_display,
+    normalize_place_text,
+    open_index_db,
+    resolve_root_arg,
 )
 
 _ORG_CLAIM_TYPES = {'occupation', 'military', 'event', 'note'}
 _DIRECT_ORG_TYPES = {'occupation', 'military'}
 
-
-def _fmt_id(id_str: str) -> str:
-    """Return an ID string with its type prefix uppercased (p-xxx -> P-xxx)."""
-    if not id_str:
-        return id_str
-    return id_str[0].upper() + id_str[1:]
-
-
-# ── DB / root / tombstone helpers (per-tool copies) ──────────────────────────
-
-def _open_db(archive_root: Path) -> sqlite3.Connection | None:
-    """Open the index database for read-only querying. See xref.py's twin."""
-    db_path = archive_root / '.cache' / 'index.sqlite'
-    if not db_path.exists():
-        print(
-            'ERROR: .cache/index.sqlite not found - run `fha index` first '
-            'then re-run this command.',
-            file=sys.stderr,
-        )
-        return None
-
-    try:
-        db_mtime = db_path.stat().st_mtime
-        stale = newest_record_mtime(archive_root) > db_mtime
-    except OSError:
-        stale = False
-    if stale:
-        print(
-            'WARNING: index may be stale — a record file is newer than '
-            '.cache/index.sqlite. Run `fha index` to refresh.',
-            file=sys.stderr,
-        )
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        for table in ('persons', 'claims', 'sources', 'claim_persons', 'source_people', 'relationships'):
-            conn.execute(f'SELECT 1 FROM {table} LIMIT 1')
-        return conn
-    except Exception:
-        print(
-            'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
-            'Run `fha index` to rebuild.',
-            file=sys.stderr,
-        )
-        return None
-
-
-def _resolve_root(args: argparse.Namespace) -> Path | None:
-    """Resolve archive root from --root flag or auto-detection."""
-    if getattr(args, 'root', None):
-        return Path(args.root).resolve()
-    detected = find_archive_root()
-    if detected is None:
-        print(
-            'ERROR: cannot find archive root (no fha.yaml found). '
-            'Use --root to specify.',
-            file=sys.stderr,
-        )
-        return None
-    return detected
+_REQUIRED_TABLES = ('persons', 'claims', 'sources', 'claim_persons', 'source_people', 'relationships')
 
 
 def _load_dismissed(archive_root: Path) -> set[frozenset[str]]:
@@ -215,10 +159,6 @@ def _person_cooccurrence(conn: sqlite3.Connection, threshold: int, dismissed: se
 
 # ── Shared-place co-occurrence ───────────────────────────────────────────────
 
-def _normalize_place(text: str | None) -> str:
-    return ' '.join((text or '').strip().lower().split())
-
-
 def _same_place(a: dict, b: dict) -> bool:
     """
     Whether two claims describe the same place, per the documented precedence:
@@ -230,8 +170,8 @@ def _same_place(a: dict, b: dict) -> bool:
     """
     if a['place_id'] and b['place_id']:
         return a['place_id'].strip().lower() == b['place_id'].strip().lower()
-    place_a = _normalize_place(a['place_text'])
-    place_b = _normalize_place(b['place_text'])
+    place_a = normalize_place_text(a['place_text'])
+    place_b = normalize_place_text(b['place_text'])
     return bool(place_a) and place_a == place_b
 
 
@@ -278,7 +218,7 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
     for cid, claim in claims.items():
         if claim['place_id']:
             by_place_id.setdefault(claim['place_id'].strip().lower(), []).append(cid)
-        text_norm = _normalize_place(claim['place_text'])
+        text_norm = normalize_place_text(claim['place_text'])
         if text_norm:
             by_place_text.setdefault(text_norm, []).append(cid)
 
@@ -310,7 +250,7 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
         if claim_a['place_id'] and claim_b['place_id']:
             place_norm = claim_a['place_id'].strip().lower()
         else:
-            place_norm = _normalize_place(place_label) or (place_label or '').strip().lower()
+            place_norm = normalize_place_text(place_label) or (place_label or '').strip().lower()
         for pa in persons_by_claim.get(cid_a, ()):
             for pb in persons_by_claim.get(cid_b, ()):
                 if pa == pb:
@@ -455,7 +395,7 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> dict:
     Returns {'status': 'ok'|'failed', 'person_pairs': [...],
     'place_pairs': [...], 'org_groups': [...]}.
     """
-    conn = _open_db(archive_root)
+    conn = open_index_db(archive_root, _REQUIRED_TABLES)
     if conn is None:
         return {'status': 'failed', 'person_pairs': [], 'place_pairs': [], 'org_groups': []}
 
@@ -485,7 +425,7 @@ def run_cooccur(archive_root: Path, threshold: int = 2) -> dict:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def _cmd_cooccur(args: argparse.Namespace) -> int:
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
@@ -505,12 +445,12 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
         print(f'Found {len(pairs)} candidate person co-occurrence pair(s):')
         for c in pairs:
             print(
-                f"  {c['name_a']} [{_fmt_id(c['person_a'])}]  <->  "
-                f"{c['name_b']} [{_fmt_id(c['person_b'])}]  "
+                f"  {c['name_a']} [{fmt_id_display(c['person_a'])}]  <->  "
+                f"{c['name_b']} [{fmt_id_display(c['person_b'])}]  "
                 f"— {c['source_count']} source(s), {c['variety']} type(s)"
             )
             for sid in c['source_ids']:
-                print(f"    {_fmt_id(sid)}")
+                print(f"    {fmt_id_display(sid)}")
     else:
         print('No candidate person co-occurrence pairs found.')
 
@@ -519,12 +459,12 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
         print(f'\nFound {len(place_pairs)} candidate shared-place co-occurrence pair(s):')
         for c in place_pairs:
             print(
-                f"  {c['name_a']} [{_fmt_id(c['person_a'])}]  <->  "
-                f"{c['name_b']} [{_fmt_id(c['person_b'])}]  "
+                f"  {c['name_a']} [{fmt_id_display(c['person_a'])}]  <->  "
+                f"{c['name_b']} [{fmt_id_display(c['person_b'])}]  "
                 f"@ {c['place_label']}  — {c['source_count']} source(s)"
             )
             for cid in c['claim_ids']:
-                print(f"    {_fmt_id(cid)}")
+                print(f"    {fmt_id_display(cid)}")
     else:
         print('\nNo candidate shared-place co-occurrence pairs found.')
 
@@ -537,7 +477,7 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
                 f"{g['person_count']} people, {g['source_count']} sources"
             )
             for cid in g['claim_ids']:
-                print(f"    {_fmt_id(cid)}")
+                print(f"    {fmt_id_display(cid)}")
     else:
         print('\nNo candidate org/entity recurrence hubs found.')
 

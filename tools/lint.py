@@ -68,7 +68,6 @@ from _lib import (
     Finding,
     edtf_bounds,
     extract_token_ids,
-    find_archive_root,
     is_fixture_path,
     is_valid_edtf,
     is_valid_id,
@@ -78,6 +77,7 @@ from _lib import (
     parse_filename,
     read_record,
     resolve_path,
+    resolve_root_arg,
 )
 
 import yaml
@@ -1583,14 +1583,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_lint(args: argparse.Namespace) -> int:
-    root = getattr(args, 'root', None)
-    if root:
-        archive_root = Path(root).resolve()
-    else:
-        archive_root = find_archive_root()
-        if archive_root is None:
-            print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
-            return EXIT_FAILURE
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
 
     try:
         fha_config = load_fha_yaml(archive_root, strict=True)

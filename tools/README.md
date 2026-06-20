@@ -19,7 +19,7 @@ They are the "replaceable glue" of the philosophy — disposable, regenerable fr
 | `fha doctor` | `doctor.py` | ✓ all 11 checks; D5 applied (absent index/photoindex = warning, not error) |
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent |
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated — transcript search deferred (D7) |
-| `fha find --related <ID>` | `find.py` | ⚑ deferred to BUILD.md M4.3 (D4); prints deferral message, exits 0 |
+| `fha find --related <ID> [--date EDTF]` | `find.py` | ✓ BUILD.md M4.3 (D4) — neighborhood query for all five ID types, plus a standalone `--related --date EDTF` time slice. Requires a real index (exit 3 if absent/unreadable — no tree-scan fallback, unlike find_by_id) |
 | `fha id check <ID>` | `fha.py` alias | ✓ re-routed through `find.find_by_id` in fha.py dispatcher |
 
 Views require a fresh `.cache/index.sqlite` (run `fha index` first). `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches.
@@ -36,17 +36,20 @@ Generated files carry the `<!-- GENERATED … -->` header and must not be hand-e
 | `fha photoindex reconcile [--with-exif]` | `photoindex.py` | ✓ M3.4 — re-matches a moved file by its embedded `SOURCE:` keyword (`--with-exif` only); unmatchable rows are flagged `MISSING:` in the cache; new on-disk files are counted, not scraped; `photo_fts` is re-keyed alongside every other path-keyed table |
 | `fha photoindex tag-person <P-id> [--from-face-tag TAG \| --paths PATH...] [--dry-run]` | `photoindex.py` | ✓ M3.4 — preview -> interactive `[y/N]` confirm (or `--dry-run`) -> one `exiftool -keywords+=` write per candidate -> `photo_people`/`photo_keywords`/`photo_fts` cache update for whichever candidates' writes succeeded |
 
-## Implemented tools (milestone 4, in progress)
+## Implemented tools (milestone 4)
 
 | Tool | File | Status |
 |---|---|---|
 | `fha xref` | `xref.py` | ✓ M4.1 — corroboration/contradiction candidate pairs: same person + same claim `type` + different source + not already linked (`claim_links`); classified by `edtf_bounds` overlap, plus a vital-type (`birth`/`death`/`marriage`) place mismatch check when bounds overlap (`place_text`, falling back to conservative place phrases in `value`). Read-only; never writes `claim_links`. Absent/unreadable index → exit 3; stale → warns, still queries. |
 | `fha cooccur [--threshold N]` | `cooccur.py` | ✓ M4.2 — three candidate detectors: (1) person co-occurrence — person-pairs sharing ≥`--threshold` (default 2) sources via `source_people` ∪ `claim_persons` participants, excluding pairs with an existing `relationships` edge or a dismissed-tombstone entry (`.cache/cooccur_dismissed.json`, read-only), ranked by source count then source-type variety; (2) shared-place co-occurrence — accepted/needs-review claims of different, unlinked people sharing a place (`place_id` if both have one, else normalized `place_text`) with overlapping EDTF bounds, same exclusion rules as person co-occurrence; (3) org/entity recurrence — `occupation`, `military`, and membership-style `event`/`note` claims grouped by `(category, normalized value)`, emitted when ≥2 people or ≥2 sources share the same category/value hub. Read-only; never mints claims or writes the tombstone. Same absent/unreadable/stale handling as `xref`. |
+| `fha find --related <ID> [--date EDTF]` | `find.py` | ✓ M4.3 — see "fha find — implementation status" below |
 
-Both tools follow the TOOLING §14a/§14a2 "deterministic candidates, human-confirm gate"
-discipline: they only print suggestions. Confirming a pair (writing `corroborates:`/
-`contradicts:` links, minting a `relationship` claim, or writing a dismissal) is left to a
-future skill layer — out of scope for M4.1/M4.2.
+`fha xref` and `fha cooccur` follow the TOOLING §14a/§14a2 "deterministic candidates,
+human-confirm gate" discipline: they only print suggestions. Confirming a pair (writing
+`corroborates:`/`contradicts:` links, minting a `relationship` claim, or writing a
+dismissal) is left to a future skill layer — out of scope for M4.1/M4.2. `fha find
+--related` (M4.3) is purely a read query over the data those two tools (plus `relationships`
+and `claim_links`) already populate — it writes nothing.
 
 ## fha xref / fha cooccur — implementation status
 
@@ -66,6 +69,10 @@ synthetic `.cache/index.sqlite` directly from `index.py`'s `_DDL` schema and exe
 corroboration/contradiction classification, same-source and already-linked exclusion,
 threshold filtering, existing-relationship exclusion, the dismissed-tombstone read path,
 and org-recurrence grouping — without needing a full archive fixture or `exiftool`.
+`tests/test_find.py` follows the same synthetic-index pattern for `fha find --related`:
+all five ID-type neighborhoods, the standalone and combined `--date` forms, the
+`--related` dispatch sentinel (typed-with-no-value vs. not-typed-at-all), and the
+absent-index/invalid-ID/invalid-EDTF failure paths.
 
 ## fha photoindex — implementation status
 
@@ -113,8 +120,15 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | `<L-id>` lookup | ✓ | place entry, claims referencing it, prose mentions |
 | `<H-id>` lookup | ✓ | hypothesis entry, section heading, status, prose mentions |
 | `--text "…"` | ✓ | notes_fts + re.search; photo captions searched when photoindex is fresh, else explicit skip-note; transcript FTS ⚑ deferred (D7) |
-| `--related <ID>` | ⚑ deferred | prints deferral message, exits 0 (D4) |
-| Index fallback | ✓ | stale index warns but remains structured; absent/unreadable index tree-scans with "WARNING: index not fresh" header |
+| `--related <P-id>` | ✓ | relationship edges (rel + distinct source count); co-occurring persons with no existing edge (per-tool duplicate of cooccur.py's person co-occurrence, scoped to one person); places by claim frequency; shared occupation/military/membership affiliations with other people; distinct source count; photos via `photo_people` (note if photoindex absent) |
+| `--related <L-id>` | ✓ | claims naming the place; people ranked by claim frequency; distinct source count; micro-places (`within: L-id` children); photos within ~0.002° of the place's coords |
+| `--related <S-id>` | ✓ | claim counts by status; persons; places; corroborating/contradicting sources via `claim_links` (both directions, inverse-rel labeled); sibling sources sharing a person or `repository` |
+| `--related <C-id>` | ✓ | source, persons, place; linked claims (outgoing + incoming via `claim_links`); sibling claims (same person + same type). No `--date` (a single claim's own `date_edtf` already pins it) |
+| `--related <H-id>` | ✓ | person concerned, status, verifying claim from the `hypotheses` table when a row exists; since the index builder never populates that table (see `_find_hypothesis`), the normal case derives the same neighborhood from `claims.hypothesis` + `claim_persons` instead — not a failure |
+| `--related --date <EDTF>` (standalone, no ID) | ✓ | every accepted/needs-review claim whose bounds overlap the EDTF, plus the people/sources/places behind them; summary line `Active in {EDTF}: N claims, N people, N sources` |
+| `--related <ID> --date <EDTF>` (combined) | ✓ | P-id, L-id, and S-id neighborhoods accept `--date` as an additional AND filter (e.g. a person's relationships/places, or a source's claims by status, narrowed to a decade); C/H neighborhoods ignore it (a single claim's own `date_edtf` already pins it, and a hypothesis isn't meaningfully time-sliced) |
+| `--related` index requirement | ✓ | absent/unreadable `.cache/index.sqlite` → exit 3 (no tree-scan fallback — unlike find_by_id, the relational joins have no scan equivalent); stale → warns, still queries |
+| Index fallback (ID lookup, `--text`) | ✓ | stale index warns but remains structured; absent/unreadable index tree-scans with "WARNING: index not fresh" header |
 
 ## Implemented tools (milestone 1)
 

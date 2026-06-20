@@ -39,16 +39,15 @@ always overlaps rather than being treated as conflicting.
 
 CODE MAP
 --------
-  DB / root helpers (per-tool copies; tools never import other tools)
-    _open_db, _resolve_root
+  DB / root helpers — open_index_db, resolve_root_arg, both shared via _lib.py
 
   Classification
-    _normalize_place, _place_from_vital_value — vital-claim place extraction
-    _classify_pair             — corroborates/contradicts for one claim pair
-    run_xref                   — group claims by person+type, pair, classify
+    _place_from_vital_value     — vital-claim place extraction (uses _lib.normalize_place_text)
+    _classify_pair              — corroborates/contradicts for one claim pair
+    run_xref                    — group claims by person+type, pair, classify
 
   CLI
-    _fmt_id, _fmt_claim         — display formatting
+    _fmt_claim                  — display formatting (uses _lib.fmt_id_display)
     _cmd_xref, register, _standalone_main
 """
 
@@ -66,88 +65,18 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     edtf_bounds,
-    find_archive_root,
-    newest_record_mtime,
+    fmt_id_display,
+    normalize_place_text,
+    open_index_db,
+    resolve_root_arg,
 )
 
 _VITAL_TYPES = {'birth', 'death', 'marriage', 'baptism', 'burial'}
 
-
-def _fmt_id(id_str: str) -> str:
-    """Return an ID string with its type prefix uppercased (p-xxx -> P-xxx).
-
-    The index stores all IDs in lowercase; display output uses the
-    uppercase-prefix convention used everywhere else in the CLI output.
-    """
-    if not id_str:
-        return id_str
-    return id_str[0].upper() + id_str[1:]
-
-
-# ── DB / root helpers (per-tool copies; tools never import other tools) ──────
-
-def _open_db(archive_root: Path) -> sqlite3.Connection | None:
-    """
-    Open the index database for read-only querying.
-
-    Absent or unreadable -> print error, return None (caller exits 3).
-    Stale -> warn, but still return the connection (xref is read-only).
-    """
-    db_path = archive_root / '.cache' / 'index.sqlite'
-    if not db_path.exists():
-        print(
-            'ERROR: .cache/index.sqlite not found - run `fha index` first '
-            'then re-run this command.',
-            file=sys.stderr,
-        )
-        return None
-
-    try:
-        db_mtime = db_path.stat().st_mtime
-        stale = newest_record_mtime(archive_root) > db_mtime
-    except OSError:
-        stale = False
-    if stale:
-        print(
-            'WARNING: index may be stale — a record file is newer than '
-            '.cache/index.sqlite. Run `fha index` to refresh.',
-            file=sys.stderr,
-        )
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        for table in ('persons', 'claims', 'sources', 'claim_persons', 'claim_links'):
-            conn.execute(f'SELECT 1 FROM {table} LIMIT 1')
-        return conn
-    except Exception:
-        print(
-            'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
-            'Run `fha index` to rebuild.',
-            file=sys.stderr,
-        )
-        return None
-
-
-def _resolve_root(args: argparse.Namespace) -> Path | None:
-    """Resolve archive root from --root flag or auto-detection."""
-    if getattr(args, 'root', None):
-        return Path(args.root).resolve()
-    detected = find_archive_root()
-    if detected is None:
-        print(
-            'ERROR: cannot find archive root (no fha.yaml found). '
-            'Use --root to specify.',
-            file=sys.stderr,
-        )
-        return None
-    return detected
+_REQUIRED_TABLES = ('persons', 'claims', 'sources', 'claim_persons', 'claim_links')
 
 
 # ── Core query ────────────────────────────────────────────────────────────────
-
-def _normalize_place(text: str | None) -> str:
-    return ' '.join((text or '').strip().lower().split())
 
 
 def _place_from_vital_value(text: str | None) -> str:
@@ -175,7 +104,7 @@ def _place_from_vital_value(text: str | None) -> str:
     for pattern in patterns:
         match = re.search(pattern, text, re.I)
         if match:
-            return _normalize_place(match.group(1))
+            return normalize_place_text(match.group(1))
     return ''
 
 
@@ -209,8 +138,8 @@ def _classify_pair(a: dict, b: dict) -> str | None:
                 if a['place_id'] != b['place_id']:
                     return None
             else:
-                place_a = _normalize_place(a['place_text'])
-                place_b = _normalize_place(b['place_text'])
+                place_a = normalize_place_text(a['place_text'])
+                place_b = normalize_place_text(b['place_text'])
                 if place_a and place_b and place_a != place_b:
                     return None
         return 'contradicts'
@@ -220,8 +149,8 @@ def _classify_pair(a: dict, b: dict) -> str | None:
             if a['place_id'] != b['place_id']:
                 return 'contradicts'
         else:
-            place_a = _normalize_place(a['place_text']) or _place_from_vital_value(a['value'])
-            place_b = _normalize_place(b['place_text']) or _place_from_vital_value(b['value'])
+            place_a = normalize_place_text(a['place_text']) or _place_from_vital_value(a['value'])
+            place_b = normalize_place_text(b['place_text']) or _place_from_vital_value(b['value'])
             if place_a and place_b and place_a != place_b:
                 return 'contradicts'
 
@@ -238,7 +167,7 @@ def run_xref(archive_root: Path) -> dict:
     Each claim dict embedded in a pair carries: id, source_id, source_title,
     type, date_edtf, place_text, value.
     """
-    conn = _open_db(archive_root)
+    conn = open_index_db(archive_root, _REQUIRED_TABLES)
     if conn is None:
         return {'status': 'failed', 'groups': []}
 
@@ -386,13 +315,13 @@ def _fmt_claim(c: dict) -> str:
     date_label = c['date_edtf'] or '(no date)'
     place = f"  @ {c['place_text']}" if c.get('place_text') else ''
     return (
-        f"{_fmt_id(c['id'])}  [{c['source_title']} / {_fmt_id(c['source_id'])}]  "
+        f"{fmt_id_display(c['id'])}  [{c['source_title']} / {fmt_id_display(c['source_id'])}]  "
         f"{date_label}{place} — {c['value']}"
     )
 
 
 def _cmd_xref(args: argparse.Namespace) -> int:
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
@@ -408,7 +337,7 @@ def _cmd_xref(args: argparse.Namespace) -> int:
     total = sum(len(g['pairs']) for g in groups)
     print(f'Found {total} candidate pair(s) across {len(groups)} person(s):')
     for group in groups:
-        print(f"\n{group['person_name']}  [{_fmt_id(group['person_id'])}]")
+        print(f"\n{group['person_name']}  [{fmt_id_display(group['person_id'])}]")
         for pair in group['pairs']:
             print(f"  {pair['kind']}:")
             print(f"    A: {_fmt_claim(pair['claim_a'])}")

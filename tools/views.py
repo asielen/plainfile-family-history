@@ -63,18 +63,19 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
-    find_archive_root,
+    fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx)
     load_fha_yaml,
-    newest_record_mtime,  # max mtime across sources/people/notes .md + places.yaml
     normalize_id,         # lower-cases IDs for consistent set/dict keying
+    open_index_db,        # open .cache/index.sqlite with freshness check + table probe
     read_record,          # parses YAML front-matter + body from a .md file
+    resolve_root_arg,      # --root flag, else find_archive_root(), shared error message
 )
 
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Helpers (shared utilities)
 #    _today, _gen_header          — GENERATED header text
-#    _open_db, _resolve_root      — database / root resolution
+#    (database / root resolution now live in _lib.py: open_index_db, resolve_root_arg)
 #    _profile_path_for            — locate a person's .md profile file
 #    _out_path_for                — build companion file path from profile path
 #    _format_sid, _place_label    — formatting helpers
@@ -113,7 +114,6 @@ from _lib import (
 #    _cmd_brackets                — CLI handler: report, preview, fix
 #
 #  Tree view  (_cmd_tree and helpers)
-#    _fmt_id                      — uppercase type prefix for output IDs (p-xxx → P-xxx)
 #    _build_nodes_bulk            — batch TOOLING §7 node dicts for all BFS pids (2 SQL queries)
 #    _collect_edges               — DISTINCT edges from relationships table for a pid
 #    _traverse_tree               — BFS with cycle detection; returns nodes + edges dicts
@@ -216,75 +216,6 @@ def _rebase(p: Path, old: Path, new: Path) -> Path:
         return p
 
 
-def _open_db(archive_root: Path, *, strict: bool = False) -> sqlite3.Connection | None:
-    """
-    Open the index database.
-    Prints an error to stderr and returns None if the database is absent.
-
-    Freshness:
-      - strict=True (generating/mutating commands): a stale index is an ERROR.
-        Prints an error and returns None so the caller exits nonzero *before*
-        writing or moving anything from stale data.
-      - strict=False (read-only commands, e.g. tree to stdout): a stale index is
-        only a warning; the connection is still returned.
-    """
-    db_path = archive_root / '.cache' / 'index.sqlite'
-    if not db_path.exists():
-        print(
-            'ERROR: .cache/index.sqlite not found - run `fha index` first '
-            'then re-run this command.',
-            file=sys.stderr,
-        )
-        return None
-
-    # Freshness check: a record file post-dating the index means stale data.
-    try:
-        db_mtime = db_path.stat().st_mtime
-        stale = newest_record_mtime(archive_root) > db_mtime
-    except OSError:
-        stale = False
-    if stale:
-        if strict:
-            print(
-                "ERROR: index is stale; run 'fha index' before generating views.",
-                file=sys.stderr,
-            )
-            return None
-        print(
-            'WARNING: index may be stale — a record file is newer than '
-            '.cache/index.sqlite. Run `fha index` to refresh.',
-            file=sys.stderr,
-        )
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        conn.execute('SELECT 1 FROM persons LIMIT 1')
-        return conn
-    except Exception:
-        print(
-            'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
-            'Run `fha index` to rebuild.',
-            file=sys.stderr,
-        )
-        return None
-
-
-def _resolve_root(args: argparse.Namespace) -> Path | None:
-    """Resolve archive root from --root flag or auto-detection."""
-    if getattr(args, 'root', None):
-        return Path(args.root).resolve()
-    detected = find_archive_root()
-    if detected is None:
-        print(
-            'ERROR: cannot find archive root (no fha.yaml found). '
-            'Use --root to specify.',
-            file=sys.stderr,
-        )
-        return None
-    return detected
-
-
 def _profile_path_for(conn: sqlite3.Connection, person_id: str, archive_root: Path) -> Path | None:
     """Return the absolute path to the person's profile file, or None."""
     row = conn.execute(
@@ -316,12 +247,12 @@ def _out_path_for(profile_path: Path, kind: str, person_id: str) -> Path:
     # Strip trailing _{P-id} suffix (Crockford Base32 alphabet, case-insensitive)
     base = re.sub(r'_[PSCLH]-[0-9a-hjkmnp-tv-z]{10}$', '', stem, flags=re.I)
     # Filename convention: P-id uses uppercase type prefix
-    return profile_path.parent / f'{base}_{kind}_{_fmt_id(person_id)}.md'
+    return profile_path.parent / f'{base}_{kind}_{fmt_id_display(person_id)}.md'
 
 
 def _format_sid(source_id: str) -> str:
     """Format a source ID as a citation token: s-xxx ->[S-xxx]."""
-    return f'[{_fmt_id(source_id)}]'
+    return f'[{fmt_id_display(source_id)}]'
 
 
 def _place_label(place_text: str | None, place_id: str | None,
@@ -1464,7 +1395,7 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
     --dry-run: print findings + full preview of changes, exit without writing.
     --fix: print preview, prompt Apply? [y/N], then write.
     """
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
@@ -1473,7 +1404,7 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
 
     # --fix mutates the tree, so it must never run from a stale index; report-only
     # and --dry-run are read-only and tolerate a stale index with a warning.
-    conn = _open_db(archive_root, strict=fix)
+    conn = open_index_db(archive_root, ('persons',), strict=fix)
     if conn is None:
         return EXIT_FAILURE
 
@@ -1582,18 +1513,6 @@ def _cmd_brackets(args: argparse.Namespace) -> int:
 
 # ── Tree view ─────────────────────────────────────────────────────────────────
 
-def _fmt_id(id_str: str) -> str:
-    """Return an ID string with its type prefix uppercased (p-xxx → P-xxx).
-
-    The index stores all IDs in lowercase; the output schema in TOOLING §7
-    uses uppercase prefixes (P-, C-, S-, etc.).  Applied to both P-ids and
-    C-ids in tree output.
-    """
-    if not id_str:
-        return id_str
-    return id_str[0].upper() + id_str[1:]
-
-
 def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, dict]:
     """Build TOOLING §7 node dicts for all pids using two SQL queries instead of 2N.
 
@@ -1630,7 +1549,7 @@ def _build_nodes_bulk(conn: sqlite3.Connection, pids: list[str]) -> dict[str, di
 
     return {
         pid: {
-            'p_id': _fmt_id(pid),
+            'p_id': fmt_id_display(pid),
             'name': person_map[pid]['name'] if pid in person_map else pid,
             'sex': person_map[pid]['sex'] if pid in person_map else None,
             'vitals': vitals_map[pid],
@@ -1650,7 +1569,7 @@ def _collect_edges(
 
     Returns a list of internal edge dicts:
         {type, from, to, claim_id, date_start, date_end}
-    IDs are lowercase as stored; callers apply _fmt_id at output time.
+    IDs are lowercase as stored; callers apply fmt_id_display at output time.
     date_start / date_end are None when the table holds an empty string.
     """
     if not rels:
@@ -1766,9 +1685,9 @@ def _edge_to_json_dict(edge: dict) -> dict:
     is_spouse = edge['type'] == 'spouse'
     return {
         'type': edge['type'],
-        'from': _fmt_id(edge['from']),
-        'to': _fmt_id(edge['to']),
-        'claim_id': _fmt_id(edge['claim_id']) if edge['claim_id'] else None,
+        'from': fmt_id_display(edge['from']),
+        'to': fmt_id_display(edge['to']),
+        'claim_id': fmt_id_display(edge['claim_id']) if edge['claim_id'] else None,
         'dates': {
             'start': edge['date_start'] if is_spouse else None,
             'end': edge['date_end'] if is_spouse else None,
@@ -1786,7 +1705,7 @@ def _tree_to_json(
     shape to whatever tree library is vendored.
     """
     out = {
-        'seed': _fmt_id(seed_pid),
+        'seed': fmt_id_display(seed_pid),
         'mode': mode,
         'nodes': list(nodes.values()),
         'edges': [_edge_to_json_dict(e) for e in edges.values()],
@@ -1831,7 +1750,7 @@ def _cmd_tree(args: argparse.Namespace) -> int:
     Exit codes follow the §1 convention: 0 clean, 1 warnings, 3 tool failure.
     Missing index → exit 3 (tool cannot run without it).
     """
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
@@ -1868,7 +1787,7 @@ def _cmd_tree(args: argparse.Namespace) -> int:
     else:
         max_hops = None
 
-    conn = _open_db(archive_root)
+    conn = open_index_db(archive_root, ('persons',))
     if conn is None:
         return EXIT_FAILURE
     try:
@@ -1897,11 +1816,11 @@ def _cmd_tree(args: argparse.Namespace) -> int:
 # ── CLI command handlers ──────────────────────────────────────────────────────
 
 def _cmd_timeline(args: argparse.Namespace) -> int:
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
-    conn = _open_db(archive_root, strict=True)
+    conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
         return EXIT_FAILURE
 
@@ -1945,11 +1864,11 @@ def _cmd_timeline(args: argparse.Namespace) -> int:
 
 
 def _cmd_sources_index(args: argparse.Namespace) -> int:
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
-    conn = _open_db(archive_root, strict=True)
+    conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
         return EXIT_FAILURE
 
@@ -2001,11 +1920,11 @@ def _cmd_sources_index(args: argparse.Namespace) -> int:
 
 
 def _cmd_draft_queue(args: argparse.Namespace) -> int:
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
-    conn = _open_db(archive_root, strict=True)
+    conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
         return EXIT_FAILURE
 
@@ -2050,7 +1969,7 @@ def _cmd_draft_queue(args: argparse.Namespace) -> int:
 
 def _cmd_clean(args: argparse.Namespace) -> int:
     """Handle `fha views clean [--dry-run]`."""
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
@@ -2094,11 +2013,11 @@ def _cmd_clean(args: argparse.Namespace) -> int:
 
 def _cmd_refresh(args: argparse.Namespace) -> int:
     """Handle `fha views refresh`."""
-    archive_root = _resolve_root(args)
+    archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
 
-    conn = _open_db(archive_root, strict=True)
+    conn = open_index_db(archive_root, ('persons',), strict=True)
     if conn is None:
         return EXIT_FAILURE
 

@@ -2,7 +2,7 @@
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
-![status](https://img.shields.io/badge/status-milestone_2_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![status](https://img.shields.io/badge/status-milestones_1--4_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
@@ -66,13 +66,13 @@ Plainfile is an **archive-first** system.
 The durable archive — plain text and standard file formats on disk — is the source of truth.
 Every other moving part (the search index, the AI assistant, any genealogy app or website) is an optional, replaceable helper built *from* the archive and rebuildable *from scratch*.
 
-It is designed to be **operated with an AI coding agent**.
-You open the archive in Claude Code (or any agent that reads `AGENTS.md`), and the agent helps you process records, draft sourced claims, build family trees, and surface research leads — while a set of small deterministic tools (the `fha` command suite, specified in `TOOLING.md`) does the mechanical work.
+It is designed to be **operated with an AI coding agent** — a chat assistant that can read your files and run commands for you, the same way a human research assistant would, except it never gets tired of repetitive filing work.
+You open the archive in Claude Code (or any agent that reads `AGENTS.md`), and the agent helps you process records, draft sourced claims, build family trees, and surface research leads — while a set of small deterministic tools (the `fha` command suite, specified in `TOOLING.md`) does the mechanical work: the boring, exact, repeatable parts (checking IDs, building search indexes, scanning for contradictions) that don't need judgment, just consistency.
 The spec is written so that all of that tooling can be *regenerated* from the documents, in any language, if it is ever lost.
 
 ## What this is not
 
-- **Not a finished app.** The milestone-1 substrate (`fha lint`, `fha index`, `fha id`, `fha stubs`) and milestone-2 tools (`fha views`, `fha find`, `fha doctor`) are now implemented; the full suite (`fha process`, `fha site`, `fha packet`, etc.) is still being built per the roadmap below.
+- **Not a finished app.** Milestones 1–4 (linting, IDs, views/discovery, the photo catalog, and cross-reference/connection detection — see `BUILD.md` for the full roadmap) are implemented; the full suite (`fha process`, `fha site`, `fha packet`, etc.) is still being built.
 - **Not a database.** No server, no proprietary store. Files are the truth; the index is a disposable cache.
 - **Not a genealogy app that happens to store documents.** It is the inverse: an archive that *may* feed a genealogy app via export.
 - **Not a hosted service.** Your data lives on your disk, in formats you can read with a text editor.
@@ -148,18 +148,15 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 ## Status & roadmap
 
-**Current: `spec v1.2` — milestone 2 complete.**
+**Current: `spec v1.2` — milestones 1–4 complete.**
 
-Milestone 2 delivers the view generators, folder-maintenance tools, and the
-universal locator:
-`fha views timeline`, `fha views sources-index`, `fha views draft-queue`,
-`fha views brackets` (W103/W110 checks with `--fix`), `fha views tree`
-(ancestor/descendant/fan traversal, JSON and DOT output),
-`fha views clean` / `fha views refresh` (generated-file lifecycle),
-`fha find` (universal ID locator and full-text search), and
-`fha doctor` (archive health report) all run cleanly on the
-example archive alongside the milestone-1 substrate.
-The intended build sequence (detailed in `TOOLING.md` §15):
+Everything through cross-reference and connection detection is implemented and
+runs cleanly on the example archive: the linting/indexing substrate, the view
+generators and universal locator, the photo catalog, and the candidate-finding
+tools (contradiction/corroboration detection, person and place co-occurrence,
+and `fha find --related`'s neighborhood queries). See `BUILD.md` for the
+detailed milestone breakdown. The intended build sequence (detailed in
+`TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
 - [x] `fha id`, `fha index`, `fha lint`, `fha stubs` — the substrate (milestone 1: lint clean on the example archive)
@@ -169,8 +166,10 @@ The intended build sequence (detailed in `TOOLING.md` §15):
 - [x] `fha views clean`, `fha views refresh` — generated-file lifecycle management (milestone 2)
 - [x] `fha find` — universal ID locator and full-text search across records, notes, transcripts (milestone 2)
 - [x] `fha doctor` — archive health report: index freshness, file integrity, privacy flags (milestone 2)
-- [ ] `fha process`, photo index
-- [ ] The session report, cross-reference pass, person packets
+- [x] `fha photoindex` — photo catalog: scan/grouping, find, triage/report, reconcile/tag-person (milestone 3)
+- [x] `fha xref`, `fha cooccur` — corroboration/contradiction and co-occurrence candidate detection (milestone 4)
+- [x] `fha find --related` — the neighborhood query: people, places, sources, and time slices (milestone 4)
+- [ ] `fha process`, the session report, person packets (milestone 5+)
 - [ ] The static-site generator and GEDCOM export
 - [ ] Web-capture companion for record intake
 

@@ -34,7 +34,7 @@ the insertion point in the same edit.
 | 1 | Layer 1 — Foundation | M1.1 – M1.8 | ✓ shipped |
 | 2 | Layer 2 — Archive views & discovery | M2.1 – M2.5 | ✓ shipped |
 | 3 | Layer 3 — Photo catalog | M3.1 – M3.4 | ✓ shipped — M3.1 (`photoindex` scan/schema/grouping), M3.2 (`photoindex find`), M3.3 (`photoindex triage`/`report`), M3.4 (`photoindex reconcile`/`tag-person`) |
-| 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ◐ in progress — M4.1 (`fha xref`), M4.2 (`fha cooccur`) shipped; M4.3 (`fha find --related`) future |
+| 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ✓ shipped — M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
 | 5 | Layer 5 — Research report | M5.1 – M5.3 | future |
 | 6 | Layer 6 — Data output | M6.1 – M6.5 | future |
 | 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | future |
@@ -726,7 +726,7 @@ fha photoindex tag-person <P-id> --paths <file> --root ...   # previews; writes 
 
 ---
 
-## Layer 4 — Cross-reference & connection (Milestone 4 — ◐ in progress)
+## Layer 4 — Cross-reference & connection (Milestone 4 — ✓ shipped)
 
 Depends on: index (claim_links, relationships).
 Unlocks: `fha find --related` (D4), `fha report` section 8.
@@ -785,7 +785,7 @@ fha lint --root example-archive      # no regression
 
 ---
 
-### M4.3 — `fha find --related` — complete implementation
+### M4.3 — `fha find --related` — complete implementation (✓ shipped)
 
 **One PR.** Replace the deferral stub in `tools/find.py` with real output. Update TOOLING §4a
 D4 note: "implemented" (TOOLING §4a).

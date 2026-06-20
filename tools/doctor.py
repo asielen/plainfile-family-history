@@ -54,7 +54,6 @@ from _lib import (
     FhaConfigError,
     configure_utf8_stdout,
     db_mtime,
-    find_archive_root,
     get_roots,
     is_fixture_path,
     load_fha_yaml,
@@ -64,6 +63,7 @@ from _lib import (
     probe_sqlite,
     read_record,
     resolve_path,
+    resolve_root_arg,
 )
 
 configure_utf8_stdout()
@@ -375,15 +375,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _run_doctor(args: argparse.Namespace) -> int:
-    root = getattr(args, 'root', None)
-    if root:
-        archive_root = Path(root).resolve()
-    else:
-        archive_root = find_archive_root()
-        if archive_root is None:
-            print('ERROR: cannot find archive root (no fha.yaml found). '
-                  'Use --root to specify.', file=sys.stderr)
-            return EXIT_FAILURE
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
 
     fha_yaml_path = archive_root / 'fha.yaml'
     if not fha_yaml_path.exists():
