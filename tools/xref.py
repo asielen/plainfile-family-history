@@ -11,22 +11,31 @@ of scope for this tool.
 
 ALGORITHM
 ---------
-For every person, group their accepted/needs-review claims by claim `type`.
-Within each (person, type) group, every pair of claims from *different*
-sources that isn't already linked via `claim_links` is a candidate:
+For every person, group their accepted/needs-review claims by claim `type`
+(relationship claims are further split by `subtype`, this person's `role`,
+and the other person(s) named in the claim, since a person can be e.g. both
+a child in one `child-of` claim and a parent in another). Within each group,
+every pair of claims from *different* sources that isn't already linked via
+`claim_links` is a candidate:
 
-  - bounds overlap (via `edtf_bounds`)            -> corroboration candidate
-  - bounds don't overlap                          -> contradiction candidate
-  - vital type (birth/death/marriage) AND bounds   -> also a contradiction
-    overlap AND both claims carry a `place_text`      candidate (incompatible
-    that differs after normalization                  value), even though the
-                                                        dates don't conflict
+  - negation polarity differs (`negated`)          -> contradiction candidate,
+                                                        regardless of dates
+  - bounds don't overlap, vital type                -> contradiction candidate
+  - bounds don't overlap, substantive type           -> not a candidate
+    (residence, occupation, ... recur by design, §8.2; non-overlapping dates
+    are expected, not a conflict)
+  - bounds overlap                                  -> corroboration candidate
+  - vital type AND bounds overlap AND both claims     -> also a contradiction
+    carry a `place_id`/`place_text` that disagree        candidate (incompatible
+                                                          value), even though the
+                                                          dates don't conflict
 
-The vital-type value check is a deliberate heuristic: claim `value` is free
-prose, so `place_text` is the only structured per-claim field reliably
-comparable across two claims of the same type. A claim with no `date_edtf`
-gets the unbounded `('0001-01-01', '9999-12-31')` bounds from `edtf_bounds`,
-so an undated claim always overlaps rather than being treated as conflicting.
+Place comparison prefers structured `place_id` when both claims have one;
+it falls back to normalized `place_text`, then to a place phrase parsed out
+of free-prose `value`, since `value` itself is not reliably comparable
+across claims. A claim with no `date_edtf` gets the unbounded
+`('0001-01-01', '9999-12-31')` bounds from `edtf_bounds`, so an undated claim
+always overlaps rather than being treated as conflicting.
 
 CODE MAP
 --------
@@ -108,7 +117,8 @@ def _open_db(archive_root: Path) -> sqlite3.Connection | None:
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
-        conn.execute('SELECT 1 FROM persons LIMIT 1')
+        for table in ('persons', 'claims', 'sources', 'claim_persons', 'claim_links'):
+            conn.execute(f'SELECT 1 FROM {table} LIMIT 1')
         return conn
     except Exception:
         print(
@@ -163,20 +173,36 @@ def _place_from_vital_value(text: str | None) -> str:
     return ''
 
 
-def _classify_pair(a: dict, b: dict) -> str:
-    """Return 'corroborates' or 'contradicts' for a same-person, same-type pair."""
+def _classify_pair(a: dict, b: dict) -> str | None:
+    """
+    Return 'corroborates', 'contradicts', or None (not a comparable pair) for a
+    same-person, same-type pair.
+    """
+    if bool(a['negated']) != bool(b['negated']):
+        # One claim asserts the fact happened, the other confirms it never did —
+        # that's a conflict regardless of dates or type recurrence.
+        return 'contradicts'
+
     a_min, a_max = edtf_bounds(a['date_edtf'])
     b_min, b_max = edtf_bounds(b['date_edtf'])
     bounds_overlap = a_min <= b_max and b_min <= a_max
 
     if not bounds_overlap:
-        return 'contradicts'
+        if a['type'] in _VITAL_TYPES:
+            return 'contradicts'
+        # Substantive types (residence, occupation, ...) are recurring by
+        # design (§8.2) — non-overlapping dates are expected, not a conflict.
+        return None
 
     if a['type'] in _VITAL_TYPES:
-        place_a = _normalize_place(a['place_text']) or _place_from_vital_value(a['value'])
-        place_b = _normalize_place(b['place_text']) or _place_from_vital_value(b['value'])
-        if place_a and place_b and place_a != place_b:
-            return 'contradicts'
+        if a['place_id'] and b['place_id']:
+            if a['place_id'] != b['place_id']:
+                return 'contradicts'
+        else:
+            place_a = _normalize_place(a['place_text']) or _place_from_vital_value(a['value'])
+            place_b = _normalize_place(b['place_text']) or _place_from_vital_value(b['value'])
+            if place_a and place_b and place_a != place_b:
+                return 'contradicts'
 
     return 'corroborates'
 
@@ -200,7 +226,8 @@ def run_xref(archive_root: Path) -> dict:
             row['id']: dict(row)
             for row in conn.execute(
                 '''
-                SELECT id, source_id, type, date_edtf, place_text, value
+                SELECT id, source_id, type, subtype, date_edtf, place_id, place_text,
+                       value, negated
                 FROM claims
                 WHERE status IN ('accepted', 'needs-review')
                 '''
@@ -213,9 +240,14 @@ def run_xref(archive_root: Path) -> dict:
             claim['source_title'] = source_titles.get(claim['source_id'], claim['source_id'])
 
         claims_by_person: dict[str, list[str]] = {}
-        for row in conn.execute('SELECT claim_id, person_id FROM claim_persons'):
-            if row['claim_id'] in claims_by_id:
-                claims_by_person.setdefault(row['person_id'], []).append(row['claim_id'])
+        claim_persons: dict[str, list[str]] = {}
+        claim_role: dict[tuple[str, str], str] = {}
+        for row in conn.execute('SELECT claim_id, person_id, role FROM claim_persons'):
+            if row['claim_id'] not in claims_by_id:
+                continue
+            claims_by_person.setdefault(row['person_id'], []).append(row['claim_id'])
+            claim_persons.setdefault(row['claim_id'], []).append(row['person_id'])
+            claim_role[(row['claim_id'], row['person_id'])] = row['role']
 
         linked_pairs: set[frozenset[str]] = set()
         for row in conn.execute('SELECT claim_id, target_id FROM claim_links'):
@@ -227,12 +259,22 @@ def run_xref(archive_root: Path) -> dict:
 
     groups = []
     for person_id, claim_ids in sorted(claims_by_person.items()):
-        by_type: dict[str, list[str]] = {}
+        by_group: dict[tuple, list[str]] = {}
         for cid in claim_ids:
-            by_type.setdefault(claims_by_id[cid]['type'], []).append(cid)
+            claim = claims_by_id[cid]
+            if claim['type'] == 'relationship':
+                # A person can be e.g. a child in one child-of claim and a
+                # parent in another — only pair claims with the same subtype,
+                # this person's role, and the same counterpart person(s).
+                role = claim_role.get((cid, person_id))
+                others = frozenset(p for p in claim_persons.get(cid, []) if p != person_id)
+                key = (claim['type'], claim['subtype'], role, others)
+            else:
+                key = (claim['type'],)
+            by_group.setdefault(key, []).append(cid)
 
         pairs = []
-        for ctype, ids in by_type.items():
+        for ids in by_group.values():
             ids = sorted(set(ids))
             for i in range(len(ids)):
                 for j in range(i + 1, len(ids)):
@@ -242,8 +284,11 @@ def run_xref(archive_root: Path) -> dict:
                         continue
                     if frozenset((cid_a, cid_b)) in linked_pairs:
                         continue
+                    kind = _classify_pair(claim_a, claim_b)
+                    if kind is None:
+                        continue
                     pairs.append({
-                        'kind': _classify_pair(claim_a, claim_b),
+                        'kind': kind,
                         'claim_a': claim_a,
                         'claim_b': claim_b,
                     })

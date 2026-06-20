@@ -22,16 +22,20 @@ def _make_index(archive_root: Path) -> sqlite3.Connection:
 
 
 def _insert_claim(conn, cid, source_id, ctype, value, *, date_edtf=None,
-                   place_text=None, status='accepted', persons=()):
+                   place_text=None, place_id=None, subtype=None, negated=0,
+                   status='accepted', persons=(), roles=None):
     conn.execute(
-        '''INSERT INTO claims(id, source_id, type, date_edtf, place_text, value, status)
-           VALUES (?,?,?,?,?,?,?)''',
-        (cid, source_id, ctype, date_edtf, place_text, value, status),
+        '''INSERT INTO claims(id, source_id, type, subtype, date_edtf, place_id,
+                               place_text, value, status, negated)
+           VALUES (?,?,?,?,?,?,?,?,?,?)''',
+        (cid, source_id, ctype, subtype, date_edtf, place_id, place_text, value,
+         status, negated),
     )
+    roles = roles or {}
     for pos, pid in enumerate(persons):
         conn.execute(
             'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
-            (cid, pid, pos, None),
+            (cid, pid, pos, roles.get(pid)),
         )
 
 
@@ -149,6 +153,76 @@ class XrefTests(unittest.TestCase):
                        'born 1840', date_edtf='1840', persons=['p-aaaaaaaaaa'])
         _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'occupation',
                        'worked as a clerk', date_edtf='1840', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+
+    def test_non_overlapping_substantive_dates_not_paired(self) -> None:
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence',
+                       'lived in Topeka', date_edtf='1880', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'residence',
+                       'lived in Wichita', date_edtf='1900', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+
+    def test_matching_place_id_corroborates_despite_place_text_wording(self) -> None:
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',
+                       'born 1840', date_edtf='1840', place_id='l-aaaaaaaaaa',
+                       place_text='Fairview, Breton County, Kansas', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'birth',
+                       'born 1840', date_edtf='1840', place_id='l-aaaaaaaaaa',
+                       place_text='Fairview City, Breton, Kansas', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'corroborates')
+
+    def test_differing_place_id_contradicts_even_with_similar_text(self) -> None:
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',
+                       'born 1840', date_edtf='1840', place_id='l-aaaaaaaaaa',
+                       place_text='Fairview, Kansas', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'birth',
+                       'born 1840', date_edtf='1840', place_id='l-bbbbbbbbbb',
+                       place_text='Fairview, Kansas', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
+    def test_negation_polarity_mismatch_contradicts_regardless_of_dates(self) -> None:
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'marriage',
+                       'married 1870', date_edtf='1870', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'marriage',
+                       'never married', date_edtf=None, negated=1, persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
+    def test_relationship_claims_with_different_roles_not_paired(self) -> None:
+        self._seed_persons_sources()
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-bbbbbbbbbb','Parent','false','curated','y.md')")
+        self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
+                           "('p-cccccccccc','Child','false','curated','z.md')")
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'relationship',
+                       'child of parent', subtype='child-of',
+                       persons=['p-aaaaaaaaaa', 'p-bbbbbbbbbb'],
+                       roles={'p-aaaaaaaaaa': 'child', 'p-bbbbbbbbbb': 'parent'})
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'relationship',
+                       'parent of child', subtype='child-of',
+                       persons=['p-aaaaaaaaaa', 'p-cccccccccc'],
+                       roles={'p-aaaaaaaaaa': 'parent', 'p-cccccccccc': 'child'})
         self.conn.commit()
 
         result = xref.run_xref(self.archive_root)

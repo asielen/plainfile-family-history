@@ -96,7 +96,8 @@ def _open_db(archive_root: Path) -> sqlite3.Connection | None:
     try:
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
-        conn.execute('SELECT 1 FROM persons LIMIT 1')
+        for table in ('persons', 'claims', 'sources', 'claim_persons', 'source_people', 'relationships'):
+            conn.execute(f'SELECT 1 FROM {table} LIMIT 1')
         return conn
     except Exception:
         print(

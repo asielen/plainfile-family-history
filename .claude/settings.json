@@ -1,12 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python *)",
       "Bash(python tools/fha.py * --root example-archive*)",
       "Bash(python tools/fha.py * --root tests/fixtures/*)",
       "Bash(python tools/fha.py * --root \"example-archive\"*)",
       "Bash(python -m unittest*)",
-      "Bash(python tools/*)",
       "Bash(git status*)",
       "Bash(git diff*)",
       "Bash(git log*)",
