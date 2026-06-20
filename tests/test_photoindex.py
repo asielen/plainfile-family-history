@@ -1686,6 +1686,33 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_ordinary_scan_preserves_missing_row_for_a_later_exif_rematch(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            fha_config = {'roots': {'photos': 'photos'}}
+            result = photoindex.run_reconcile(archive, fha_config)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            # An ordinary scan run between a no-exif reconcile and a later
+            # --with-exif retry must not purge the MISSING: row — that key
+            # never matches a real on-disk alias, so a naive cache-removal
+            # pass would otherwise erase the source_id/path history the
+            # later rematch needs.
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+            finally:
+                conn.close()
+
     def test_reconcile_with_exif_can_later_rematch_an_already_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -1716,6 +1743,80 @@ class PhotoindexTests(unittest.TestCase):
                 second['rematched'], [('MISSING:photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
             )
             self.assertEqual(second['missing'], [])
+
+    def test_reconcile_rematch_with_no_remaining_untracked_still_stays_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                tagged = {'wedding_1902.jpg', 'wedding_renamed.jpg'}
+                rows = {name: {'Keywords': ['SOURCE: S-123456789a']} for name in tagged}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            old = archive / 'photos' / 'wedding_1902.jpg'
+            new = archive / 'photos' / 'wedding_renamed.jpg'
+            old.rename(new)
+
+            # Simulate content edited at move time: the file's real mtime now
+            # postdates the cache row's stored mtime, but the row's mtime/size
+            # columns are never refreshed by a path rename.
+            edited = (archive / '.cache' / 'photos.sqlite').stat().st_mtime + 10
+            os.utime(new, (edited, edited))
+
+            fha_config = {'roots': {'photos': 'photos'}}
+            result = photoindex.run_reconcile(archive, fha_config, with_exif=True)
+            self.assertEqual(
+                result['rematched'], [('photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+            )
+            self.assertEqual(result['new_count'], 0)
+
+            # Even though nothing is left untracked, a rematched file whose
+            # content may have changed must keep the catalog 'stale' until an
+            # ordinary scan re-scrapes it — otherwise find/doctor would report
+            # a fresh index pointing at outdated caption/date metadata.
+            status, _lag = photoindex.photoindex_status(archive, fha_config)
+            self.assertEqual(status, 'stale')
+
+    def test_reconcile_survives_untracked_file_disappearing_before_mtime_pullback(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            shutil.copy(
+                archive / 'photos' / 'portrait_1880.jpg',
+                archive / 'photos' / 'brand_new.jpg',
+            )
+
+            # An external/removable photo root can lose a file (or make it
+            # unreadable) between the initial on-disk listing and the
+            # post-commit mtime pullback pass; that race must degrade to
+            # "skip the pullback", not a raw OSError traceback after the
+            # cache mutation has already landed. Swap in a stand-in for the
+            # untracked file's Path whose .stat() always raises, mirroring
+            # exactly what reconcile sees if the file vanishes mid-run,
+            # without disturbing the cache-mutation logic exercised above it.
+            class _VanishingStat:
+                def stat(self) -> 'os.stat_result':
+                    raise OSError('vanished mid-reconcile')
+
+            orig_on_disk_aliases = photoindex._on_disk_aliases
+
+            def patched_on_disk_aliases(photos_root, fha_config, archive_root):
+                aliases = orig_on_disk_aliases(photos_root, fha_config, archive_root)
+                aliases['photos/brand_new.jpg'] = _VanishingStat()
+                return aliases
+
+            photoindex._on_disk_aliases = patched_on_disk_aliases
+            try:
+                result = photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
+            finally:
+                photoindex._on_disk_aliases = orig_on_disk_aliases
+
+            self.assertEqual(result['new_count'], 1)
 
     def test_reconcile_dry_run_reports_plan_without_mutating_cache(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -2206,6 +2307,50 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 photoindex._run_exiftool_write = orig_write
                 photoindex._rebuild_photo_people = orig_rebuild
+
+    def test_apply_tag_person_records_tagged_before_cache_insert_attempt(self) -> None:
+        """`tagged` must reflect every file whose exiftool write succeeded
+        before its own cache insert is attempted, so a cache failure on a
+        later candidate's insert still names every already-written file in
+        the RuntimeError's recovery list — not just the earlier ones whose
+        insert also happened to succeed first."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            orig_write = photoindex._run_exiftool_write
+            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+
+            orig_connect = sqlite3.connect
+
+            class _FailingOnSecondInsert:
+                def __init__(self, real_conn: sqlite3.Connection) -> None:
+                    self._real = real_conn
+                    self._inserts = 0
+
+                def execute(self, sql, *args, **kwargs):
+                    if sql.startswith('INSERT INTO photo_keywords'):
+                        self._inserts += 1
+                        if self._inserts == 2:
+                            raise sqlite3.OperationalError('database is locked')
+                    return self._real.execute(sql, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._real, name)
+
+            sqlite3.connect = lambda path: _FailingOnSecondInsert(orig_connect(path))
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    photoindex.apply_tag_person(
+                        archive, {'roots': {'photos': 'photos'}}, 'p-de957bcda1',
+                        ['photos/family_reunion.jpg', 'photos/wedding_1902.jpg'],
+                    )
+            finally:
+                sqlite3.connect = orig_connect
+                photoindex._run_exiftool_write = orig_write
+
+            self.assertIn('photos/family_reunion.jpg', str(ctx.exception))
+            self.assertIn('photos/wedding_1902.jpg', str(ctx.exception))
 
     def test_cmd_tag_person_dry_run_does_not_write(self) -> None:
         with tempfile.TemporaryDirectory() as d:

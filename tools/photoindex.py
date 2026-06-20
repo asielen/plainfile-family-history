@@ -1180,9 +1180,12 @@ def run_reconcile(
         keyword history stays queryable) but its path is prefixed
         'MISSING:' so it can never be mistaken for a still-valid path. A row
         already carrying that prefix is left as-is (not double-prefixed) when
-        it fails to rematch again; the next ordinary `fha photoindex` scan
-        (whose cache-removal pass sees no on-disk file at the synthetic
-        'MISSING:' key) clears a resolved one out automatically.
+        it fails to rematch again. An ordinary `fha photoindex` scan never
+        touches a 'MISSING:' key (it never matches a real on-disk alias, so a
+        naive cache-removal pass would erase it instead of resolving it) —
+        only reconcile itself ever removes or transforms one, so the row's
+        source_id/path history survives until a later --with-exif retry
+        heals it.
       - left untracked: a file with no claimed missing row is reported as new.
         With --with-exif, its SOURCE: keyword (if any) is read so it can be
         attached to that source's inventory in the report rather than being
@@ -1247,6 +1250,7 @@ def run_reconcile(
                 candidate_source_ids = _scrape_source_ids(list(untracked.values()))
 
             rematched: list[tuple[str, str]] = []
+            rematched_paths: list[Path] = []
             if missing and candidate_source_ids:
                 claimed: set[str] = set()
                 for old_path, source_id in missing.items():
@@ -1262,6 +1266,7 @@ def run_reconcile(
                         if not dry_run:
                             _move_cached_path(conn, old_path, new_path)
                         rematched.append((old_path, new_path))
+                        rematched_paths.append(untracked[new_path])
                 rematched_old = {old for old, _new in rematched}
                 missing = {p: sid for p, sid in missing.items() if p not in rematched_old}
                 untracked = {a: p for a, p in untracked.items() if a not in claimed}
@@ -1306,10 +1311,20 @@ def run_reconcile(
     finally:
         conn.close()
 
-    if not dry_run and untracked:
-        oldest_untracked = min(p.stat().st_mtime for p in untracked.values())
+    if not dry_run and (untracked or rematched_paths):
+        # Cover both still-untracked files (never scraped) and files just
+        # rematched by SOURCE: keyword (path renamed in cache, but mtime/size
+        # never refreshed) — either can leave photos.sqlite newer than a file
+        # whose on-disk content the cache doesn't actually reflect yet, which
+        # would make photoindex_status() report 'fresh' regardless. A photo
+        # root on removable/network storage can also vanish mid-stat once the
+        # cache write has already committed, so a stat failure here is a
+        # missed staleness pullback, not a reason to crash after the fact.
         try:
-            os.utime(db_path, (time.time(), oldest_untracked - 1))
+            oldest = min(
+                p.stat().st_mtime for p in (*untracked.values(), *rematched_paths)
+            )
+            os.utime(db_path, (time.time(), oldest - 1))
         except OSError:
             pass
     return result
@@ -1483,7 +1498,10 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     itself fails after one or more original files were already written —
     the original-file writes cannot be rolled back, so the caller must learn
     exactly which `tagged` paths now carry the keyword in-file even though
-    the cache update did not complete.
+    the cache update did not complete. `tagged` is recorded as soon as each
+    file's own exiftool write succeeds, before its cache insert is attempted —
+    otherwise a cache failure on the very candidate whose file write just
+    succeeded would drop it from the recovery list this error reports.
     """
     if not candidates:
         return {'tagged': [], 'failed': []}
@@ -1501,12 +1519,12 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
                 if error is not None:
                     failed.append((path, error))
                     continue
+                tagged.append(path)
                 conn.execute(
                     'INSERT INTO photo_keywords(path, keyword) SELECT ?, ? WHERE NOT EXISTS '
                     '(SELECT 1 FROM photo_keywords WHERE path=? AND keyword=?)',
                     (path, keyword, path, keyword),
                 )
-                tagged.append(path)
             if tagged:
                 _refresh_photo_fts_keywords(conn, tagged)
                 # Rebuild rather than upsert one row per tagged path: a pid-keyword
@@ -1700,6 +1718,15 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
         removed = 0
         alias_on_disk = set(alias_by_path.values())
         for path_key in list(existing):
+            # A 'MISSING:'-prefixed key is reconcile's own bookkeeping, not a
+            # stale cache entry: it never matches a real on-disk alias (the
+            # prefix makes sure of that), so without this guard an ordinary
+            # scan run between a no-exif reconcile and a later --with-exif
+            # retry would erase the row's source_id/path history that the
+            # retry needs to heal it. Only reconcile (rematch or re-flag)
+            # ever removes or transforms a MISSING: row.
+            if path_key.startswith(_MISSING_PREFIX):
+                continue
             if path_key not in alias_on_disk:
                 conn.execute('DELETE FROM photos WHERE path=?', (path_key,))
                 _delete_path_rows(conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key)
