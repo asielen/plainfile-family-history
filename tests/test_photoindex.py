@@ -1,4 +1,6 @@
 import argparse
+import builtins
+import inspect
 import os
 import subprocess
 import shutil
@@ -310,6 +312,56 @@ class PhotoindexTests(unittest.TestCase):
         neither = photoindex._row_to_photo({}, 0.0, 0)
         self.assertIsNone(neither['caption'])
 
+    def test_full_rescan_matches_incremental_state(self) -> None:
+        """`--full` bypasses the mtime/size skip but must converge to the same
+        cache state as an incremental scan that already scraped everything."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            fha_config = {'roots': {'photos': 'photos'}}
+            calls = {'count': 0}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                calls['count'] += len(paths)
+                rows = {
+                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                    'portrait_1880-back.jpg': {'Keywords': ['DATE: 1881!']},
+                    'wedding_1902.jpg': {},
+                    'family_reunion.jpg': {'Caption-Abstract': 'reunion photo'},
+                }
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, fha_config)
+            first_scrape_calls = calls['count']
+            self.assertGreater(first_scrape_calls, 0)
+
+            def snapshot() -> dict:
+                conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+                try:
+                    tables = (
+                        'photos', 'photo_groups', 'photo_keywords',
+                        'photo_face_regions', 'photo_people', 'photo_fts',
+                    )
+                    return {
+                        t: sorted(conn.execute(f'SELECT * FROM {t}').fetchall())
+                        for t in tables
+                    }
+                finally:
+                    conn.close()
+
+            incremental_state = snapshot()
+
+            # Nothing changed on disk: an incremental rescan must not re-scrape.
+            calls['count'] = 0
+            photoindex.run_scan(archive, fha_config)
+            self.assertEqual(calls['count'], 0)
+            self.assertEqual(snapshot(), incremental_state)
+
+            # `--full` rescans every file regardless, and must land on the same state.
+            photoindex.run_scan(archive, fha_config, full=True)
+            self.assertEqual(calls['count'], first_scrape_calls)
+            self.assertEqual(snapshot(), incremental_state)
+
     def test_grouping_stem_keeps_freeform_suffix_distinct(self) -> None:
         family = parse_media_filename('smith-family')
         house = parse_media_filename('smith-house')
@@ -455,6 +507,100 @@ class PhotoindexTests(unittest.TestCase):
                     'SELECT person_ref, via FROM photo_people ORDER BY person_ref'
                 ).fetchall()
                 self.assertEqual(people, [('p-aaaaaaaaaa', 'face-tag')])
+            finally:
+                conn.close()
+
+    def test_tag_person_rebuild_preserves_other_photos_weak_matches_when_index_goes_stale(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            (people_dir / 'grandma__example_P-aaaaaaaaaa.md').write_text(
+                '---\nid: P-aaaaaaaaaa\nname: Grandma\n---\n', encoding='utf-8',
+            )
+            (people_dir / 'other__example_P-bbbbbbbbbb.md').write_text(
+                '---\nid: P-bbbbbbbbbb\n---\n', encoding='utf-8',
+            )
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {
+                        'SourceFile': str(p),
+                        'RegionInfo': {
+                            'RegionList': [{'Name': 'Grandma', 'Type': 'Face'}],
+                        } if p.name == 'family_reunion.jpg' else {},
+                    }
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            cache = archive / '.cache'
+            index_db = cache / 'index.sqlite'
+            conn = sqlite3.connect(index_db)
+            try:
+                conn.executescript(
+                    """
+                    CREATE TABLE persons(id TEXT, name TEXT);
+                    CREATE TABLE person_face_tags(person_id TEXT, tag TEXT);
+                    CREATE TABLE person_variants(person_id TEXT, variant TEXT);
+                    INSERT INTO persons(id, name) VALUES ('p-aaaaaaaaaa', 'Grandma');
+                    INSERT INTO person_face_tags(person_id, tag) VALUES ('p-aaaaaaaaaa', 'Grandma');
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            os.utime(index_db, None)
+
+            # Fresh index -> family_reunion.jpg picks up the weak face-tag match.
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                people = conn.execute(
+                    'SELECT person_ref, via FROM photo_people ORDER BY person_ref'
+                ).fetchall()
+                self.assertEqual(people, [('p-aaaaaaaaaa', 'face-tag')])
+            finally:
+                conn.close()
+
+            # A newer person record makes index.sqlite stale again.
+            (people_dir / 'third__example_P-cccccccccc.md').write_text(
+                '---\nid: P-cccccccccc\n---\n', encoding='utf-8',
+            )
+            index_mtime = index_db.stat().st_mtime
+            os.utime(
+                people_dir / 'third__example_P-cccccccccc.md',
+                (index_mtime + 10, index_mtime + 10),
+            )
+
+            # Tagging an unrelated photo (portrait_1880.jpg) with a different
+            # P-id triggers apply_tag_person's _rebuild_photo_people while the
+            # index is stale. That must not wipe out family_reunion.jpg's
+            # already-screened weak match for Grandma — tag-person bulk work
+            # is incremental, and most of the archive starts out resolved only
+            # via these weaker tiers.
+            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            result = photoindex.apply_tag_person(
+                archive, {'roots': {'photos': 'photos'}}, 'p-bbbbbbbbbb',
+                ['photos/portrait_1880.jpg'],
+            )
+            self.assertEqual(result['tagged'], ['photos/portrait_1880.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                people = conn.execute(
+                    "SELECT path, person_ref, via FROM photo_people WHERE person_ref='p-aaaaaaaaaa'"
+                ).fetchall()
+                self.assertEqual(people, [('photos/family_reunion.jpg', 'p-aaaaaaaaaa', 'face-tag')])
+                tagged = conn.execute(
+                    "SELECT path, via FROM photo_people WHERE person_ref='p-bbbbbbbbbb' "
+                    "AND path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertEqual(tagged, ('photos/portrait_1880.jpg', 'pid-keyword'))
             finally:
                 conn.close()
 
@@ -663,16 +809,17 @@ class PhotoindexTests(unittest.TestCase):
             target = archive / 'photos' / 'family_reunion.jpg'
 
             orig_stat = Path.stat
-            calls = {'count': 0}
 
             def failing_stat(self, *a, **k):
-                # is_file() also calls stat(); let that first call through so
-                # the file is still discovered, then fail the second call
-                # (the one run_scan uses to read mtime/size).
-                if self.name == 'family_reunion.jpg':
-                    calls['count'] += 1
-                    if calls['count'] > 1:
-                        raise OSError('permission denied')
+                # Target only the explicit `p.stat()` call run_scan's loop
+                # makes to read mtime/size, not whatever stat-like check
+                # is_file() does during file discovery (`_iter_photo_files`)
+                # — on some platforms/pathlib versions is_file() resolves
+                # to a C-level syscall that never reaches Path.stat() at
+                # all, so counting total calls to this file is not
+                # portable; identifying run_scan's own frame is.
+                if self.name == 'family_reunion.jpg' and inspect.stack()[1].function == 'run_scan':
+                    raise OSError('permission denied')
                 return orig_stat(self, *a, **k)
 
             Path.stat = failing_stat
@@ -742,26 +889,12 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_deferred_photoindex_subcommands_accept_documented_arguments(self) -> None:
-        commands = [
-            ['triage', '--top', '10', '--root', 'tests/fixtures/photo-fixture'],
-            ['tag-person', 'P-de957bcda1', '--root', 'tests/fixtures/photo-fixture'],
-            [
-                'tag-person', 'P-de957bcda1', '--from-face-tag', 'Grandma',
-                '--root', 'tests/fixtures/photo-fixture',
-            ],
-            [
-                'tag-person', 'P-de957bcda1', '--paths', 'photos/a.jpg', 'photos/b.jpg',
-                '--root', 'tests/fixtures/photo-fixture',
-            ],
-            ['reconcile', '--root', 'tests/fixtures/photo-fixture'],
-            ['report', '--root', 'tests/fixtures/photo-fixture'],
-        ]
-
-        for args in commands:
-            with self.subTest(args=args):
+    def test_photoindex_subcommands_are_registered_in_the_cli(self) -> None:
+        """`fha photoindex <subcommand> --help` should resolve for every M3.1-M3.4 subcommand."""
+        for name in ('find', 'triage', 'report', 'reconcile', 'tag-person'):
+            with self.subTest(name=name):
                 proc = subprocess.run(
-                    [sys.executable, 'tools/fha.py', 'photoindex'] + args,
+                    [sys.executable, 'tools/fha.py', 'photoindex', name, '--help'],
                     cwd=ROOT,
                     check=False,
                     capture_output=True,
@@ -769,7 +902,6 @@ class PhotoindexTests(unittest.TestCase):
                     encoding='utf-8',
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertIn('deferred to a follow-up photoindex PR', proc.stdout)
 
     def _scan_with_find_fixture(self, archive: Path) -> None:
         """Scan with a fixed exiftool payload exercising person/keyword/edtf/text filters."""
@@ -1248,6 +1380,1234 @@ class PhotoindexTests(unittest.TestCase):
             code = photoindex._cmd_scan(args)
 
             self.assertEqual(code, 1)
+
+    def test_triage_ranks_unprocessed_groups_and_excludes_sourced_ones(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            result = photoindex.run_triage(archive, {'roots': {'photos': 'photos'}})
+
+            self.assertEqual(result['status'], 'fresh')
+            paths = [c['path'] for c in result['candidates']]
+            # wedding_1902.jpg already carries a SOURCE: keyword (processed) — excluded.
+            self.assertNotIn('photos/wedding_1902.jpg', paths)
+            self.assertEqual(
+                sorted(paths),
+                ['photos/family_reunion.jpg', 'photos/portrait_1880.jpg'],
+            )
+
+            by_path = {c['path']: c for c in result['candidates']}
+            # family_reunion: +3 caption, +2 pid-keyword = 5
+            self.assertEqual(by_path['photos/family_reunion.jpg']['score'], 5)
+            self.assertIn('caption', by_path['photos/family_reunion.jpg']['signals'])
+            self.assertIn('pid-keyword', by_path['photos/family_reunion.jpg']['signals'])
+            # portrait group: +3 caption (back), +1 confident date, +1 back-variant = 5
+            self.assertEqual(by_path['photos/portrait_1880.jpg']['score'], 5)
+            self.assertIn('back-variant', by_path['photos/portrait_1880.jpg']['signals'])
+
+    def test_triage_excludes_a_group_made_entirely_of_missing_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            (archive / 'photos' / 'family_reunion.jpg').unlink()
+            photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
+
+            # family_reunion's group now contains only a 'MISSING:'-prefixed
+            # row (no on-disk file survives in it) — triage must not suggest
+            # `fha process` on a synthetic path nothing can actually process.
+            result = photoindex.run_triage(archive, {'roots': {'photos': 'photos'}})
+            paths = [c['path'] for c in result['candidates']]
+            self.assertNotIn('MISSING:photos/family_reunion.jpg', paths)
+            self.assertNotIn('photos/family_reunion.jpg', paths)
+
+    def test_triage_top_limits_results(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            result = photoindex.run_triage(archive, {'roots': {'photos': 'photos'}}, top=1)
+
+            self.assertEqual(len(result['candidates']), 1)
+
+    def test_triage_rejects_non_positive_top(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            with self.assertRaises(ValueError):
+                photoindex.run_triage(archive, {'roots': {'photos': 'photos'}}, top=0)
+
+            args = type('Args', (), {'root': str(archive), 'top': -1})()
+            code = photoindex._cmd_triage(args)
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    def test_candidate_groups_are_not_null_poisoned_by_malformed_cache_row(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+            conn = sqlite3.connect(str(archive / '.cache' / 'photos.sqlite'))
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute(
+                    'INSERT INTO photos(path, mtime, size, source_id, group_id) '
+                    'VALUES (?,?,?,?,NULL)',
+                    ('photos/orphaned-cache-row.jpg', 0, 0, 'S-123456789a'),
+                )
+                conn.commit()
+
+                paths = {row['primary_path'] for row in photoindex._candidate_groups(conn)}
+            finally:
+                conn.close()
+
+            self.assertIn('photos/family_reunion.jpg', paths)
+            self.assertIn('photos/portrait_1880.jpg', paths)
+            self.assertNotIn('photos/wedding_1902.jpg', paths)
+
+    def test_triage_ai_only_comment_without_caption_is_penalized(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {'UserComment': 'AI: a portrait of two people'},
+                    'portrait_1880-back.jpg': {},
+                    'wedding_1902.jpg': {},
+                    'family_reunion.jpg': {},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            result = photoindex.run_triage(archive, {'roots': {'photos': 'photos'}})
+            by_path = {c['path']: c for c in result['candidates']}
+            # -2 ai-only, +1 back-variant (portrait_1880-back.jpg) = -1
+            self.assertEqual(by_path['photos/portrait_1880.jpg']['score'], -1)
+            self.assertIn('ai-only', by_path['photos/portrait_1880.jpg']['signals'])
+
+    def test_triage_on_absent_index_reports_absent_status(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            result = photoindex.run_triage(archive, {'roots': {'photos': 'photos'}})
+
+            self.assertEqual(result['status'], 'absent')
+            self.assertEqual(result['candidates'], [])
+
+    def test_cmd_triage_cli_prints_candidates_and_exits_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            args = type('Args', (), {'root': str(archive), 'top': 10})()
+            code = photoindex._cmd_triage(args)
+
+            self.assertEqual(code, 0)
+
+    def test_cmd_triage_cli_on_absent_index_exits_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            args = type('Args', (), {'root': str(archive), 'top': 10})()
+            code = photoindex._cmd_triage(args)
+
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    def test_report_lists_only_groups_with_date_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                    'portrait_1880-back.jpg': {
+                        'Keywords': ['DATE: 1881!'], 'Caption-Abstract': 'written 1881',
+                    },
+                    'wedding_1902.jpg': {
+                        'Keywords': ['SOURCE: S-123456789a', 'DATE: 1902!'],
+                    },
+                    'family_reunion.jpg': {},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            result = photoindex.run_report(archive, {'roots': {'photos': 'photos'}})
+
+            self.assertEqual(result['status'], 'fresh')
+            self.assertEqual(len(result['conflicts']), 1)
+            conflict = result['conflicts'][0]
+            self.assertEqual(conflict['primary_path'], 'photos/portrait_1880.jpg')
+            photo_paths = sorted(p['path'] for p in conflict['photos'])
+            self.assertEqual(
+                photo_paths,
+                ['photos/portrait_1880-back.jpg', 'photos/portrait_1880.jpg'],
+            )
+            by_path = {p['path']: p for p in conflict['photos']}
+            self.assertEqual(by_path['photos/portrait_1880.jpg']['edtf'], '1880')
+            self.assertEqual(by_path['photos/portrait_1880-back.jpg']['caption'], 'written 1881')
+
+    def test_report_on_absent_index_reports_absent_status(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            result = photoindex.run_report(archive, {'roots': {'photos': 'photos'}})
+
+            self.assertEqual(result['status'], 'absent')
+            self.assertEqual(result['conflicts'], [])
+
+    def test_cmd_report_cli_prints_conflicts_and_exits_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {'Keywords': ['DATE: 1880!']},
+                    'portrait_1880-back.jpg': {'Keywords': ['DATE: 1881!']},
+                    'wedding_1902.jpg': {},
+                    'family_reunion.jpg': {},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            args = type('Args', (), {'root': str(archive)})()
+            code = photoindex._cmd_report(args)
+
+            self.assertEqual(code, 0)
+
+    def test_cmd_report_cli_on_absent_index_exits_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            args = type('Args', (), {'root': str(archive)})()
+            code = photoindex._cmd_report(args)
+
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    # ── reconcile (BUILD.md M3.4) ─────────────────────────────────────────
+
+    def test_reconcile_rematches_moved_file_by_source_id(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']},
+                }
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            # Simulate the file moving outside fha: same SOURCE: keyword, new name.
+            old = archive / 'photos' / 'wedding_1902.jpg'
+            new = archive / 'photos' / 'wedding_renamed.jpg'
+            old.rename(new)
+
+            def reconcile_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {'SourceFile': str(p), 'Keywords': ['SOURCE: S-123456789a']}
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = reconcile_exiftool
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, with_exif=True,
+            )
+
+            # Depending on filesystem mtime resolution the rename may or may not
+            # bump the photos root's mtime past the cache's; either way reconcile
+            # must still run (only absent/unreadable short-circuit).
+            self.assertIn(result['status'], ('fresh', 'stale'))
+            self.assertEqual(
+                result['rematched'], [('photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+            )
+            self.assertEqual(result['missing'], [])
+            self.assertEqual(result['new_count'], 0)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                paths = [row[0] for row in conn.execute('SELECT path FROM photos')]
+                self.assertIn('photos/wedding_renamed.jpg', paths)
+                self.assertNotIn('photos/wedding_1902.jpg', paths)
+
+                # The renamed file was its group's primary_path; that must move too,
+                # or `photo_groups` would keep pointing at a path with no `photos` row.
+                primary = conn.execute(
+                    "SELECT primary_path FROM photo_groups WHERE group_id LIKE 'SOURCE:%'"
+                ).fetchone()[0]
+                self.assertEqual(primary, 'photos/wedding_renamed.jpg')
+            finally:
+                conn.close()
+
+    def test_reconcile_rematch_updates_photo_fts_path(self) -> None:
+        """A rematch must move `photo_fts.path` too, or `find --text` keeps
+        matching the pre-reconcile path indefinitely (it is never rebuilt
+        until the next full scan)."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'wedding_1902.jpg': {
+                        'Keywords': ['SOURCE: S-123456789a'],
+                        'Caption-Abstract': 'Reception party',
+                    },
+                }
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            old = archive / 'photos' / 'wedding_1902.jpg'
+            new = archive / 'photos' / 'wedding_renamed.jpg'
+            old.rename(new)
+
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), 'Keywords': ['SOURCE: S-123456789a']} for p in paths
+            ]
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, with_exif=True,
+            )
+            self.assertEqual(
+                result['rematched'], [('photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+            )
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                rows = conn.execute(
+                    "SELECT path, caption FROM photo_fts WHERE path='photos/wedding_renamed.jpg'"
+                ).fetchall()
+                self.assertEqual(rows, [('photos/wedding_renamed.jpg', 'Reception party')])
+                stale = conn.execute(
+                    "SELECT 1 FROM photo_fts WHERE path='photos/wedding_1902.jpg'"
+                ).fetchone()
+                self.assertIsNone(stale)
+            finally:
+                conn.close()
+
+    def test_reconcile_without_with_exif_does_not_rematch(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']}}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            old = archive / 'photos' / 'wedding_1902.jpg'
+            new = archive / 'photos' / 'wedding_renamed.jpg'
+            old.rename(new)
+
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, with_exif=False,
+            )
+
+            self.assertEqual(result['rematched'], [])
+            self.assertEqual(result['missing'], ['MISSING:photos/wedding_1902.jpg'])
+            self.assertEqual(result['new_count'], 1)
+
+    def test_reconcile_unmatchable_file_with_no_source_id_is_marked_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, with_exif=True,
+            )
+
+            self.assertEqual(result['rematched'], [])
+            self.assertIn('MISSING:photos/portrait_1880.jpg', result['missing'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT path FROM photos WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+            finally:
+                conn.close()
+
+    def test_reconcile_missing_flag_updates_photo_fts_path(self) -> None:
+        """Flagging a row MISSING: must also re-key its photo_fts row, or a
+        `find --text` hit on its caption would still print the dead path."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [
+                {'SourceFile': str(p), 'Caption-Abstract': 'Family portrait'}
+                if p.name == 'portrait_1880.jpg' else {'SourceFile': str(p)}
+                for p in paths
+            ]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, with_exif=True,
+            )
+            self.assertIn('MISSING:photos/portrait_1880.jpg', result['missing'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT caption FROM photo_fts WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertEqual(row, ('Family portrait',))
+                stale = conn.execute(
+                    "SELECT 1 FROM photo_fts WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNone(stale)
+            finally:
+                conn.close()
+
+    def test_reconcile_already_missing_row_remains_eligible_without_double_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            fha_config = {'roots': {'photos': 'photos'}}
+            first = photoindex.run_reconcile(archive, fha_config)
+            self.assertEqual(first['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            # A still-missing row stays reported (and eligible for a future
+            # --with-exif rematch) rather than being silently dropped, and it
+            # is never wrapped in a second MISSING: prefix.
+            second = photoindex.run_reconcile(archive, fha_config)
+            self.assertEqual(second['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM photos WHERE path LIKE 'MISSING:MISSING:%'"
+                ).fetchone()[0]
+                self.assertEqual(count, 0)
+            finally:
+                conn.close()
+
+    def test_ordinary_scan_preserves_missing_row_for_a_later_exif_rematch(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+            fha_config = {'roots': {'photos': 'photos'}}
+            result = photoindex.run_reconcile(archive, fha_config)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            # An ordinary scan run between a no-exif reconcile and a later
+            # --with-exif retry must not purge the MISSING: row — that key
+            # never matches a real on-disk alias, so a naive cache-removal
+            # pass would otherwise erase the source_id/path history the
+            # later rematch needs.
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+            finally:
+                conn.close()
+
+    def test_ordinary_scan_drops_missing_row_once_its_alias_is_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            fha_config = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, fha_config)
+
+            photo = archive / 'photos' / 'portrait_1880.jpg'
+            saved = photo.read_bytes()
+            photo.unlink()
+            result = photoindex.run_reconcile(archive, fha_config)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            # The file reappears at the exact alias the MISSING: row
+            # remembers. An ordinary scan re-discovers it as a fresh,
+            # untracked file and must also drop the now-superseded MISSING:
+            # row — otherwise the two rows fight over the same group/primary
+            # path and `find`/triage can keep surfacing the dead row.
+            photo.write_bytes(saved)
+            photoindex.run_scan(archive, fha_config)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                missing_row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNone(missing_row)
+                restored_row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(restored_row)
+            finally:
+                conn.close()
+
+    def test_reconcile_with_exif_can_later_rematch_an_already_missing_row(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            # Real exiftool reads embedded metadata, unaffected by a later
+            # rename, so the fake matches on either filename the photo has
+            # carried rather than just its name at scan time.
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                tagged = {'wedding_1902.jpg', 'wedding_renamed.jpg'}
+                rows = {name: {'Keywords': ['SOURCE: S-123456789a']} for name in tagged}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            old = archive / 'photos' / 'wedding_1902.jpg'
+            new = archive / 'photos' / 'wedding_renamed.jpg'
+            old.rename(new)
+
+            fha_config = {'roots': {'photos': 'photos'}}
+            first = photoindex.run_reconcile(archive, fha_config, with_exif=False)
+            self.assertEqual(first['missing'], ['MISSING:photos/wedding_1902.jpg'])
+
+            # A row already flagged MISSING: on a previous (no-exif) run must
+            # still be a rematch candidate once --with-exif is used later.
+            second = photoindex.run_reconcile(archive, fha_config, with_exif=True)
+            self.assertEqual(
+                second['rematched'], [('MISSING:photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+            )
+            self.assertEqual(second['missing'], [])
+
+    def test_reconcile_rematch_with_no_remaining_untracked_still_stays_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                tagged = {'wedding_1902.jpg', 'wedding_renamed.jpg'}
+                rows = {name: {'Keywords': ['SOURCE: S-123456789a']} for name in tagged}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            old = archive / 'photos' / 'wedding_1902.jpg'
+            new = archive / 'photos' / 'wedding_renamed.jpg'
+            old.rename(new)
+
+            # Simulate content edited at move time: the file's real mtime now
+            # postdates the cache row's stored mtime, but the row's mtime/size
+            # columns are never refreshed by a path rename.
+            edited = (archive / '.cache' / 'photos.sqlite').stat().st_mtime + 10
+            os.utime(new, (edited, edited))
+
+            fha_config = {'roots': {'photos': 'photos'}}
+            result = photoindex.run_reconcile(archive, fha_config, with_exif=True)
+            self.assertEqual(
+                result['rematched'], [('photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+            )
+            self.assertEqual(result['new_count'], 0)
+
+            # Even though nothing is left untracked, a rematched file whose
+            # content may have changed must keep the catalog 'stale' until an
+            # ordinary scan re-scrapes it — otherwise find/doctor would report
+            # a fresh index pointing at outdated caption/date metadata.
+            status, _lag = photoindex.photoindex_status(archive, fha_config)
+            self.assertEqual(status, 'stale')
+
+    def test_reconcile_survives_untracked_file_disappearing_before_mtime_pullback(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            shutil.copy(
+                archive / 'photos' / 'portrait_1880.jpg',
+                archive / 'photos' / 'brand_new.jpg',
+            )
+
+            # An external/removable photo root can lose a file (or make it
+            # unreadable) between the initial on-disk listing and the
+            # post-commit mtime pullback pass; that race must degrade to
+            # "skip the pullback", not a raw OSError traceback after the
+            # cache mutation has already landed. Swap in a stand-in for the
+            # untracked file's Path whose .stat() always raises, mirroring
+            # exactly what reconcile sees if the file vanishes mid-run,
+            # without disturbing the cache-mutation logic exercised above it.
+            class _VanishingStat:
+                def stat(self) -> 'os.stat_result':
+                    raise OSError('vanished mid-reconcile')
+
+            orig_on_disk_aliases = photoindex._on_disk_aliases
+
+            def patched_on_disk_aliases(photos_root, fha_config, archive_root):
+                aliases = orig_on_disk_aliases(photos_root, fha_config, archive_root)
+                aliases['photos/brand_new.jpg'] = _VanishingStat()
+                return aliases
+
+            photoindex._on_disk_aliases = patched_on_disk_aliases
+            try:
+                result = photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
+            finally:
+                photoindex._on_disk_aliases = orig_on_disk_aliases
+
+            self.assertEqual(result['new_count'], 1)
+
+    def test_reconcile_dry_run_reports_plan_without_mutating_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, dry_run=True,
+            )
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+                still_missing = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNone(still_missing)
+            finally:
+                conn.close()
+
+    def test_reconcile_refuses_when_photos_root_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            shutil.rmtree(archive / 'photos')
+
+            result = photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
+            self.assertFalse(result['root_found'])
+            self.assertEqual(result['missing'], [])
+            self.assertEqual(result['new_count'], 0)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+            finally:
+                conn.close()
+
+    def test_reconcile_keeps_status_stale_when_new_files_remain_unindexed(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            # A rename triggers a real cache mutation (missing-flagging) in
+            # the same run that also leaves an untracked new file behind.
+            (archive / 'photos' / 'wedding_1902.jpg').rename(
+                archive / 'photos' / 'wedding_renamed.jpg',
+            )
+            shutil.copy(
+                archive / 'photos' / 'portrait_1880.jpg',
+                archive / 'photos' / 'brand_new.jpg',
+            )
+            fha_config = {'roots': {'photos': 'photos'}}
+
+            result = photoindex.run_reconcile(archive, fha_config)
+            self.assertEqual(result['new_count'], 2)
+
+            status, _lag = photoindex.photoindex_status(archive, fha_config)
+            self.assertEqual(status, 'stale')
+
+    def test_reconcile_new_untracked_file_is_reported_not_scraped(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            shutil.copy(
+                archive / 'photos' / 'portrait_1880.jpg',
+                archive / 'photos' / 'brand_new.jpg',
+            )
+
+            result = photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
+
+            self.assertEqual(result['new_count'], 1)
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='photos/brand_new.jpg'"
+                ).fetchone()
+                self.assertIsNone(row)
+            finally:
+                conn.close()
+
+    def test_reconcile_with_exif_attaches_untracked_source_tagged_file(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            shutil.copy(
+                archive / 'photos' / 'portrait_1880.jpg',
+                archive / 'photos' / 'brand_new.jpg',
+            )
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {'SourceFile': str(p), 'Keywords': ['SOURCE: S-aaaaaaaaaa']}
+                    if p.name == 'brand_new.jpg' else {'SourceFile': str(p)}
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = fake_exiftool
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, with_exif=True,
+            )
+
+            self.assertEqual(result['new_count'], 1)
+            self.assertEqual(
+                result['new_sourced'], {'s-aaaaaaaaaa': ['photos/brand_new.jpg']},
+            )
+            self.assertEqual(result['new_unsourced'], [])
+
+    def test_reconcile_with_exif_batches_untracked_files_through_exiftool(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            for i in range(5):
+                shutil.copy(
+                    archive / 'photos' / 'portrait_1880.jpg',
+                    archive / 'photos' / f'brand_new_{i}.jpg',
+                )
+
+            call_sizes: list[int] = []
+
+            def counting_exiftool(paths: list[Path]) -> list[dict]:
+                call_sizes.append(len(paths))
+                return [{'SourceFile': str(p)} for p in paths]
+
+            photoindex._run_exiftool = counting_exiftool
+            orig_batch_size = photoindex._EXIFTOOL_BATCH_SIZE
+            photoindex._EXIFTOOL_BATCH_SIZE = 2
+            try:
+                result = photoindex.run_reconcile(
+                    archive, {'roots': {'photos': 'photos'}}, with_exif=True,
+                )
+            finally:
+                photoindex._EXIFTOOL_BATCH_SIZE = orig_batch_size
+
+            # 5 untracked files with a batch size of 2 must be scraped across
+            # multiple bounded exiftool calls, not one command line sized to
+            # the whole untracked set.
+            self.assertEqual(call_sizes, [2, 2, 1])
+            self.assertEqual(result['new_count'], 5)
+
+    def test_reconcile_on_absent_index_reports_absent_status(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            result = photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
+            self.assertEqual(result['status'], 'absent')
+
+    def test_cmd_reconcile_cli_propagates_exiftool_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            (archive / 'photos' / 'wedding_1902.jpg').rename(
+                archive / 'photos' / 'wedding_renamed.jpg'
+            )
+
+            def broken_exiftool(paths: list[Path]) -> list[dict]:
+                raise RuntimeError('fha photoindex requires exiftool on PATH')
+
+            photoindex._run_exiftool = broken_exiftool
+
+            args = type('Args', (), {'root': str(archive), 'with_exif': True})()
+            code = photoindex._cmd_reconcile(args)
+
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    def test_cmd_reconcile_cli_reports_missing_with_warning_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+
+            args = type('Args', (), {'root': str(archive), 'with_exif': False})()
+            code = photoindex._cmd_reconcile(args)
+
+            self.assertEqual(code, photoindex.EXIT_WARNINGS)
+
+    # ── tag-person (BUILD.md M3.4) ────────────────────────────────────────
+
+    def _scan_with_face_tag_fixture(self, archive: Path) -> None:
+        def fake_exiftool(paths: list[Path]) -> list[dict]:
+            rows = {
+                'family_reunion.jpg': {
+                    'RegionInfo': {
+                        'RegionList': [{'Name': 'Grandma', 'Type': 'Face'}],
+                    },
+                },
+            }
+            return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+        people_dir = archive / 'people'
+        people_dir.mkdir(exist_ok=True)
+        (people_dir / 'grandma_P-de957bcda1.md').write_text(
+            '---\nid: P-de957bcda1\n---\n', encoding='utf-8',
+        )
+
+        photoindex._run_exiftool = fake_exiftool
+        photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+    def test_tag_person_plan_from_face_tag_returns_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            plan = photoindex.run_tag_person_plan(
+                archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                from_face_tag='Grandma',
+            )
+
+            self.assertEqual(plan['candidates'], ['photos/family_reunion.jpg'])
+            self.assertEqual(plan['already_tagged'], [])
+
+    def test_tag_person_plan_excludes_already_tagged(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            conn.execute(
+                "INSERT INTO photo_keywords(path, keyword) "
+                "VALUES ('photos/family_reunion.jpg', 'p-de957bcda1')"
+            )
+            conn.commit()
+            conn.close()
+
+            plan = photoindex.run_tag_person_plan(
+                archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                from_face_tag='Grandma',
+            )
+
+            self.assertEqual(plan['candidates'], [])
+            self.assertEqual(plan['already_tagged'], ['photos/family_reunion.jpg'])
+
+    def test_tag_person_plan_does_not_skip_group_sibling_without_own_keyword(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            # Simulate _rebuild_photo_people's group propagation: photo_people
+            # carries the pid-keyword match for a sibling that never actually
+            # had the keyword written into its own file.
+            conn.execute(
+                "INSERT INTO photo_people(path, person_ref, via) "
+                "VALUES ('photos/family_reunion.jpg', 'p-de957bcda1', 'pid-keyword')"
+            )
+            conn.commit()
+            conn.close()
+
+            plan = photoindex.run_tag_person_plan(
+                archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                from_face_tag='Grandma',
+            )
+
+            self.assertEqual(plan['candidates'], ['photos/family_reunion.jpg'])
+            self.assertEqual(plan['already_tagged'], [])
+
+    def test_tag_person_plan_requires_exactly_one_selector(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            with self.assertRaises(ValueError):
+                photoindex.run_tag_person_plan(
+                    archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                )
+            with self.assertRaises(ValueError):
+                photoindex.run_tag_person_plan(
+                    archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                    from_face_tag='Grandma', paths=['photos/family_reunion.jpg'],
+                )
+
+    def test_tag_person_plan_rejects_invalid_person_id(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            with self.assertRaises(ValueError):
+                photoindex.run_tag_person_plan(
+                    archive, {'roots': {'photos': 'photos'}}, 'S-123456789a',
+                    from_face_tag='Grandma',
+                )
+
+    def test_tag_person_plan_rejects_unknown_person_id(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            with self.assertRaises(ValueError):
+                photoindex.run_tag_person_plan(
+                    archive, {'roots': {'photos': 'photos'}}, 'P-0000000000',
+                    from_face_tag='Grandma',
+                )
+
+    def test_tag_person_plan_rejects_id_mentioned_only_in_note_text(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            # A P-id that appears only as a stray mention in a non-person-record
+            # file (e.g. a research note) must not pass validation -- only an
+            # actual people/ profile record names a real person.
+            notes_dir = archive / 'notes'
+            notes_dir.mkdir(exist_ok=True)
+            (notes_dir / 'misc.md').write_text(
+                'See P-aaaaaaaaaa for context.\n', encoding='utf-8',
+            )
+
+            with self.assertRaises(ValueError):
+                photoindex.run_tag_person_plan(
+                    archive, {'roots': {'photos': 'photos'}}, 'P-aaaaaaaaaa',
+                    from_face_tag='Grandma',
+                )
+
+    def test_tag_person_plan_blocks_on_stale_index(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+            # Touch the person record after the scan so the cache is stale.
+            # Set an explicit future mtime rather than os.utime(path, None):
+            # on a coarse/virtualized clock "now" can land exactly on the
+            # cache's own last-write timestamp instead of strictly after it.
+            db_mtime = (archive / '.cache' / 'photos.sqlite').stat().st_mtime
+            future = db_mtime + 5
+            os.utime(archive / 'people' / 'grandma_P-de957bcda1.md', (future, future))
+
+            args = type('Args', (), {
+                'root': str(archive), 'person_id': 'P-de957bcda1',
+                'from_face_tag': 'Grandma', 'paths': None, 'dry_run': True,
+            })()
+            orig_apply = photoindex.apply_tag_person
+            photoindex.apply_tag_person = lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError('apply_tag_person must not be called on a stale index')
+            )
+            try:
+                code = photoindex._cmd_tag_person(args)
+            finally:
+                photoindex.apply_tag_person = orig_apply
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
+
+    def test_tag_person_plan_resolves_explicit_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            plan = photoindex.run_tag_person_plan(
+                archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                paths=['photos/family_reunion.jpg'],
+            )
+
+            self.assertEqual(plan['candidates'], ['photos/family_reunion.jpg'])
+
+    def test_tag_person_plan_dedupes_repeated_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            plan = photoindex.run_tag_person_plan(
+                archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                paths=['photos/family_reunion.jpg', 'photos/family_reunion.jpg'],
+            )
+
+            self.assertEqual(plan['candidates'], ['photos/family_reunion.jpg'])
+
+    def test_tag_person_plan_rejects_unknown_path(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            with self.assertRaises(ValueError):
+                photoindex.run_tag_person_plan(
+                    archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                    paths=['photos/does_not_exist.jpg'],
+                )
+
+    def test_apply_tag_person_writes_keyword_and_updates_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            calls: list[tuple[list[Path], str]] = []
+
+            def _fake_write(paths: list[Path], kw: str) -> dict:
+                calls.append((paths, kw))
+                return {p: None for p in paths}
+
+            orig_write = photoindex._run_exiftool_write
+            photoindex._run_exiftool_write = _fake_write
+            try:
+                result = photoindex.apply_tag_person(
+                    archive, {'roots': {'photos': 'photos'}}, 'p-de957bcda1',
+                    ['photos/family_reunion.jpg'],
+                )
+            finally:
+                photoindex._run_exiftool_write = orig_write
+
+            self.assertEqual(result['tagged'], ['photos/family_reunion.jpg'])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][1], 'P-de957bcda1')
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                people = conn.execute(
+                    "SELECT person_ref, via FROM photo_people WHERE path='photos/family_reunion.jpg'"
+                ).fetchall()
+                self.assertEqual(people, [('p-de957bcda1', 'pid-keyword')])
+                keywords = conn.execute(
+                    "SELECT keyword FROM photo_keywords WHERE path='photos/family_reunion.jpg' "
+                    "AND keyword='P-de957bcda1'"
+                ).fetchall()
+                self.assertEqual(len(keywords), 1)
+            finally:
+                conn.close()
+
+    def test_apply_tag_person_refreshes_photo_fts(self) -> None:
+        """The new P-id keyword must reach `photo_fts.keywords` immediately,
+        or `find --text` on the P-id stays blind until the next full scan."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            orig_write = photoindex._run_exiftool_write
+            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            try:
+                photoindex.apply_tag_person(
+                    archive, {'roots': {'photos': 'photos'}}, 'p-de957bcda1',
+                    ['photos/family_reunion.jpg'],
+                )
+            finally:
+                photoindex._run_exiftool_write = orig_write
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT keywords FROM photo_fts WHERE path='photos/family_reunion.jpg'"
+                ).fetchone()
+                self.assertIn('P-de957bcda1', row[0])
+            finally:
+                conn.close()
+
+    def test_apply_tag_person_partial_exiftool_failure_keeps_successful_writes_cached(self) -> None:
+        """One file failing the embedded write must not discard the cache
+        update for the other candidates that succeeded (AGENTS_TOOLING:
+        partial success must be reported clearly, not swallowed)."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            def _fake_write(paths: list[Path], kw: str) -> dict:
+                return {
+                    p: ('locked file' if p.name == 'wedding_1902.jpg' else None)
+                    for p in paths
+                }
+
+            orig_write = photoindex._run_exiftool_write
+            photoindex._run_exiftool_write = _fake_write
+            try:
+                result = photoindex.apply_tag_person(
+                    archive, {'roots': {'photos': 'photos'}}, 'p-de957bcda1',
+                    ['photos/family_reunion.jpg', 'photos/wedding_1902.jpg'],
+                )
+            finally:
+                photoindex._run_exiftool_write = orig_write
+
+            self.assertEqual(result['tagged'], ['photos/family_reunion.jpg'])
+            self.assertEqual(result['failed'], [('photos/wedding_1902.jpg', 'locked file')])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                tagged = conn.execute(
+                    "SELECT 1 FROM photo_people WHERE path='photos/family_reunion.jpg' "
+                    "AND person_ref='p-de957bcda1' AND via='pid-keyword'"
+                ).fetchone()
+                self.assertIsNotNone(tagged)
+                not_tagged = conn.execute(
+                    "SELECT 1 FROM photo_people WHERE path='photos/wedding_1902.jpg' "
+                    "AND person_ref='p-de957bcda1'"
+                ).fetchone()
+                self.assertIsNone(not_tagged)
+            finally:
+                conn.close()
+
+    def test_apply_tag_person_reports_cache_failure_after_in_file_write(self) -> None:
+        """A cache failure after the original file is already written must
+        surface as a RuntimeError naming the already-tagged path, not an
+        uncaught sqlite3.Error traceback."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            orig_write = photoindex._run_exiftool_write
+            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            orig_rebuild = photoindex._rebuild_photo_people
+            photoindex._rebuild_photo_people = lambda conn, root: (
+                _ for _ in ()).throw(sqlite3.OperationalError('database is locked'))
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    photoindex.apply_tag_person(
+                        archive, {'roots': {'photos': 'photos'}}, 'p-de957bcda1',
+                        ['photos/family_reunion.jpg'],
+                    )
+                self.assertIn('photos/family_reunion.jpg', str(ctx.exception))
+            finally:
+                photoindex._run_exiftool_write = orig_write
+                photoindex._rebuild_photo_people = orig_rebuild
+
+    def test_apply_tag_person_records_tagged_before_cache_insert_attempt(self) -> None:
+        """`tagged` must reflect every file whose exiftool write succeeded
+        before its own cache insert is attempted, so a cache failure on a
+        later candidate's insert still names every already-written file in
+        the RuntimeError's recovery list — not just the earlier ones whose
+        insert also happened to succeed first."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            orig_write = photoindex._run_exiftool_write
+            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+
+            orig_connect = sqlite3.connect
+
+            class _FailingOnSecondInsert:
+                def __init__(self, real_conn: sqlite3.Connection) -> None:
+                    self._real = real_conn
+                    self._inserts = 0
+
+                def execute(self, sql, *args, **kwargs):
+                    if sql.startswith('INSERT INTO photo_keywords'):
+                        self._inserts += 1
+                        if self._inserts == 2:
+                            raise sqlite3.OperationalError('database is locked')
+                    return self._real.execute(sql, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._real, name)
+
+            sqlite3.connect = lambda path: _FailingOnSecondInsert(orig_connect(path))
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    photoindex.apply_tag_person(
+                        archive, {'roots': {'photos': 'photos'}}, 'p-de957bcda1',
+                        ['photos/family_reunion.jpg', 'photos/wedding_1902.jpg'],
+                    )
+            finally:
+                sqlite3.connect = orig_connect
+                photoindex._run_exiftool_write = orig_write
+
+            self.assertIn('photos/family_reunion.jpg', str(ctx.exception))
+            self.assertIn('photos/wedding_1902.jpg', str(ctx.exception))
+
+    def test_cmd_tag_person_dry_run_does_not_write(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            args = type('Args', (), {
+                'root': str(archive), 'person_id': 'P-de957bcda1',
+                'from_face_tag': 'Grandma', 'paths': None, 'dry_run': True,
+            })()
+
+            orig_apply = photoindex.apply_tag_person
+            photoindex.apply_tag_person = lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError('apply_tag_person must not be called in --dry-run')
+            )
+            try:
+                code = photoindex._cmd_tag_person(args)
+            finally:
+                photoindex.apply_tag_person = orig_apply
+
+            self.assertEqual(code, photoindex.EXIT_CLEAN)
+
+    def test_cmd_tag_person_declines_confirm_does_not_write(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            args = type('Args', (), {
+                'root': str(archive), 'person_id': 'P-de957bcda1',
+                'from_face_tag': 'Grandma', 'paths': None, 'dry_run': False,
+            })()
+
+            orig_input = builtins.input
+            builtins.input = lambda prompt='': 'n'
+            try:
+                code = photoindex._cmd_tag_person(args)
+            finally:
+                builtins.input = orig_input
+
+            self.assertEqual(code, photoindex.EXIT_CLEAN)
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM photo_people WHERE via='pid-keyword'"
+                ).fetchone()[0]
+                self.assertEqual(count, 0)
+            finally:
+                conn.close()
+
+    def test_cmd_tag_person_confirms_and_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            args = type('Args', (), {
+                'root': str(archive), 'person_id': 'P-de957bcda1',
+                'from_face_tag': 'Grandma', 'paths': None, 'dry_run': False,
+            })()
+
+            orig_write = photoindex._run_exiftool_write
+            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            orig_input = builtins.input
+            builtins.input = lambda prompt='': 'y'
+            try:
+                code = photoindex._cmd_tag_person(args)
+            finally:
+                photoindex._run_exiftool_write = orig_write
+                builtins.input = orig_input
+
+            self.assertEqual(code, photoindex.EXIT_CLEAN)
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT via FROM photo_people WHERE path='photos/family_reunion.jpg' "
+                    "AND person_ref='p-de957bcda1'"
+                ).fetchone()
+                self.assertEqual(row[0], 'pid-keyword')
+            finally:
+                conn.close()
 
 
 if __name__ == '__main__':

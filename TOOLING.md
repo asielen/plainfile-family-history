@@ -433,7 +433,7 @@ CREATE VIRTUAL TABLE photo_fts USING fts5(path, title, caption, user_comment, ke
 **Variation grouping.** Versions of one physical photo must index as **one logical photo**.
 Group key, in priority order: (1) shared S-id (filename or `SOURCE:` keyword) — processed photos group by source; (2) same directory + same base stem after stripping the recognized suffix grammar `[-{copy}][-{role}]` (`b`, `c`,`-b`, `-c`, `-negative`, `-back`, `-front`, `-page-N`) — the pipeline's own naming convention; "text from alternate version" keywords corroborate a grouping but never create one (too fuzzy). (NOTE letter variations are not always started with a dash, they always appear as the last thing before any additional tags however.)
 Grouping is conservative: never across directories, never on caption similarity.
-The **primary** variant is the front of copy a (fallback: lexicographically first); search results and the packet's photo gathering return *groups*, copying all variants but counting the photo once (`--files` exposes raw rows).
+The **primary** variant is, in order: a file with no variant/role/crop suffix at all (the plain scan), else the front of copy a, else the lexicographically first path. Search results and the packet's photo gathering return *groups*, copying all variants but counting the photo once (`--files` exposes raw rows).
 
 **Group data structure.** After grouping, each stem's entry holds the following slots (parallel to the `group_folder_images` output used by the photo pipeline, see §6 for the parsing algorithm):
 - `primary` — `{front, back, front_crop, back_crop}`: the main front/back scans and their `-crop` detail images

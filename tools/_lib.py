@@ -845,6 +845,31 @@ def newest_person_record_mtime(archive_root: Path) -> float:
     return max_mtime
 
 
+def scan_person_record_ids(archive_root: str | Path) -> set[str]:
+    """
+    Return the P-id of every actual person *profile* record under people/
+    (case-normalized), excluding companion files (research/timeline/
+    sources-index/draft-queue) and any P-id token that merely appears in
+    body text elsewhere in the archive.
+
+    Narrower than `scan_ids_in_tree`, which matches any bare ID-shaped token
+    anywhere under .md/.yaml/.yml/.txt — fine for `id mint` collision checks,
+    but too permissive for validating that an ID a mutating command is about
+    to write actually names a person record (a typo'd or placeholder P-id
+    mentioned in a note would otherwise pass).
+    """
+    root = Path(archive_root)
+    people_dir = root / 'people'
+    if not people_dir.is_dir():
+        return set()
+    found: set[str] = set()
+    for p in people_dir.rglob('*.md'):
+        parsed = parse_filename(p)
+        if parsed is not None and parsed['id_type'] == 'P' and parsed['kind'] == 'profile':
+            found.add(parsed['id_str'])
+    return found
+
+
 def configure_utf8_stdout() -> None:
     """Reconfigure stdout to UTF-8 so ✓/✗ render on Windows cp1252 terminals."""
     if hasattr(sys.stdout, 'reconfigure'):
