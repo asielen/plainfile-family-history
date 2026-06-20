@@ -42,10 +42,19 @@ import yaml
 #
 #  Archive configuration
 #    find_archive_root         — walk up from CWD to find fha.yaml
+#    resolve_root_arg          — CLI --root flag, else find_archive_root(), with the
+#                                 shared "cannot find archive root" error message
 #    load_fha_yaml             — parse fha.yaml into a dict
 #    get_roots                 — extract roots mapping from config
 #    resolve_path              — alias path ('photos/…') → absolute Path via fha.yaml
 #    path_to_alias             — absolute Path → alias path ('photos/…'), the inverse
+#
+#  Index database access
+#    db_mtime                  — mtime of a cache db file, or None if absent/unreadable
+#    probe_sqlite              — does this db open and run this one probe query?
+#    open_index_db             — open .cache/index.sqlite with the freshness check +
+#                                 required-table probe every index-reading tool needs
+#    photoindex_status         — classify .cache/photos.sqlite freshness for find/doctor
 #
 #  Record parsing
 #    _coerce_yaml              — normalise YAML scalar types for consistent comparisons
@@ -63,12 +72,15 @@ import yaml
 #    normalize_id              — lowercase for consistent set/dict keying
 #    is_valid_id               — syntactic validity check
 #    id_type_of                — extract P/S/C/L/H type prefix
+#    fmt_id_display            — uppercase the type prefix for display (p-xxx → P-xxx)
 #    scan_ids_in_tree          — full-tree scan used by id mint for collision checking
 #
 #  Filename / path helpers
 #    is_fixture_path           — path under example-archive/ or tests/fixtures/?
 #    extract_token_ids         — all [ID] tokens from a text block
 #    extract_bare_ids          — all bare IDs from a text block
+#    normalize_place_text      — lowercase/collapse-whitespace key for comparing
+#                                 free-text place names without a shared place_id
 #
 #  Archive freshness
 #    newest_record_mtime       — max mtime of sources/people/notes .md + places.yaml
@@ -143,6 +155,33 @@ def find_archive_root(start: str | Path | None = None) -> Path | None:
         if parent == p:
             return None
         p = parent
+
+
+def resolve_root_arg(args: Any) -> Path | None:
+    """
+    Resolve the archive root from a parsed CLI namespace: its own `--root`
+    flag if given, else walk up from CWD via `find_archive_root()`.
+
+    Every subcommand defines its own `--root` (TOOLING §1 — argparse doesn't
+    propagate parent-parser flags into subparsers), so every tool used to
+    re-implement this same five-line lookup. Centralized here so there's one
+    error message and one behavior to keep correct.
+
+    Prints an ERROR to stderr and returns None when neither source finds a
+    root; the caller decides the exit code (most tools return EXIT_FAILURE).
+    """
+    root = getattr(args, 'root', None)
+    if root:
+        return Path(root).resolve()
+    detected = find_archive_root()
+    if detected is None:
+        print(
+            'ERROR: cannot find archive root (no fha.yaml found). '
+            'Use --root to specify.',
+            file=sys.stderr,
+        )
+        return None
+    return detected
 
 
 class FhaConfigError(Exception):
@@ -261,6 +300,74 @@ def probe_sqlite(db_path: str | Path, probe_sql: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def open_index_db(
+    archive_root: str | Path,
+    required_tables: tuple[str, ...],
+    *,
+    strict: bool = False,
+) -> sqlite3.Connection | None:
+    """
+    Open `.cache/index.sqlite` for reading, with the freshness check and
+    table probe every index-reading tool needs before it starts querying.
+
+    Returns None (after printing an explanatory message to stderr) when:
+      - the file doesn't exist (run `fha index` first)
+      - it's stale and `strict=True` (generating/mutating commands can't
+        safely act on stale data; strict=False — read-only commands — only
+        warns and still returns the connection, since a slightly stale
+        answer beats no answer)
+      - it exists but fails the table probe (corrupt or pre-this-schema)
+
+    `required_tables` lets each caller ask for exactly the tables its
+    queries touch (e.g. `cooccur` needs `relationships`, plain `find`
+    lookups only need `persons`) so a partial/older schema fails fast here
+    rather than raising mid-query.
+
+    The connection opened during the probe is always closed before
+    returning None — a probe failure used to leak the connection in three
+    different copies of this function across the tool files.
+    """
+    archive_root = Path(archive_root)
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    if not db_path.exists():
+        print(
+            'ERROR: .cache/index.sqlite not found - run `fha index` first '
+            'then re-run this command.',
+            file=sys.stderr,
+        )
+        return None
+
+    mtime = db_mtime(db_path)
+    stale = mtime is not None and newest_record_mtime(archive_root) > mtime
+    if stale:
+        if strict:
+            print(
+                "ERROR: index is stale; run 'fha index' before generating views.",
+                file=sys.stderr,
+            )
+            return None
+        print(
+            'WARNING: index may be stale — a record file is newer than '
+            '.cache/index.sqlite. Run `fha index` to refresh.',
+            file=sys.stderr,
+        )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.row_factory = sqlite3.Row
+        for table in required_tables:
+            conn.execute(f'SELECT 1 FROM {table} LIMIT 1')
+        return conn
+    except Exception:
+        conn.close()
+        print(
+            'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
+            'Run `fha index` to rebuild.',
+            file=sys.stderr,
+        )
+        return None
 
 
 def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, float]:
@@ -738,6 +845,31 @@ def id_type_of(id_str: str) -> str | None:
     if is_valid_id(id_str):
         return id_str.strip()[0].upper()
     return None
+
+
+def fmt_id_display(id_str: str) -> str:
+    """
+    Return an ID string with its type prefix uppercased (p-xxx -> P-xxx).
+
+    The index stores all IDs lowercase (normalize_id); display output across
+    the CLI uses the uppercase-prefix convention instead, so every command
+    that prints an ID runs it through this first.
+    """
+    if not id_str:
+        return id_str
+    return id_str[0].upper() + id_str[1:]
+
+
+def normalize_place_text(text: str | None) -> str:
+    """
+    Collapse a free-text place name to a comparable key: lowercase, trimmed,
+    internal whitespace collapsed to single spaces.
+
+    Used wherever two claims' `place_text` values need to be compared for
+    "same place" without a shared `place_id` — e.g. "Topeka,  Kansas" and
+    "topeka, kansas" should match.
+    """
+    return ' '.join((text or '').strip().lower().split())
 
 
 def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
