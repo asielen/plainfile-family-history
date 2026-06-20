@@ -1312,6 +1312,22 @@ class PhotoindexTests(unittest.TestCase):
             self.assertEqual(by_path['photos/portrait_1880.jpg']['score'], 5)
             self.assertIn('back-variant', by_path['photos/portrait_1880.jpg']['signals'])
 
+    def test_triage_excludes_a_group_made_entirely_of_missing_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_find_fixture(archive)
+
+            (archive / 'photos' / 'family_reunion.jpg').unlink()
+            photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
+
+            # family_reunion's group now contains only a 'MISSING:'-prefixed
+            # row (no on-disk file survives in it) — triage must not suggest
+            # `fha process` on a synthetic path nothing can actually process.
+            result = photoindex.run_triage(archive, {'roots': {'photos': 'photos'}})
+            paths = [c['path'] for c in result['candidates']]
+            self.assertNotIn('MISSING:photos/family_reunion.jpg', paths)
+            self.assertNotIn('photos/family_reunion.jpg', paths)
+
     def test_triage_top_limits_results(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -1713,6 +1729,40 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_ordinary_scan_drops_missing_row_once_its_alias_is_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            fha_config = {'roots': {'photos': 'photos'}}
+            photoindex.run_scan(archive, fha_config)
+
+            photo = archive / 'photos' / 'portrait_1880.jpg'
+            saved = photo.read_bytes()
+            photo.unlink()
+            result = photoindex.run_reconcile(archive, fha_config)
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            # The file reappears at the exact alias the MISSING: row
+            # remembers. An ordinary scan re-discovers it as a fresh,
+            # untracked file and must also drop the now-superseded MISSING:
+            # row — otherwise the two rows fight over the same group/primary
+            # path and `find`/triage can keep surfacing the dead row.
+            photo.write_bytes(saved)
+            photoindex.run_scan(archive, fha_config)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                missing_row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNone(missing_row)
+                restored_row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(restored_row)
+            finally:
+                conn.close()
+
     def test_reconcile_with_exif_can_later_rematch_an_already_missing_row(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -1940,6 +1990,40 @@ class PhotoindexTests(unittest.TestCase):
                 result['new_sourced'], {'s-aaaaaaaaaa': ['photos/brand_new.jpg']},
             )
             self.assertEqual(result['new_unsourced'], [])
+
+    def test_reconcile_with_exif_batches_untracked_files_through_exiftool(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            for i in range(5):
+                shutil.copy(
+                    archive / 'photos' / 'portrait_1880.jpg',
+                    archive / 'photos' / f'brand_new_{i}.jpg',
+                )
+
+            call_sizes: list[int] = []
+
+            def counting_exiftool(paths: list[Path]) -> list[dict]:
+                call_sizes.append(len(paths))
+                return [{'SourceFile': str(p)} for p in paths]
+
+            photoindex._run_exiftool = counting_exiftool
+            orig_batch_size = photoindex._EXIFTOOL_BATCH_SIZE
+            photoindex._EXIFTOOL_BATCH_SIZE = 2
+            try:
+                result = photoindex.run_reconcile(
+                    archive, {'roots': {'photos': 'photos'}}, with_exif=True,
+                )
+            finally:
+                photoindex._EXIFTOOL_BATCH_SIZE = orig_batch_size
+
+            # 5 untracked files with a batch size of 2 must be scraped across
+            # multiple bounded exiftool calls, not one command line sized to
+            # the whole untracked set.
+            self.assertEqual(call_sizes, [2, 2, 1])
+            self.assertEqual(result['new_count'], 5)
 
     def test_reconcile_on_absent_index_reports_absent_status(self) -> None:
         with tempfile.TemporaryDirectory() as d:

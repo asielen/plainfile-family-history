@@ -211,6 +211,11 @@ _SOURCE_KEYWORD_RE = re.compile(r'^SOURCE:\s*(S-[0-9a-hjkmnp-tv-z]{10})$', re.I)
 _PID_KEYWORD_RE = re.compile(r'^P-[0-9a-hjkmnp-tv-z]{10}$', re.I)
 _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
 
+# Keeps a single exiftool invocation's command line bounded on a large photo
+# root — every batched call to _run_exiftool (full scan or reconcile rematch)
+# uses this same chunk size.
+_EXIFTOOL_BATCH_SIZE = 500
+
 
 def _iter_photo_files(photos_root: Path):
     """Yield catalogable photo files under photos_root, or nothing if it is absent."""
@@ -944,6 +949,11 @@ def _candidate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     `_group_photos` never writes a NULL `group_id` after a real scan (every
     group key is a non-empty f-string), but this guards a malformed/external
     cache row regardless.
+
+    A group made up entirely of 'MISSING:'-prefixed rows (reconcile's
+    bookkeeping for a vanished file, kept around so a later --with-exif
+    retry can rematch it) is excluded: it has no on-disk asset a human could
+    process, so surfacing it would send `fha process` after a synthetic path.
     """
     return conn.execute(
         '''
@@ -953,7 +963,12 @@ def _candidate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
           SELECT 1 FROM photos p
           WHERE p.group_id = pg.group_id AND p.source_id IS NOT NULL
         )
-        '''
+        AND EXISTS (
+          SELECT 1 FROM photos p2
+          WHERE p2.group_id = pg.group_id AND p2.path NOT LIKE ?
+        )
+        ''',
+        (f'{_MISSING_PREFIX}%',),
     ).fetchall()
 
 
@@ -1141,19 +1156,21 @@ def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
     carries no S-id (photos are never renamed — SPEC §13).
     """
     out: dict[Path, str] = {}
-    rows_by_file = {
-        Path(row['SourceFile']).resolve(): row
-        for row in _run_exiftool(paths) if row.get('SourceFile')
-    }
-    for p in paths:
-        row = rows_by_file.get(p.resolve())
-        if not row:
-            continue
-        for kw in _extract_keywords(row):
-            m = _SOURCE_KEYWORD_RE.match(kw.strip())
-            if m:
-                out[p] = normalize_id(m.group(1))
-                break
+    for start in range(0, len(paths), _EXIFTOOL_BATCH_SIZE):
+        batch = paths[start:start + _EXIFTOOL_BATCH_SIZE]
+        rows_by_file = {
+            Path(row['SourceFile']).resolve(): row
+            for row in _run_exiftool(batch) if row.get('SourceFile')
+        }
+        for p in batch:
+            row = rows_by_file.get(p.resolve())
+            if not row:
+                continue
+            for kw in _extract_keywords(row):
+                m = _SOURCE_KEYWORD_RE.match(kw.strip())
+                if m:
+                    out[p] = normalize_id(m.group(1))
+                    break
     return out
 
 
@@ -1669,10 +1686,9 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
             if full or needs_face_backfill or prior is None or prior[0] != mtime or prior[1] != size:
                 to_scrape.append(p)
 
-        batch_size = 500
         scraped = 0
-        for start in range(0, len(to_scrape), batch_size):
-            batch = to_scrape[start:start + batch_size]
+        for start in range(0, len(to_scrape), _EXIFTOOL_BATCH_SIZE):
+            batch = to_scrape[start:start + _EXIFTOOL_BATCH_SIZE]
             resolved = {p: p.resolve() for p in batch}
             rows_by_file = {
                 Path(row['SourceFile']).resolve(): row
@@ -1724,8 +1740,18 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
             # scan run between a no-exif reconcile and a later --with-exif
             # retry would erase the row's source_id/path history that the
             # retry needs to heal it. Only reconcile (rematch or re-flag)
-            # ever removes or transforms a MISSING: row.
+            # ever removes or transforms a MISSING: row -- except here, where
+            # the file has reappeared at the exact alias the row remembers:
+            # the scrape loop above already inserted a fresh row for that
+            # alias, so the synthetic row is a stale duplicate, not bookkeeping
+            # an --with-exif retry still needs.
             if path_key.startswith(_MISSING_PREFIX):
+                if path_key[len(_MISSING_PREFIX):] in alias_on_disk:
+                    conn.execute('DELETE FROM photos WHERE path=?', (path_key,))
+                    _delete_path_rows(
+                        conn, ('photo_keywords', 'photo_face_regions', 'photo_people'), path_key
+                    )
+                    removed += 1
                 continue
             if path_key not in alias_on_disk:
                 conn.execute('DELETE FROM photos WHERE path=?', (path_key,))
