@@ -194,6 +194,19 @@ def _classify_pair(a: dict, b: dict) -> str | None:
         # did, for the same place in time — that's a genuine conflict. (Vital
         # types always reach here: an undated negated claim gets unbounded
         # bounds, so it overlaps any dated positive claim of the same type.)
+        # For repeatable substantive types (residence, occupation, ...) the
+        # absence and the presence have to be about the *same* place — a
+        # negated "did not reside in Topeka" doesn't conflict with a positive
+        # "resided in Boston" the same year, since both can be true at once.
+        if a['type'] not in _VITAL_TYPES:
+            if a['place_id'] and b['place_id']:
+                if a['place_id'] != b['place_id']:
+                    return None
+            else:
+                place_a = _normalize_place(a['place_text'])
+                place_b = _normalize_place(b['place_text'])
+                if place_a and place_b and place_a != place_b:
+                    return None
         return 'contradicts'
 
     if a['type'] in _VITAL_TYPES:

@@ -292,6 +292,36 @@ class XrefTests(unittest.TestCase):
         pairs = result['groups'][0]['pairs']
         self.assertEqual(pairs[0]['kind'], 'contradicts')
 
+    def test_negated_substantive_claim_different_place_not_paired(self) -> None:
+        # A negated residence claim about one place and a positive residence
+        # claim about a different place, same year, aren't in conflict —
+        # both can be true at once.
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence',
+                       'did not reside in Topeka', date_edtf='1880', negated=1,
+                       place_text='Topeka', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'residence',
+                       'resided in Boston', date_edtf='1880',
+                       place_text='Boston', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        self.assertEqual(result['groups'], [])
+
+    def test_negated_substantive_claim_same_place_text_contradicts(self) -> None:
+        self._seed_persons_sources()
+        _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence',
+                       'did not reside there', date_edtf='1880', negated=1,
+                       place_text='Topeka', persons=['p-aaaaaaaaaa'])
+        _insert_claim(self.conn, 'c-bbbbbbbbbb', 's-2222222222', 'residence',
+                       'resided there', date_edtf='1880',
+                       place_text='Topeka', persons=['p-aaaaaaaaaa'])
+        self.conn.commit()
+
+        result = xref.run_xref(self.archive_root)
+        pairs = result['groups'][0]['pairs']
+        self.assertEqual(pairs[0]['kind'], 'contradicts')
+
     def test_missing_required_column_returns_failed_status(self) -> None:
         # A cache built against an older claims schema has all the required
         # tables (so the table probe passes) but is missing a column xref's

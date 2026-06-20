@@ -219,6 +219,22 @@ def _normalize_place(text: str | None) -> str:
     return ' '.join((text or '').strip().lower().split())
 
 
+def _same_place(a: dict, b: dict) -> bool:
+    """
+    Whether two claims describe the same place, per the documented precedence:
+    structured `place_id` when both claims have one, else normalized
+    `place_text`. A claim with `place_id` but no `place_text` (or vice versa)
+    still matches a counterpart that only has the other field, as long as
+    that field agrees — fixing the id/text fallback ignores a partially
+    migrated archive where only one side has been normalized.
+    """
+    if a['place_id'] and b['place_id']:
+        return a['place_id'].strip().lower() == b['place_id'].strip().lower()
+    place_a = _normalize_place(a['place_text'])
+    place_b = _normalize_place(b['place_text'])
+    return bool(place_a) and place_a == place_b
+
+
 def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]) -> list[dict]:
     """
     Accepted/needs-review claims of different, unlinked people that share a
@@ -245,49 +261,46 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
         if row['claim_id'] in claims:
             persons_by_claim.setdefault(row['claim_id'], set()).add(row['person_id'])
 
-    by_place: dict[str, list[str]] = {}
-    place_labels: dict[str, str] = {}
-    for cid, claim in claims.items():
-        place_id = (claim['place_id'] or '').strip().lower()
-        key = place_id or _normalize_place(claim['place_text'])
-        if not key:
-            continue
-        by_place.setdefault(key, []).append(cid)
-        place_labels.setdefault(key, claim['place_text'] or claim['place_id'])
-
     existing_edges: set[frozenset[str]] = set()
     for row in conn.execute('SELECT person_id, other_id FROM relationships'):
         existing_edges.add(frozenset((row['person_id'], row['other_id'])))
 
     names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
 
-    pair_data: dict[frozenset[str], dict] = {}
-    for place_key, cids in by_place.items():
-        for i in range(len(cids)):
-            for j in range(i + 1, len(cids)):
-                cid_a, cid_b = cids[i], cids[j]
-                claim_a, claim_b = claims[cid_a], claims[cid_b]
-                a_min, a_max = edtf_bounds(claim_a['date_edtf'])
-                b_min, b_max = edtf_bounds(claim_b['date_edtf'])
-                if not (a_min <= b_max and b_min <= a_max):
-                    continue
-                for pa in persons_by_claim.get(cid_a, ()):
-                    for pb in persons_by_claim.get(cid_b, ()):
-                        if pa == pb:
-                            continue
-                        pair = frozenset((pa, pb))
-                        if pair in existing_edges or pair in dismissed:
-                            continue
-                        entry = pair_data.setdefault(pair, {
-                            'place_label': place_labels.get(place_key, place_key),
-                            'claim_ids': set(),
-                            'source_ids': set(),
-                        })
-                        entry['claim_ids'].update((cid_a, cid_b))
-                        entry['source_ids'].update((claim_a['source_id'], claim_b['source_id']))
+    # Cache keyed by (person pair, normalized place) — not person pair alone —
+    # so two people sharing more than one place get a separate candidate per
+    # place instead of one candidate whose claim_ids/source_ids blend places.
+    pair_data: dict[tuple[frozenset[str], str], dict] = {}
+    cids = list(claims)
+    for i in range(len(cids)):
+        for j in range(i + 1, len(cids)):
+            cid_a, cid_b = cids[i], cids[j]
+            claim_a, claim_b = claims[cid_a], claims[cid_b]
+            if not _same_place(claim_a, claim_b):
+                continue
+            a_min, a_max = edtf_bounds(claim_a['date_edtf'])
+            b_min, b_max = edtf_bounds(claim_b['date_edtf'])
+            if not (a_min <= b_max and b_min <= a_max):
+                continue
+            place_label = claim_a['place_text'] or claim_b['place_text'] or claim_a['place_id'] or claim_b['place_id']
+            place_norm = _normalize_place(place_label) or (place_label or '').strip().lower()
+            for pa in persons_by_claim.get(cid_a, ()):
+                for pb in persons_by_claim.get(cid_b, ()):
+                    if pa == pb:
+                        continue
+                    pair = frozenset((pa, pb))
+                    if pair in existing_edges or pair in dismissed:
+                        continue
+                    entry = pair_data.setdefault((pair, place_norm), {
+                        'place_label': place_label,
+                        'claim_ids': set(),
+                        'source_ids': set(),
+                    })
+                    entry['claim_ids'].update((cid_a, cid_b))
+                    entry['source_ids'].update((claim_a['source_id'], claim_b['source_id']))
 
     candidates = []
-    for pair, data in pair_data.items():
+    for (pair, _place_norm), data in pair_data.items():
         a, b = sorted(pair)
         candidates.append({
             'person_a': a,

@@ -265,6 +265,43 @@ class CooccurPlaceTests(unittest.TestCase):
         result = cooccur.run_cooccur(self.archive_root, threshold=2)
         self.assertEqual(result['place_pairs'], [])
 
+    def test_place_id_on_only_one_side_falls_back_to_place_text(self) -> None:
+        # A partially migrated archive — one claim has been normalized to a
+        # place_id, the other only has the matching place_text. The two
+        # claims should still be recognized as the same place.
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', place_id='l-1111111111',
+                            date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(len(result['place_pairs']), 1)
+
+    def test_two_shared_places_produce_separate_candidates(self) -> None:
+        # Alice and Bob share two distinct places across two date ranges —
+        # each place should be its own candidate, not blended into one.
+        self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self._insert_claim('c-bbbbbbbbbb', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Topeka, Kansas', date_edtf='1880')
+        self._insert_claim('c-cccccccccc', 's-1111111111', ['p-aaaaaaaaaa'],
+                            place_text='Wichita, Kansas', date_edtf='1900')
+        self._insert_claim('c-dddddddddd', 's-2222222222', ['p-bbbbbbbbbb'],
+                            place_text='Wichita, Kansas', date_edtf='1900')
+        self.conn.commit()
+
+        result = cooccur.run_cooccur(self.archive_root, threshold=2)
+        self.assertEqual(len(result['place_pairs']), 2)
+        labels = {p['place_label'] for p in result['place_pairs']}
+        self.assertEqual(labels, {'Topeka, Kansas', 'Wichita, Kansas'})
+        for pair in result['place_pairs']:
+            if pair['place_label'] == 'Topeka, Kansas':
+                self.assertEqual(set(pair['claim_ids']), {'c-aaaaaaaaaa', 'c-bbbbbbbbbb'})
+            else:
+                self.assertEqual(set(pair['claim_ids']), {'c-cccccccccc', 'c-dddddddddd'})
+
 
 class CooccurOrgTests(unittest.TestCase):
     def setUp(self) -> None:
