@@ -1660,7 +1660,7 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_reconcile_already_missing_row_is_not_reprocessed(self) -> None:
+    def test_reconcile_already_missing_row_remains_eligible_without_double_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
             photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
@@ -1671,8 +1671,11 @@ class PhotoindexTests(unittest.TestCase):
             first = photoindex.run_reconcile(archive, fha_config)
             self.assertEqual(first['missing'], ['MISSING:photos/portrait_1880.jpg'])
 
+            # A still-missing row stays reported (and eligible for a future
+            # --with-exif rematch) rather than being silently dropped, and it
+            # is never wrapped in a second MISSING: prefix.
             second = photoindex.run_reconcile(archive, fha_config)
-            self.assertEqual(second['missing'], [])
+            self.assertEqual(second['missing'], ['MISSING:photos/portrait_1880.jpg'])
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
             try:
@@ -1682,6 +1685,108 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertEqual(count, 0)
             finally:
                 conn.close()
+
+    def test_reconcile_with_exif_can_later_rematch_an_already_missing_row(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+
+            # Real exiftool reads embedded metadata, unaffected by a later
+            # rename, so the fake matches on either filename the photo has
+            # carried rather than just its name at scan time.
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                tagged = {'wedding_1902.jpg', 'wedding_renamed.jpg'}
+                rows = {name: {'Keywords': ['SOURCE: S-123456789a']} for name in tagged}
+                return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            old = archive / 'photos' / 'wedding_1902.jpg'
+            new = archive / 'photos' / 'wedding_renamed.jpg'
+            old.rename(new)
+
+            fha_config = {'roots': {'photos': 'photos'}}
+            first = photoindex.run_reconcile(archive, fha_config, with_exif=False)
+            self.assertEqual(first['missing'], ['MISSING:photos/wedding_1902.jpg'])
+
+            # A row already flagged MISSING: on a previous (no-exif) run must
+            # still be a rematch candidate once --with-exif is used later.
+            second = photoindex.run_reconcile(archive, fha_config, with_exif=True)
+            self.assertEqual(
+                second['rematched'], [('MISSING:photos/wedding_1902.jpg', 'photos/wedding_renamed.jpg')],
+            )
+            self.assertEqual(second['missing'], [])
+
+    def test_reconcile_dry_run_reports_plan_without_mutating_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            (archive / 'photos' / 'portrait_1880.jpg').unlink()
+
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, dry_run=True,
+            )
+            self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+                still_missing = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='MISSING:photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNone(still_missing)
+            finally:
+                conn.close()
+
+    def test_reconcile_refuses_when_photos_root_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            shutil.rmtree(archive / 'photos')
+
+            result = photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
+            self.assertFalse(result['root_found'])
+            self.assertEqual(result['missing'], [])
+            self.assertEqual(result['new_count'], 0)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM photos WHERE path='photos/portrait_1880.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row)
+            finally:
+                conn.close()
+
+    def test_reconcile_keeps_status_stale_when_new_files_remain_unindexed(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            # A rename triggers a real cache mutation (missing-flagging) in
+            # the same run that also leaves an untracked new file behind.
+            (archive / 'photos' / 'wedding_1902.jpg').rename(
+                archive / 'photos' / 'wedding_renamed.jpg',
+            )
+            shutil.copy(
+                archive / 'photos' / 'portrait_1880.jpg',
+                archive / 'photos' / 'brand_new.jpg',
+            )
+            fha_config = {'roots': {'photos': 'photos'}}
+
+            result = photoindex.run_reconcile(archive, fha_config)
+            self.assertEqual(result['new_count'], 2)
+
+            status, _lag = photoindex.photoindex_status(archive, fha_config)
+            self.assertEqual(status, 'stale')
 
     def test_reconcile_new_untracked_file_is_reported_not_scraped(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -1815,8 +1920,8 @@ class PhotoindexTests(unittest.TestCase):
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
             conn.execute(
-                "INSERT INTO photo_people(path, person_ref, via) "
-                "VALUES ('photos/family_reunion.jpg', 'p-de957bcda1', 'pid-keyword')"
+                "INSERT INTO photo_keywords(path, keyword) "
+                "VALUES ('photos/family_reunion.jpg', 'p-de957bcda1')"
             )
             conn.commit()
             conn.close()
@@ -1828,6 +1933,30 @@ class PhotoindexTests(unittest.TestCase):
 
             self.assertEqual(plan['candidates'], [])
             self.assertEqual(plan['already_tagged'], ['photos/family_reunion.jpg'])
+
+    def test_tag_person_plan_does_not_skip_group_sibling_without_own_keyword(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            # Simulate _rebuild_photo_people's group propagation: photo_people
+            # carries the pid-keyword match for a sibling that never actually
+            # had the keyword written into its own file.
+            conn.execute(
+                "INSERT INTO photo_people(path, person_ref, via) "
+                "VALUES ('photos/family_reunion.jpg', 'p-de957bcda1', 'pid-keyword')"
+            )
+            conn.commit()
+            conn.close()
+
+            plan = photoindex.run_tag_person_plan(
+                archive, {'roots': {'photos': 'photos'}}, 'P-de957bcda1',
+                from_face_tag='Grandma',
+            )
+
+            self.assertEqual(plan['candidates'], ['photos/family_reunion.jpg'])
+            self.assertEqual(plan['already_tagged'], [])
 
     def test_tag_person_plan_requires_exactly_one_selector(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -1866,12 +1995,37 @@ class PhotoindexTests(unittest.TestCase):
                     from_face_tag='Grandma',
                 )
 
+    def test_tag_person_plan_rejects_id_mentioned_only_in_note_text(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            # A P-id that appears only as a stray mention in a non-person-record
+            # file (e.g. a research note) must not pass validation -- only an
+            # actual people/ profile record names a real person.
+            notes_dir = archive / 'notes'
+            notes_dir.mkdir(exist_ok=True)
+            (notes_dir / 'misc.md').write_text(
+                'See P-aaaaaaaaaa for context.\n', encoding='utf-8',
+            )
+
+            with self.assertRaises(ValueError):
+                photoindex.run_tag_person_plan(
+                    archive, {'roots': {'photos': 'photos'}}, 'P-aaaaaaaaaa',
+                    from_face_tag='Grandma',
+                )
+
     def test_tag_person_plan_blocks_on_stale_index(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
             self._scan_with_face_tag_fixture(archive)
             # Touch the person record after the scan so the cache is stale.
-            os.utime(archive / 'people' / 'grandma_P-de957bcda1.md', None)
+            # Set an explicit future mtime rather than os.utime(path, None):
+            # on a coarse/virtualized clock "now" can land exactly on the
+            # cache's own last-write timestamp instead of strictly after it.
+            db_mtime = (archive / '.cache' / 'photos.sqlite').stat().st_mtime
+            future = db_mtime + 5
+            os.utime(archive / 'people' / 'grandma_P-de957bcda1.md', (future, future))
 
             args = type('Args', (), {
                 'root': str(archive), 'person_id': 'P-de957bcda1',

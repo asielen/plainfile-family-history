@@ -116,10 +116,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -145,7 +147,7 @@ from _lib import (
     photoindex_status,
     probe_sqlite,
     resolve_path,
-    scan_ids_in_tree,
+    scan_person_record_ids,
 )
 
 configure_utf8_stdout()
@@ -1155,7 +1157,9 @@ def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
     return out
 
 
-def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False) -> dict:
+def run_reconcile(
+    archive_root: Path, fha_config: dict, with_exif: bool = False, dry_run: bool = False,
+) -> dict:
     """
     Heal drift between the catalog's stored paths and what is actually on disk
     (TOOLING §9 reconciliation). A photo's stored path is a refreshable cache,
@@ -1164,19 +1168,21 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
     longer exists on disk is handled three ways:
 
       - re-matched (only with --with-exif): an untracked on-disk file's own
-        SOURCE: keyword equals the missing row's -> the row's path (and its
+        SOURCE: keyword equals a missing row's -> the row's path (and its
         photo_keywords/photo_face_regions/photo_people rows) move to the new
         path silently. Without --with-exif there is no way to read a
-        candidate's embedded keyword, so no re-match is attempted.
+        candidate's embedded keyword, so no re-match is attempted. Rows
+        already flagged 'MISSING:' from an earlier run remain eligible here
+        too, so re-running with --with-exif after fixing/restoring the photo
+        can still heal them.
       - flagged missing: no source_id to verify against, --with-exif was not
         given, or no untracked file matched -> the row is kept (its caption/
         keyword history stays queryable) but its path is prefixed
-        'MISSING:' so it can never be mistaken for a still-valid path.
-        Already-'MISSING:'-prefixed rows are left alone on later runs rather
-        than re-attempting a match every time — a human is expected to act on
-        them, and the next ordinary `fha photoindex` scan (whose cache-removal
-        pass sees no on-disk file at the synthetic 'MISSING:' key) clears a
-        resolved one out automatically.
+        'MISSING:' so it can never be mistaken for a still-valid path. A row
+        already carrying that prefix is left as-is (not double-prefixed) when
+        it fails to rematch again; the next ordinary `fha photoindex` scan
+        (whose cache-removal pass sees no on-disk file at the synthetic
+        'MISSING:' key) clears a resolved one out automatically.
       - left untracked: a file with no claimed missing row is reported as new.
         With --with-exif, its SOURCE: keyword (if any) is read so it can be
         attached to that source's inventory in the report rather than being
@@ -1184,9 +1190,30 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
         attach to the source's inventory"); a full content rescrape remains
         the ordinary scan's job, not reconcile's.
 
-    Returns {'status', 'rematched': [(old, new), ...], 'missing': [path, ...],
-    'new_count': int, 'new_sourced': {source_id: [path, ...]},
-    'new_unsourced': [path, ...]}.
+    With dry_run=True, the plan (rematched/missing/new) is computed and
+    reported exactly as it would be applied, but no cache row is moved and
+    nothing is committed — mirroring the repo's "every mutating operation
+    ships --dry-run" contract for what is otherwise an unprompted mutation.
+
+    Any untracked file left over (new_count > 0) was never scraped into the
+    `photos` table, so the index is still incomplete with respect to disk even
+    after a successful rematch/missing pass. Left alone, committing the
+    rematch/missing mutations would bump photos.sqlite's mtime past those
+    files' own mtimes, and `photoindex_status()` (which watermarks freshness
+    by mtime) would then misreport the catalog as 'fresh' to find/doctor while
+    it still omits them. The cache's mtime is pulled back behind the oldest
+    untracked file's mtime so the next status check still sees 'stale'.
+
+    A temporarily missing or unmounted photos root (an external drive that
+    isn't plugged in, a bad roots.photos mapping) must not be treated as
+    "every cached photo vanished" — `run_scan` already warns and leaves the
+    cache untouched for the same case, so reconcile checks `photos_root.is_dir()`
+    up front and returns 'root_found': False instead of mass-flagging every
+    row 'MISSING:'.
+
+    Returns {'status', 'root_found': bool, 'rematched': [(old, new), ...],
+    'missing': [path, ...], 'new_count': int,
+    'new_sourced': {source_id: [path, ...]}, 'new_unsourced': [path, ...]}.
     """
     empty = {
         'rematched': [], 'missing': [], 'new_count': 0,
@@ -1194,25 +1221,25 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
     }
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
-        return {'status': status, **empty}
+        return {'status': status, 'root_found': True, **empty}
 
     photos_root = resolve_path('photos', fha_config, archive_root)
+    if not photos_root.is_dir():
+        return {'status': status, 'root_found': False, 'photos_root': str(photos_root), **empty}
     on_disk = _on_disk_aliases(photos_root, fha_config, archive_root)
 
-    conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
+    db_path = archive_root / '.cache' / 'photos.sqlite'
+    conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return {'status': 'unreadable', **empty}
+            return {'status': 'unreadable', 'root_found': True, **empty}
         try:
             cached = {
                 row['path']: row['source_id']
                 for row in conn.execute('SELECT path, source_id FROM photos')
             }
-            missing = {
-                path: sid for path, sid in cached.items()
-                if not path.startswith(_MISSING_PREFIX) and path not in on_disk
-            }
+            missing = {path: sid for path, sid in cached.items() if path not in on_disk}
             untracked = {alias: p for alias, p in on_disk.items() if alias not in cached}
 
             candidate_source_ids: dict[Path, str] = {}
@@ -1232,7 +1259,8 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
                     if len(hits) == 1:
                         new_path = hits[0]
                         claimed.add(new_path)
-                        _move_cached_path(conn, old_path, new_path)
+                        if not dry_run:
+                            _move_cached_path(conn, old_path, new_path)
                         rematched.append((old_path, new_path))
                 rematched_old = {old for old, _new in rematched}
                 missing = {p: sid for p, sid in missing.items() if p not in rematched_old}
@@ -1240,8 +1268,12 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
 
             now_missing: list[str] = []
             for old_path in missing:
+                if old_path.startswith(_MISSING_PREFIX):
+                    now_missing.append(old_path)
+                    continue
                 new_key = f'{_MISSING_PREFIX}{old_path}'
-                _move_cached_path(conn, old_path, new_key)
+                if not dry_run:
+                    _move_cached_path(conn, old_path, new_key)
                 now_missing.append(new_key)
 
             new_sourced: dict[str, list[str]] = {}
@@ -1256,9 +1288,13 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
                 paths.sort()
             new_unsourced.sort()
 
-            conn.commit()
-            return {
+            if dry_run:
+                conn.rollback()
+            else:
+                conn.commit()
+            result = {
                 'status': status,
+                'root_found': True,
                 'rematched': rematched,
                 'missing': now_missing,
                 'new_count': len(untracked),
@@ -1266,9 +1302,17 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
                 'new_unsourced': new_unsourced,
             }
         except sqlite3.Error:
-            return {'status': 'unreadable', **empty}
+            return {'status': 'unreadable', 'root_found': True, **empty}
     finally:
         conn.close()
+
+    if not dry_run and untracked:
+        oldest_untracked = min(p.stat().st_mtime for p in untracked.values())
+        try:
+            os.utime(db_path, (time.time(), oldest_untracked - 1))
+        except OSError:
+            pass
+    return result
 
 
 # ── Tag-person (fha photoindex tag-person — BUILD.md M3.4) ───────────────
@@ -1296,7 +1340,7 @@ def run_tag_person_plan(
     if not is_valid_id(person_id) or id_type_of(person_id) != 'P':
         raise ValueError(f'{person_id!r} is not a valid P-id')
     person_id = normalize_id(person_id)
-    if person_id not in scan_ids_in_tree(archive_root):
+    if person_id not in scan_person_record_ids(archive_root):
         raise ValueError(f'{person_id} is not a known person in the archive')
 
     status, _lag = photoindex_status(archive_root, fha_config)
@@ -1321,10 +1365,15 @@ def run_tag_person_plan(
                 seen: set[str] = set()
                 candidate_paths = [p for p in resolved if not (p in seen or seen.add(p))]
 
+            # photo_people's pid-keyword rows are group-propagated (TOOLING §9:
+            # one tagged sibling marks every variant), so they overstate which
+            # *files* actually carry the embedded keyword. tag-person previews
+            # a per-file write, so "already tagged" must check the file's own
+            # photo_keywords row, not the group-aggregated photo_people view.
             already = {
                 row['path'] for row in conn.execute(
-                    "SELECT path FROM photo_people WHERE person_ref=? AND via='pid-keyword'",
-                    (person_id,),
+                    'SELECT path FROM photo_keywords WHERE LOWER(keyword)=?',
+                    (person_id.lower(),),
                 )
             }
             return {
@@ -1740,6 +1789,10 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
         '--with-exif', action='store_true',
         help='Read embedded SOURCE: keywords from untracked files to re-match missing paths (requires exiftool)',
     )
+    reconcile_p.add_argument(
+        '--dry-run', action='store_true', dest='dry_run',
+        help='Report the rematch/missing/new-file plan without changing the cache',
+    )
     reconcile_p.set_defaults(func=_cmd_reconcile)
 
     tag_p = deferred.add_parser('tag-person', help='Write a bare P-id keyword onto matched or explicit photos')
@@ -1954,14 +2007,25 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     archive_root, fha_config = resolved
 
     try:
-        result = run_reconcile(archive_root, fha_config, with_exif=getattr(args, 'with_exif', False))
+        result = run_reconcile(
+            archive_root, fha_config,
+            with_exif=getattr(args, 'with_exif', False),
+            dry_run=getattr(args, 'dry_run', False),
+        )
     except RuntimeError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    if not result['root_found']:
+        print(f"WARNING: photos root not found: {result['photos_root']}", file=sys.stderr)
+        return EXIT_WARNINGS
+
     exit_code = _print_photoindex_status(result['status'])
     if exit_code is not None:
         return exit_code
+
+    if getattr(args, 'dry_run', False):
+        print('(dry run — no changes made)')
 
     for old, new in result['rematched']:
         print(f'  RE-MATCHED  {old} -> {new}')
