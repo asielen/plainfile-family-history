@@ -1706,6 +1706,35 @@ class PhotoindexTests(unittest.TestCase):
             finally:
                 conn.close()
 
+    def test_reconcile_with_exif_attaches_untracked_source_tagged_file(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+            photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
+
+            shutil.copy(
+                archive / 'photos' / 'portrait_1880.jpg',
+                archive / 'photos' / 'brand_new.jpg',
+            )
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                return [
+                    {'SourceFile': str(p), 'Keywords': ['SOURCE: S-aaaaaaaaaa']}
+                    if p.name == 'brand_new.jpg' else {'SourceFile': str(p)}
+                    for p in paths
+                ]
+
+            photoindex._run_exiftool = fake_exiftool
+            result = photoindex.run_reconcile(
+                archive, {'roots': {'photos': 'photos'}}, with_exif=True,
+            )
+
+            self.assertEqual(result['new_count'], 1)
+            self.assertEqual(
+                result['new_sourced'], {'s-aaaaaaaaaa': ['photos/brand_new.jpg']},
+            )
+            self.assertEqual(result['new_unsourced'], [])
+
     def test_reconcile_on_absent_index_reports_absent_status(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -1756,6 +1785,12 @@ class PhotoindexTests(unittest.TestCase):
                 },
             }
             return [{'SourceFile': str(p), **rows.get(p.name, {})} for p in paths]
+
+        people_dir = archive / 'people'
+        people_dir.mkdir(exist_ok=True)
+        (people_dir / 'grandma_P-de957bcda1.md').write_text(
+            '---\nid: P-de957bcda1\n---\n', encoding='utf-8',
+        )
 
         photoindex._run_exiftool = fake_exiftool
         photoindex.run_scan(archive, {'roots': {'photos': 'photos'}})
@@ -1819,6 +1854,38 @@ class PhotoindexTests(unittest.TestCase):
                     archive, {'roots': {'photos': 'photos'}}, 'S-123456789a',
                     from_face_tag='Grandma',
                 )
+
+    def test_tag_person_plan_rejects_unknown_person_id(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            with self.assertRaises(ValueError):
+                photoindex.run_tag_person_plan(
+                    archive, {'roots': {'photos': 'photos'}}, 'P-0000000000',
+                    from_face_tag='Grandma',
+                )
+
+    def test_tag_person_plan_blocks_on_stale_index(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+            # Touch the person record after the scan so the cache is stale.
+            os.utime(archive / 'people' / 'grandma_P-de957bcda1.md', None)
+
+            args = type('Args', (), {
+                'root': str(archive), 'person_id': 'P-de957bcda1',
+                'from_face_tag': 'Grandma', 'paths': None, 'dry_run': True,
+            })()
+            orig_apply = photoindex.apply_tag_person
+            photoindex.apply_tag_person = lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError('apply_tag_person must not be called on a stale index')
+            )
+            try:
+                code = photoindex._cmd_tag_person(args)
+            finally:
+                photoindex.apply_tag_person = orig_apply
+            self.assertEqual(code, photoindex.EXIT_FAILURE)
 
     def test_tag_person_plan_resolves_explicit_paths(self) -> None:
         with tempfile.TemporaryDirectory() as d:
@@ -1961,6 +2028,30 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertIsNone(not_tagged)
             finally:
                 conn.close()
+
+    def test_apply_tag_person_reports_cache_failure_after_in_file_write(self) -> None:
+        """A cache failure after the original file is already written must
+        surface as a RuntimeError naming the already-tagged path, not an
+        uncaught sqlite3.Error traceback."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            self._scan_with_face_tag_fixture(archive)
+
+            orig_write = photoindex._run_exiftool_write
+            photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
+            orig_rebuild = photoindex._rebuild_photo_people
+            photoindex._rebuild_photo_people = lambda conn, root: (
+                _ for _ in ()).throw(sqlite3.OperationalError('database is locked'))
+            try:
+                with self.assertRaises(RuntimeError) as ctx:
+                    photoindex.apply_tag_person(
+                        archive, {'roots': {'photos': 'photos'}}, 'p-de957bcda1',
+                        ['photos/family_reunion.jpg'],
+                    )
+                self.assertIn('photos/family_reunion.jpg', str(ctx.exception))
+            finally:
+                photoindex._run_exiftool_write = orig_write
+                photoindex._rebuild_photo_people = orig_rebuild
 
     def test_cmd_tag_person_dry_run_does_not_write(self) -> None:
         with tempfile.TemporaryDirectory() as d:

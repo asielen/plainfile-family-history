@@ -145,6 +145,7 @@ from _lib import (
     photoindex_status,
     probe_sqlite,
     resolve_path,
+    scan_ids_in_tree,
 )
 
 configure_utf8_stdout()
@@ -1176,15 +1177,24 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
         them, and the next ordinary `fha photoindex` scan (whose cache-removal
         pass sees no on-disk file at the synthetic 'MISSING:' key) clears a
         resolved one out automatically.
-      - left untracked: a file with no claimed missing row is reported as new
-        but not scraped — that is the ordinary scan's job, not reconcile's.
+      - left untracked: a file with no claimed missing row is reported as new.
+        With --with-exif, its SOURCE: keyword (if any) is read so it can be
+        attached to that source's inventory in the report rather than being
+        reduced to a bare count (TOOLING §9: "if they carry a SOURCE:/S-id,
+        attach to the source's inventory"); a full content rescrape remains
+        the ordinary scan's job, not reconcile's.
 
     Returns {'status', 'rematched': [(old, new), ...], 'missing': [path, ...],
-    'new_count': int}.
+    'new_count': int, 'new_sourced': {source_id: [path, ...]},
+    'new_unsourced': [path, ...]}.
     """
+    empty = {
+        'rematched': [], 'missing': [], 'new_count': 0,
+        'new_sourced': {}, 'new_unsourced': [],
+    }
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
-        return {'status': status, 'rematched': [], 'missing': [], 'new_count': 0}
+        return {'status': status, **empty}
 
     photos_root = resolve_path('photos', fha_config, archive_root)
     on_disk = _on_disk_aliases(photos_root, fha_config, archive_root)
@@ -1193,7 +1203,7 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return {'status': 'unreadable', 'rematched': [], 'missing': [], 'new_count': 0}
+            return {'status': 'unreadable', **empty}
         try:
             cached = {
                 row['path']: row['source_id']
@@ -1205,9 +1215,12 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
             }
             untracked = {alias: p for alias, p in on_disk.items() if alias not in cached}
 
-            rematched: list[tuple[str, str]] = []
-            if with_exif and missing and untracked:
+            candidate_source_ids: dict[Path, str] = {}
+            if with_exif and untracked:
                 candidate_source_ids = _scrape_source_ids(list(untracked.values()))
+
+            rematched: list[tuple[str, str]] = []
+            if missing and candidate_source_ids:
                 claimed: set[str] = set()
                 for old_path, source_id in missing.items():
                     if not source_id:
@@ -1231,15 +1244,29 @@ def run_reconcile(archive_root: Path, fha_config: dict, with_exif: bool = False)
                 _move_cached_path(conn, old_path, new_key)
                 now_missing.append(new_key)
 
+            new_sourced: dict[str, list[str]] = {}
+            new_unsourced: list[str] = []
+            for alias, p in untracked.items():
+                source_id = candidate_source_ids.get(p)
+                if source_id:
+                    new_sourced.setdefault(source_id, []).append(alias)
+                else:
+                    new_unsourced.append(alias)
+            for paths in new_sourced.values():
+                paths.sort()
+            new_unsourced.sort()
+
             conn.commit()
             return {
                 'status': status,
                 'rematched': rematched,
                 'missing': now_missing,
                 'new_count': len(untracked),
+                'new_sourced': new_sourced,
+                'new_unsourced': new_unsourced,
             }
         except sqlite3.Error:
-            return {'status': 'unreadable', 'rematched': [], 'missing': [], 'new_count': 0}
+            return {'status': 'unreadable', **empty}
     finally:
         conn.close()
 
@@ -1269,6 +1296,8 @@ def run_tag_person_plan(
     if not is_valid_id(person_id) or id_type_of(person_id) != 'P':
         raise ValueError(f'{person_id!r} is not a valid P-id')
     person_id = normalize_id(person_id)
+    if person_id not in scan_ids_in_tree(archive_root):
+        raise ValueError(f'{person_id} is not a known person in the archive')
 
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
@@ -1400,6 +1429,12 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     Each candidate is written and cached independently: a failed write on one
     photo never discards the cache update for photos that did succeed.
     Returns {'tagged': [path, ...], 'failed': [(path, error), ...]}.
+
+    Raises RuntimeError (wrapping a `sqlite3.Error`) if the cache update
+    itself fails after one or more original files were already written —
+    the original-file writes cannot be rolled back, so the caller must learn
+    exactly which `tagged` paths now carry the keyword in-file even though
+    the cache update did not complete.
     """
     if not candidates:
         return {'tagged': [], 'failed': []}
@@ -1411,25 +1446,31 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     failed: list[tuple[str, str]] = []
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     try:
-        for path, abs_path in zip(candidates, abs_paths):
-            error = write_results[abs_path]
-            if error is not None:
-                failed.append((path, error))
-                continue
-            conn.execute(
-                'INSERT INTO photo_keywords(path, keyword) SELECT ?, ? WHERE NOT EXISTS '
-                '(SELECT 1 FROM photo_keywords WHERE path=? AND keyword=?)',
-                (path, keyword, path, keyword),
-            )
-            conn.execute('DELETE FROM photo_people WHERE path=? AND person_ref=?', (path, person_id))
-            conn.execute(
-                "INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,'pid-keyword')",
-                (path, person_id),
-            )
-            tagged.append(path)
-        if tagged:
-            _refresh_photo_fts_keywords(conn, tagged)
-        conn.commit()
+        try:
+            for path, abs_path in zip(candidates, abs_paths):
+                error = write_results[abs_path]
+                if error is not None:
+                    failed.append((path, error))
+                    continue
+                conn.execute(
+                    'INSERT INTO photo_keywords(path, keyword) SELECT ?, ? WHERE NOT EXISTS '
+                    '(SELECT 1 FROM photo_keywords WHERE path=? AND keyword=?)',
+                    (path, keyword, path, keyword),
+                )
+                tagged.append(path)
+            if tagged:
+                _refresh_photo_fts_keywords(conn, tagged)
+                # Rebuild rather than upsert one row per tagged path: a pid-keyword
+                # match propagates to every variant in the photo's group (front/back,
+                # copies — TOOLING §9), and only a full recompute keeps those sibling
+                # paths' photo_people rows in sync with the new keyword.
+                _rebuild_photo_people(conn, archive_root)
+            conn.commit()
+        except sqlite3.Error as e:
+            tagged_list = ', '.join(tagged) if tagged else 'none'
+            raise RuntimeError(
+                f'photo cache update failed after writing in-file keywords to: {tagged_list} ({e})'
+            ) from e
     finally:
         conn.close()
     return {'tagged': tagged, 'failed': failed}
@@ -1748,12 +1789,18 @@ def _resolve_root_and_config(args: argparse.Namespace) -> tuple[Path, dict] | in
     return archive_root, fha_config
 
 
-def _print_photoindex_status(status: str) -> int | None:
+def _print_photoindex_status(status: str, *, require_fresh: bool = False) -> int | None:
     """
     Print the documented absent/unreadable/stale message for a photoindex_status
     value. Returns an EXIT_FAILURE int the caller should return immediately for
     absent/unreadable, or None to keep going (status is 'fresh', or 'stale' —
     stale still queries, it just warns first).
+
+    `require_fresh=True` is for mutating commands like tag-person: a stale
+    index may carry face-region/path data for a photo that has since been
+    replaced or changed on disk, so writing a P-id keyword from that cache
+    would mutate the wrong file's metadata. Those callers must block on
+    'stale' and force a rescan rather than warn-and-continue.
     """
     if status == 'absent':
         print('ERROR: no photo index found. Run fha photoindex first.', file=sys.stderr)
@@ -1762,6 +1809,12 @@ def _print_photoindex_status(status: str) -> int | None:
         print('ERROR: .cache/photos.sqlite is unreadable. Rebuild with fha photoindex.', file=sys.stderr)
         return EXIT_FAILURE
     if status == 'stale':
+        if require_fresh:
+            print(
+                'ERROR: photo index is stale; run fha photoindex to refresh it before tagging.',
+                file=sys.stderr,
+            )
+            return EXIT_FAILURE
         print('WARNING: photo index is stale; results may be out of date. Run fha photoindex to refresh.')
     return None
 
@@ -1914,6 +1967,10 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f'  RE-MATCHED  {old} -> {new}')
     for path in result['missing']:
         print(f'  MISSING     {path[len(_MISSING_PREFIX):]}')
+    for source_id, paths in sorted(result['new_sourced'].items()):
+        print(f'  NEW (source {source_id})  ' + ', '.join(paths))
+    if result['new_unsourced']:
+        print('  NEW (unsourced)  ' + ', '.join(result['new_unsourced']))
     if result['new_count']:
         print(
             f"{result['new_count']} new file(s) on disk not yet in the catalog; "
@@ -1943,7 +2000,7 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    exit_code = _print_photoindex_status(plan['status'])
+    exit_code = _print_photoindex_status(plan['status'], require_fresh=True)
     if exit_code is not None:
         return exit_code
 
