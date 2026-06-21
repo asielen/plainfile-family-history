@@ -788,7 +788,10 @@ def _index_citations(conn: sqlite3.Connection, archive_root: Path) -> None:
     """Scan all .md files for [ID] citation tokens."""
     from _lib import TOKEN_RE
     for path in archive_root.rglob('*.md'):
-        if '.cache' in path.parts:
+        # 'out/' is fha packet's default, gitignored output directory
+        # (TOOLING §8) — disposable export copies, not archive truth, so
+        # they must not become citation sites in the index.
+        if '.cache' in path.parts or 'out' in path.parts:
             continue
         try:
             lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()

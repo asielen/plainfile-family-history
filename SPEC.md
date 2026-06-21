@@ -663,21 +663,25 @@ Integration rules:
 
 ## 21. Publication and export `LOCKED`
 
-Generated output (the static site, person packets) that leaves the archive is subject to binding privacy rules. These rules apply identically to all export paths; they are not tool-specific.
+Generated output that leaves the archive falls into two categories with different binding privacy rules: **public output**, meant for redistribution beyond the family, and **private export**, a family-facing copy that stays within the family but is gathered outside the archive's own access controls.
 
-**Living-person redaction (mandatory for all external output):**
+**Public output — living-person redaction (mandatory):**
 - Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living [Surname]" or "Living Person", and all claims, photos, and source citations naming them are withheld.
 - `unknown` is treated as living. Stubs default to `unknown`.
 - Direct-line couple folders whose occupants are all redacted are collapsed to a stub entry; their folder number is retained so the pedigree chain remains intact.
 
-**Restricted sources (mandatory for all external output):**
-- Sources with `restricted: true` are never included in any external output. Their claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently.
-- DNA evidence always carries `restricted: true`. No DNA-derived conclusions appear in external output without an additional, independent non-DNA source establishing the same fact.
+**Public output — restricted sources (mandatory):**
+- Sources with `restricted: true` are never included in any public output. Their claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently.
+- DNA evidence always carries `restricted: true`. No DNA-derived conclusions appear in public output without an additional, independent non-DNA source establishing the same fact.
 
-**Scope (what "external output" covers):**
+**Scope (what "public output" covers):**
 - `fha site` — the static HTML snapshot.
-- `fha packet` — per-person zip exports.
-- Any future export path (GEDCOM, WikiTree, etc.) unless that path has an explicit `--include-living` / `--include-restricted` opt-in documented in its TOOLING entry.
+- Any future public-publication export path (GEDCOM, WikiTree, etc.) unless that path has an explicit `--include-living` / `--include-restricted` opt-in documented in its TOOLING entry.
+
+**Private export (`fha packet`) — its own rules, per TOOLING §8:**
+- `fha packet` is a family/private export, not public output, and is not subject to the redaction rules above. A packet may include `living: false` people's full prose and cite other people who are still living, with a README caution rather than redaction.
+- The packet *subject* is held to a stricter rule than the cited-other-people case: `living: true` and `living: unknown` subjects are refused before any output is written, with no opt-in.
+- `restricted: true` sources are excluded by default (named by ID only in the README); `--include-restricted` overrides, except DNA sources, which stay excluded until `--include-dna` is also passed.
 
 **Site generation freshness contract:**
 - `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite` — it is as live as the last `fha index` run.

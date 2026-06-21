@@ -19,7 +19,8 @@ This is explicitly NOT the public/standalone export path (`fha site
 --standalone`, TOOLING §12) — the packet's README says so. A packet may
 include `living: false` people's full prose and cite other people who are
 still living, with a caution in the README. The packet subject is different:
-SPEC §23 binds person packets as external output, so `living: true` and
+SPEC §21 binds person packets to their own subject rule (separate from the
+public-output redaction rules `fha site` follows), so `living: true` and
 `living: unknown` subjects are refused unless a future SPEC/TOOLING change
 adds an explicit packet opt-in.
 
@@ -104,6 +105,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    FhaConfigError,
     configure_utf8_stdout,
     fmt_id_display,
     load_fha_yaml,
@@ -525,7 +527,7 @@ def run_packet(
     Build a packet for pid under out_dir. Returns a result dict:
 
       {'status': 'ok'|'dry-run'|'not-found'|'not-curated'|'living-subject'|
-       'no-index'|'no-photoindex'|'output-exists'|'write-failed',
+       'no-index'|'no-photoindex'|'output-exists'|'write-failed'|'bad-config',
        'packet_dir': Path|None, 'zip_path': Path|None,
        'messages': [str, ...]}
 
@@ -533,9 +535,20 @@ def run_packet(
     whose privacy filters come from SQLite. Photoindex absence, unreadability,
     and staleness all block photo-bearing packets per TOOLING §8; --no-photos
     is the explicit escape hatch.
+
+    fha.yaml is also loaded strictly: a malformed config must not be silently
+    treated as {}, which would fall back external photos/documents roots to
+    directories under the archive root and copy from (or report missing) the
+    wrong files.
     """
     messages: list[str] = []
-    fha_config = load_fha_yaml(archive_root)
+    try:
+        fha_config = load_fha_yaml(archive_root, strict=True)
+    except FhaConfigError as e:
+        return {
+            'status': 'bad-config', 'packet_dir': None, 'zip_path': None,
+            'messages': [f'ERROR: {e}'],
+        }
 
     conn = open_index_db(archive_root, _REQUIRED_TABLES, strict=True)
     if conn is None:
@@ -682,20 +695,27 @@ def run_packet(
                     # already absolute. Resolve each group separately rather than mixing
                     # the two forms in one set, so a malformed alias path can't be
                     # mistaken for (or silently fixed up into) an absolute one.
-                    photo_targets: set[Path] = set()
+                    # Keep the alias form alongside the resolved path so a "missing on
+                    # disk" note can report it instead of a machine-specific absolute
+                    # path when the photos root is mapped outside the archive.
+                    photo_targets: dict[Path, str | None] = {}
                     for alias_path in _expand_photo_groups(pconn, people_paths):
                         try:
-                            photo_targets.add(resolve_path(alias_path, fha_config, archive_root))
+                            resolved = resolve_path(alias_path, fha_config, archive_root)
                         except Exception:
                             continue
-                    photo_targets |= _source_image_paths(files_by_source)
+                        photo_targets[resolved] = alias_path
+                    for src_image_path in _source_image_paths(files_by_source):
+                        photo_targets.setdefault(src_image_path, None)
 
                     if photo_targets:
                         photos_dir = packet_dir / 'photos'
                         photos_dir.mkdir(exist_ok=True)
                         for abs_path in sorted(photo_targets, key=str):
+                            alias_path = photo_targets[abs_path]
                             if not abs_path.exists():
-                                note = f'photo missing on disk: {_display_path(abs_path, archive_root)}'
+                                display = alias_path or _display_path(abs_path, archive_root)
+                                note = f'photo missing on disk: {display}'
                                 messages.append(f'WARNING: {note}')
                                 missing_assets.append(note)
                                 continue
@@ -715,17 +735,21 @@ def run_packet(
             )
 
             _zip_directory(packet_dir, zip_path)
-        except OSError as e:
+        except (OSError, sqlite3.DatabaseError) as e:
             # A structural failure (can't create the packet dir, can't write
-            # the zip, disk full mid-build) is different from one missing/
-            # locked file: it leaves the build incomplete in a way per-file
-            # warnings can't express. Clean up the half-built directory on a
-            # best-effort basis (its own failure is swallowed — we're already
-            # reporting the primary error) rather than leave debris that would
-            # then block a retry with a misleading "output already exists".
+            # the zip, disk full mid-build, an incompatible photos.sqlite
+            # schema) is different from one missing/locked file: it leaves
+            # the build incomplete in a way per-file warnings can't express.
+            # Clean up the half-built directory and any partial zip on a
+            # best-effort basis (their own failure is swallowed — we're
+            # already reporting the primary error) rather than leave debris
+            # that would then block a retry with a misleading
+            # "output already exists".
             try:
                 if packet_dir.exists():
                     shutil.rmtree(packet_dir)
+                if zip_path.exists():
+                    zip_path.unlink()
             except OSError:
                 pass
             messages.append(f'ERROR: packet build failed: {e}')
@@ -770,6 +794,8 @@ def _cmd_packet(args: argparse.Namespace) -> int:
 
     status = result['status']
     if status == 'no-index':
+        return EXIT_FAILURE
+    if status == 'bad-config':
         return EXIT_FAILURE
     if status == 'not-found':
         print(f'{pid}: not found in index.', file=sys.stderr)
