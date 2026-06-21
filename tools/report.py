@@ -22,8 +22,12 @@ that sits above that rule, not an exception to be copied elsewhere.
 
 Refresh sequence (TOOLING §15a step 1-3), run on every invocation regardless
 of `--full`/`--section` (the report's own freshness, not its diffing baseline):
-  1. `photoindex.run_scan(..., full=False)` — incremental photo metadata refresh
-  2. `index.build_index(...)` — full index rebuild
+  1. `index.build_index(...)` — full index rebuild
+  2. `photoindex.run_scan(..., full=False)` — incremental photo metadata
+     refresh; runs *after* the index rebuild because it derives face-tag/
+     name-variant matches from `.cache/index.sqlite` and should see this
+     session's fresh data, not last session's. Wrapped in try/except so an
+     exiftool failure degrades Section 6 only, not the whole report.
   3. `lint._run_lint_core(...)` — in-memory lint pass (gives both raw Finding
      objects and the Registry that produced them; `run_lint_silent` only
      returns counts, which the discoveries/vitals-gaps/contradictions
@@ -96,11 +100,13 @@ from _lib import (
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    TOKEN_RE,
     FhaConfigError,
     fmt_id_display,
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    read_record,
     resolve_root_arg,
 )
 
@@ -154,23 +160,8 @@ _QUESTION_STATUS_RE = re.compile(r'^- status:\s*(.+)$', re.M)
 _QUESTION_REFS_RE = re.compile(r'^- refs:\s*\[(.*?)\]', re.M)
 
 
-def _parse_questions(archive_root: Path) -> dict[str, dict]:
-    """
-    Parse notes/questions.md into {heading: {'status', 'refs', 'block'}}.
-
-    Scoped to the single general questions file (SPEC §17) — per-person
-    research-file question blocks are not folded in here; the report's
-    answerable-questions section is about the general backlog, the same set
-    `fha lint` E009 checks against questions.md specifically.
-    """
-    path = archive_root / 'notes' / 'questions.md'
-    if not path.exists():
-        return {}
-    try:
-        text = path.read_text(encoding='utf-8')
-    except OSError:
-        return {}
-
+def _parse_question_blocks(text: str) -> dict[str, dict]:
+    """Parse one file's text into {heading: {'status', 'refs', 'block'}}."""
     out: dict[str, dict] = {}
     blocks = re.split(r'(?=^## Q:)', text, flags=re.M)
     for block in blocks:
@@ -192,6 +183,47 @@ def _parse_questions(archive_root: Path) -> dict[str, dict]:
     return out
 
 
+def _parse_questions(archive_root: Path) -> dict[str, dict]:
+    """
+    Parse notes/questions.md AND every person research file's
+    `## Open Questions` block into {heading: {'status', 'refs', 'block'}}.
+
+    Mirrors `fha lint`'s E009 question-scanning scope exactly: lint.py's
+    `_has_question_for` checks both `registry.questions_content`
+    (notes/questions.md) and `registry.research_content` (every person
+    research file collected in `_walk_archive` via `'_research_' in
+    path.stem or path.stem.endswith('_research')`, under `people/`). The
+    report's answerable-questions/discoveries sections must see the same
+    question set lint does, or a question logged only in a person's research
+    file would never get a closure proposal here.
+
+    Headings are kept as the dict key as before; in theory two files could
+    use the same heading text and one would shadow the other, but in
+    practice question headings are unique free text, so this is treated as
+    a non-issue rather than namespaced by file.
+    """
+    out: dict[str, dict] = {}
+
+    path = archive_root / 'notes' / 'questions.md'
+    if path.exists():
+        try:
+            out.update(_parse_question_blocks(path.read_text(encoding='utf-8')))
+        except OSError:
+            pass
+
+    people_root = archive_root / 'people'
+    if people_root.exists():
+        for rpath in sorted(people_root.rglob('*.md')):
+            if '_research_' in rpath.stem or rpath.stem.endswith('_research'):
+                try:
+                    text = rpath.read_text(encoding='utf-8')
+                except OSError:
+                    continue
+                out.update(_parse_question_blocks(text))
+
+    return out
+
+
 def _vitals_gap_pids(findings: list, registry) -> list[str]:
     """W101 findings -> sorted P-id list, via the registry's path->pid map."""
     path_to_pid: dict[str, str] = {}
@@ -209,6 +241,27 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
     """Current-state snapshot dict, built right after the refresh sequence."""
     source_ids = sorted(r[0] for r in conn.execute('SELECT id FROM sources'))
     person_ids = sorted(r[0] for r in conn.execute('SELECT id FROM persons'))
+    source_fingerprints = {
+        r['id']: '|'.join(
+            str(r[k] or '') for k in ('title', 'source_type', 'restricted', 'path')
+        )
+        for r in conn.execute('SELECT id, title, source_type, restricted, path FROM sources')
+    }
+    person_fingerprints = {
+        r['id']: '|'.join(
+            str(r[k] or '') for k in (
+                'name', 'surname', 'sex', 'living', 'tier', 'status',
+                'no_known_marriages', 'no_known_children',
+            )
+        )
+        for r in conn.execute(
+            '''
+            SELECT id, name, surname, sex, living, tier, status,
+                   no_known_marriages, no_known_children
+            FROM persons
+            '''
+        )
+    }
     claim_status_by_id = {r[0]: r[1] for r in conn.execute('SELECT id, status FROM claims')}
     # claim_persons participants (person + role) are part of a claim's identity
     # too -- reattaching a claim to a different person/role is a real change
@@ -260,6 +313,8 @@ def _build_snapshot(conn, archive_root: Path, findings: list, registry) -> dict:
         'generated': datetime.date.today().isoformat(),
         'source_ids': source_ids,
         'person_ids': person_ids,
+        'source_fingerprints': source_fingerprints,
+        'person_fingerprints': person_fingerprints,
         'claim_ids': sorted(claim_status_by_id),
         'claim_statuses': claim_statuses,
         'claim_status_by_id': claim_status_by_id,
@@ -399,7 +454,20 @@ def _section_new_since_last(prev: dict, current: dict) -> list[str]:
         cid for cid, fingerprint in current['claim_fingerprints'].items()
         if cid in prev_claim_fingerprints and prev_claim_fingerprints[cid] != fingerprint
     )
-    if not new_sources and not new_persons and not new_claims and not changed_claims:
+    prev_source_fingerprints = prev.get('source_fingerprints', {})
+    changed_sources = sorted(
+        sid for sid, fingerprint in current['source_fingerprints'].items()
+        if sid in prev_source_fingerprints and prev_source_fingerprints[sid] != fingerprint
+    )
+    prev_person_fingerprints = prev.get('person_fingerprints', {})
+    changed_persons = sorted(
+        pid for pid, fingerprint in current['person_fingerprints'].items()
+        if pid in prev_person_fingerprints and prev_person_fingerprints[pid] != fingerprint
+    )
+    if (
+        not new_sources and not new_persons and not new_claims and not changed_claims
+        and not changed_sources and not changed_persons
+    ):
         return ['No new sources or persons since last session.']
 
     lines: list[str] = []
@@ -422,6 +490,16 @@ def _section_new_since_last(prev: dict, current: dict) -> list[str]:
         lines.append(
             f'**Changed claims ({len(changed_claims)}):** '
             + ', '.join(fmt_id_display(c) for c in changed_claims)
+        )
+    if changed_sources:
+        lines.append(
+            f'**Changed sources ({len(changed_sources)}):** '
+            + ', '.join(fmt_id_display(s) for s in changed_sources)
+        )
+    if changed_persons:
+        lines.append(
+            f'**Changed persons ({len(changed_persons)}):** '
+            + ', '.join(fmt_id_display(p) for p in changed_persons)
         )
     return lines
 
@@ -530,16 +608,24 @@ _VITALS_QUESTION_KEYWORDS = {
 _VITALS_GENERIC_KEYWORDS = ('fully documented', 'vitals', 'vital record', 'documented?')
 
 
-def _question_mentions_vitals(heading: str, block: str, needed: set[str]) -> bool:
-    """True if the question text plausibly concerns one of the `needed` vitals types."""
+def _question_vitals_subset(heading: str, block: str, needed: set[str]) -> set[str]:
+    """
+    Return the subset of `needed` that the question text specifically names.
+
+    If the question uses generic vitals-completeness phrasing ("fully
+    documented", "vitals gap") rather than naming a specific vital, the
+    question is genuinely about the full `needed` set, so the full set is
+    returned in that case. Otherwise only the specifically-named vital(s)
+    come back — a question that only asks "When was X born?" must not wait
+    on an unrelated marriage/death gap before a closure is proposed.
+    """
     text = f'{heading}\n{block}'.lower()
     if any(kw in text for kw in _VITALS_GENERIC_KEYWORDS):
-        return True
-    return any(
-        kw in text
-        for vital in needed
-        for kw in _VITALS_QUESTION_KEYWORDS.get(vital, ())
-    )
+        return set(needed)
+    return {
+        vital for vital in needed
+        if any(kw in text for kw in _VITALS_QUESTION_KEYWORDS.get(vital, ()))
+    }
 
 
 def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
@@ -591,12 +677,11 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
                 living = str(person_row['living']) if person_row else 'unknown'
                 if living not in ('true', 'unknown'):
                     needed.add('death')
-                if needed.issubset(claim_types) and _question_mentions_vitals(
-                    heading, info['block'], needed
-                ):
+                mentioned = _question_vitals_subset(heading, info['block'], needed)
+                if mentioned and mentioned.issubset(claim_types):
                     proposal = (
                         f'propose: review — {_person_label(conn, pid)} now has accepted '
-                        f'{", ".join(sorted(needed))} claim(s)'
+                        f'{", ".join(sorted(mentioned))} claim(s)'
                     )
                     break
         if proposal:
@@ -607,7 +692,14 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
 
 # ── Section 6: Photo processing triage ────────────────────────────────────────
 
-def _section_photo_triage(archive_root: Path, fha_config: dict) -> list[str]:
+def _section_photo_triage(
+    archive_root: Path, fha_config: dict, scan_error: str | None = None
+) -> list[str]:
+    if scan_error:
+        return [
+            f'Photo scan failed this session ({scan_error}) — triage results below may be '
+            'stale; run `fha photoindex` once the issue is fixed.'
+        ]
     result = photoindex.run_triage(archive_root, fha_config, top=10)
     if result['status'] in ('absent', 'unreadable'):
         return [f'Photo index {result["status"]} — run `fha photoindex` to enable triage.']
@@ -651,7 +743,39 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
 
 # ── Section 7: Hypotheses & draft queues ──────────────────────────────────────
 
-_DRAFT_QUEUE_EMPTY = 'All accepted claims are cited in the profile.'
+def _person_has_draft_queue_backlog(conn, archive_root: Path, person_id: str) -> bool:
+    """
+    True if `person_id` has ≥1 accepted-claim source not cited in their
+    profile body — computed live from the index, mirroring exactly what
+    `views.py`'s `_generate_draft_queue` does (accepted_sids - cited_sids),
+    rather than reading the generated draft-queue file. The generated file
+    can lag behind the index (claim just accepted, `fha views draft-queue`
+    not yet re-run), which would make this section silently stale.
+    """
+    row = conn.execute(
+        "SELECT path FROM person_files WHERE person_id=? AND kind='profile'",
+        (person_id,),
+    ).fetchone()
+    if not row:
+        return False
+    try:
+        rec = read_record(archive_root / row['path'])
+    except OSError:
+        return False
+    body = rec['body']
+    cited_sids = {
+        normalize_id(m.group(1)) for m in TOKEN_RE.finditer(body)
+        if m.group(1).lower().startswith('s-')
+    }
+    accepted_sids = {
+        normalize_id(r[0]) for r in conn.execute(
+            "SELECT DISTINCT c.source_id FROM claim_persons cp "
+            "JOIN claims c ON c.id = cp.claim_id "
+            "WHERE cp.person_id=? AND c.status='accepted'",
+            (person_id,),
+        )
+    }
+    return bool(accepted_sids - cited_sids)
 
 
 def _section_hypotheses(conn, archive_root: Path) -> list[str]:
@@ -667,22 +791,13 @@ def _section_hypotheses(conn, archive_root: Path) -> list[str]:
     else:
         lines.append('No open hypotheses.')
 
-    draft_rows = conn.execute(
-        "SELECT person_id, path FROM person_files WHERE kind='draft-queue'"
-    ).fetchall()
-    backlog_pids: set[str] = set()
-    for row in draft_rows:
-        try:
-            text = (archive_root / row['path']).read_text(encoding='utf-8')
-        except OSError:
-            continue
-        body = text.split('-->', 1)[-1].strip()
-        # body still carries the generated "# Draft Queue: {name}" heading
-        # line above the empty-queue sentence (views.py's _generate_draft_queue
-        # always emits the heading), so an exact-equality check against
-        # _DRAFT_QUEUE_EMPTY never matches — test containment instead.
-        if body and _DRAFT_QUEUE_EMPTY not in body:
-            backlog_pids.add(row['person_id'])
+    curated_pids = [
+        r[0] for r in conn.execute("SELECT id FROM persons WHERE tier='curated'")
+    ]
+    backlog_pids = {
+        pid for pid in curated_pids
+        if _person_has_draft_queue_backlog(conn, archive_root, pid)
+    }
 
     if backlog_pids:
         lines.append('**Draft-queue backlog:**')
@@ -773,8 +888,26 @@ def run_report(
     # Refresh sequence (TOOLING §15a steps 1-3) — always incremental for
     # photos/index regardless of report's own --full (which only controls
     # whether the snapshot diff baseline is used, not how fresh the caches are).
-    photoindex.run_scan(archive_root, fha_config, full=False)
+    #
+    # index.build_index runs *before* photoindex.run_scan: run_scan derives
+    # its face-tag/name-variant photo-person matches from the current
+    # .cache/index.sqlite (via _load_face_tag_index), so scanning against the
+    # not-yet-rebuilt index would use a stale person/face-tag snapshot for
+    # this cycle. Rebuilding first means run_scan always sees this session's
+    # fresh data. photoindex.py's own staleness handling (_index_is_fresh)
+    # already tolerates an index that lags behind — it just preserves
+    # existing weak matches rather than failing — so this ordering is safe
+    # either way; it's strictly an improvement.
     index.build_index(archive_root, fha_config)
+    photo_scan_error: str | None = None
+    try:
+        photoindex.run_scan(archive_root, fha_config, full=False)
+    except (RuntimeError, OSError) as e:
+        # `fha report` is the session-start feed across many sections
+        # (0-5b/7/8); a photo-scan failure (e.g. exiftool missing or
+        # erroring) must not take the whole report down. Section 6 reports
+        # the failure instead of silently looking clean.
+        photo_scan_error = str(e)
     findings, registry = lint._run_lint_core(archive_root, fha_config)
 
     conn = open_index_db(
@@ -799,7 +932,7 @@ def run_report(
             'contradictions': _section_contradictions(findings),
             'search-log': _section_search_log(conn, current),
             'answerable-questions': _section_answerable_questions(conn, archive_root),
-            'photo-triage': _section_photo_triage(archive_root, fha_config),
+            'photo-triage': _section_photo_triage(archive_root, fha_config, photo_scan_error),
             'place-candidates': _section_place_candidates(archive_root, fha_config),
             'hypotheses': _section_hypotheses(conn, archive_root),
             'possible-connections': _section_possible_connections(archive_root),

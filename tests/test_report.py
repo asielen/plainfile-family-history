@@ -138,6 +138,46 @@ _QUESTIONS_NO_MARRIAGES_MD = '''# Open Questions (general)
   - (human, 2026-01-01) Check vitals completeness.
 '''
 
+_PERSON_PARTIAL_VITALS_MD = '''---
+id: P-cccccccccc
+name: Partial Birth Person
+living: false
+tier: curated
+no_known_marriages: false
+---
+
+## Biography
+
+Some text about Partial Birth Person.
+'''
+
+_SOURCE_BIRTH_ONLY_MD = '''---
+id: S-4444444444
+title: Source Four
+source_type: vital-record
+---
+
+## Claims
+```yaml
+- id: C-4444444444
+  type: birth
+  persons: [P-cccccccccc]
+  value: Born 1880
+  status: accepted
+  reviewed: 2026-01-01
+```
+'''
+
+_QUESTIONS_PARTIAL_VITALS_MD = '''# Open Questions (general)
+
+## Q: When was Partial Birth Person born?
+- origin: human
+- status: open
+- refs: [P-cccccccccc]
+- context:
+  - (human, 2026-01-01) Birth date still needs confirmation.
+'''
+
 
 class ReportTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -246,6 +286,32 @@ class ReportTests(unittest.TestCase):
         self.assertIn('Is No Marriages Person fully documented?', md)
         self.assertIn('propose: review', md)
         self.assertIn('No Marriages Person', md)
+
+    def test_answerable_questions_proposes_closure_for_partial_vital_match(self) -> None:
+        # Partial Birth Person needs birth + marriage + death (no
+        # no_known_marriages, not living) but only has an accepted birth
+        # claim. The open question only asks "When was X born?" — it names
+        # birth specifically, so a closure proposal must fire on birth alone
+        # rather than waiting on the unrelated marriage/death gaps too.
+        (self.archive_root / 'people' / 'partialbirth__P-cccccccccc.md').write_text(
+            _PERSON_PARTIAL_VITALS_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'sources' / 'sourcefour_S-4444444444.md').write_text(
+            _SOURCE_BIRTH_ONLY_MD, encoding='utf-8'
+        )
+        (self.archive_root / 'notes' / 'questions.md').write_text(
+            _QUESTIONS_MD + _QUESTIONS_PARTIAL_VITALS_MD, encoding='utf-8'
+        )
+
+        result = report.run_report(self.archive_root, {}, full=True)
+        md = result['markdown']
+
+        self.assertIn('When was Partial Birth Person born?', md)
+        self.assertIn('propose: review', md)
+        self.assertIn('Partial Birth Person', md)
+        # The proposal must cite only the matched vital (birth), not the
+        # full needed set (birth, death, marriage).
+        self.assertIn('accepted birth claim(s)', md)
 
     def test_search_log_only_marks_old_nil_searches_stale(self) -> None:
         report.run_report(self.archive_root, {}, full=True)
