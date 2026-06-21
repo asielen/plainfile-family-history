@@ -229,6 +229,33 @@ def _other_named_persons(
     return rows
 
 
+def _citation_named_persons(
+    conn: sqlite3.Connection, copied_paths: set[str], pid: str
+) -> list[sqlite3.Row]:
+    """
+    Return living/unknown persons (other than pid) named by a bare `[P-id]`
+    citation token anywhere in the packet's copied .md files (profile,
+    research note, included source records) — catches a living person
+    mentioned only in prose, with no `claim_persons`/`source_people` row,
+    that `_other_named_persons` would otherwise miss.
+    """
+    if not copied_paths:
+        return []
+    placeholders = ','.join('?' * len(copied_paths))
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT p.id, p.name
+        FROM persons p
+        WHERE p.id != ? AND p.living IN ('true', 'unknown') AND p.id IN (
+            SELECT token FROM citations WHERE kind = 'P' AND path IN ({placeholders})
+        )
+        ORDER BY p.name
+        """,
+        [pid] + list(copied_paths),
+    ).fetchall()
+    return rows
+
+
 def _resolve_source_files(
     conn: sqlite3.Connection,
     archive_root: Path,
@@ -527,7 +554,8 @@ def run_packet(
     Build a packet for pid under out_dir. Returns a result dict:
 
       {'status': 'ok'|'dry-run'|'not-found'|'not-curated'|'living-subject'|
-       'no-index'|'no-photoindex'|'output-exists'|'write-failed'|'bad-config',
+       'no-index'|'no-photoindex'|'output-exists'|'write-failed'|'bad-config'|
+       'bad-output-path',
        'packet_dir': Path|None, 'zip_path': Path|None,
        'messages': [str, ...]}
 
@@ -540,8 +568,30 @@ def run_packet(
     treated as {}, which would fall back external photos/documents roots to
     directories under the archive root and copy from (or report missing) the
     wrong files.
+
+    out_dir is refused if it falls inside a record tree (sources/, people/,
+    notes/): a packet's copied .md records there would be picked up by a
+    later `fha index` as if they were archive truth (TOOLING §15 "tools
+    never import tools" applies just as much to one tool's output becoming
+    another's input by accident).
     """
     messages: list[str] = []
+    try:
+        resolved_out = out_dir.resolve()
+        out_relative = resolved_out.relative_to(archive_root.resolve())
+    except ValueError:
+        out_relative = None
+    if out_relative is not None and out_relative.parts and out_relative.parts[0] in (
+        'sources', 'people', 'notes',
+    ):
+        return {
+            'status': 'bad-output-path', 'packet_dir': None, 'zip_path': None,
+            'messages': [
+                f'ERROR: --out {out_dir} is inside {out_relative.parts[0]}/ — '
+                'packet output must not be written into a record tree that '
+                '`fha index` scans.'
+            ],
+        }
     try:
         fha_config = load_fha_yaml(archive_root, strict=True)
     except FhaConfigError as e:
@@ -589,7 +639,27 @@ def run_packet(
             conn, source_ids, include_restricted=include_restricted, include_dna=include_dna,
         )
         included_ids = {r['id'] for r in included_rows}
-        other_named = _other_named_persons(conn, list(included_ids), pid)
+
+        research_row = None
+        if include_research:
+            research_row = conn.execute(
+                "SELECT path FROM person_files WHERE person_id = ? AND kind = 'research'",
+                (pid,),
+            ).fetchone()
+
+        # Caution list combines two sources: people named via claim_persons/
+        # source_people (structured data), and people named only by a bare
+        # [P-id] citation token in the copied prose itself (profile, research
+        # note, included source records) — a living person mentioned in a
+        # paragraph with no claim row would otherwise go unflagged.
+        copied_md_paths = {person['path']} | {r['path'] for r in included_rows}
+        if research_row is not None:
+            copied_md_paths.add(research_row['path'])
+        other_named_by_id = {r['id']: r for r in _other_named_persons(conn, list(included_ids), pid)}
+        for r in _citation_named_persons(conn, copied_md_paths, pid):
+            other_named_by_id.setdefault(r['id'], r)
+        other_named = sorted(other_named_by_id.values(), key=lambda r: r['name'])
+
         files_by_source, missing_assets = _resolve_source_files(
             conn, archive_root, fha_config, list(included_ids)
         )
@@ -632,19 +702,19 @@ def run_packet(
                 zip_path.unlink()
             packet_dir.mkdir(parents=True)
 
-            # profile/
+            # profile/ — the person's curated .md is the packet's central
+            # record; a missing/failed copy is a structural failure (not the
+            # per-file warning path used for optional assets), so it raises
+            # into the cleanup handler below rather than shipping a packet
+            # without it.
             profile_dir = packet_dir / 'profile'
             profile_dir.mkdir()
-            if profile_path.exists():
-                _copy_into(profile_path, profile_dir, messages=messages)
-            else:
-                messages.append(f'WARNING: profile file not found on disk: {profile_path}')
+            if not profile_path.exists():
+                raise OSError(f'required profile file not found on disk: {profile_path}')
+            if _copy_into(profile_path, profile_dir, messages=messages) is None:
+                raise OSError(f'could not copy required profile file: {profile_path}')
             research_included = False
             if include_research:
-                research_row = conn.execute(
-                    "SELECT path FROM person_files WHERE person_id = ? AND kind = 'research'",
-                    (pid,),
-                ).fetchone()
                 research_path = archive_root / research_row['path'] if research_row else None
                 if research_path is not None and research_path.exists():
                     research_included = _copy_into(research_path, profile_dir, messages=messages) is not None
@@ -794,6 +864,8 @@ def _cmd_packet(args: argparse.Namespace) -> int:
 
     status = result['status']
     if status == 'no-index':
+        return EXIT_FAILURE
+    if status == 'bad-output-path':
         return EXIT_FAILURE
     if status == 'bad-config':
         return EXIT_FAILURE

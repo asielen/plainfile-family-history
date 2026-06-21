@@ -409,6 +409,50 @@ class PacketTests(unittest.TestCase):
         self.assertIn('Missing files', readme)
         self.assertIn('ghost.jpg', readme)
 
+    def test_missing_profile_file_is_structural_failure(self):
+        profile_path = self._seed_person()
+        profile_path.unlink()
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+
+        self.assertEqual(result['status'], 'write-failed')
+        self.assertTrue(any('profile' in m for m in result['messages']))
+        self.assertFalse(any(self.out_dir.glob('packet_*')))
+
+    def test_living_person_named_only_in_prose_gets_caution(self):
+        profile_path = self._seed_person()
+        self._seed_person(pid='p-bbbbbbbbbb', name='Prose Only Living', living='true', surname='Other')
+        # No claim_persons/source_people row for p-bbbbbbbbbb — only a bare
+        # [P-id] token in the copied profile prose.
+        profile_path.write_text(
+            '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
+            '# Test Person\n\nRaised alongside [P-bbbbbbbbbb].\n',
+            encoding='utf-8',
+        )
+        self.conn.execute(
+            "INSERT INTO citations(token, kind, path, line) VALUES "
+            "('p-bbbbbbbbbb', 'P', ?, 4)",
+            (profile_path.relative_to(self.archive_root).as_posix(),),
+        )
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir, no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('CAUTION', readme)
+        self.assertIn('Prose Only Living', readme)
+
+    def test_out_dir_inside_record_tree_refused(self):
+        self._seed_person()
+        self._commit_fresh()
+
+        for subdir in ('sources', 'people', 'notes'):
+            result = packet.run_packet(
+                self.archive_root, 'p-aaaaaaaaaa', self.archive_root / subdir / 'packets',
+                no_photos=True,
+            )
+            self.assertEqual(result['status'], 'bad-output-path')
+
     def test_include_research_warns_when_no_research_file_exists(self):
         self._seed_person()
         self._commit_fresh()
