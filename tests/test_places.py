@@ -30,6 +30,18 @@ def _add_place(conn, pid, name, within=None, lat=None, lon=None):
     )
 
 
+class _FakeConn:
+    """Stub for sqlite3.Connection.execute(...) returning fixed dict rows,
+    used to simulate a row type that real SQLite TEXT-affinity columns
+    wouldn't actually produce (see test_non_string_within_reports_finding_not_crash)."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def execute(self, *_args, **_kwargs):
+        return self._rows
+
+
 def _add_alt_name(conn, pid, alt_name):
     conn.execute('INSERT INTO place_names(place_id, alt_name) VALUES (?,?)', (pid, alt_name))
 
@@ -114,6 +126,18 @@ class PlacesLintTests(unittest.TestCase):
         result = places.run_lint(self.archive_root)
         codes = [f.code for f in result['findings']]
         self.assertIn('PL004', codes)
+
+    def test_non_string_within_reports_finding_not_crash(self) -> None:
+        # places.yaml's `within:` is meant to hold an L-id string, but a
+        # non-string value reaching the `places` table (e.g. from a future
+        # schema/type drift) must not crash normalize_id's .strip() call.
+        # SQLite's TEXT column affinity coerces a plain int on INSERT, so
+        # the type drift is reproduced directly against the row map rather
+        # than through a real INSERT.
+        rows, findings = places._within_map(_FakeConn([{'id': 'l-aaaaaaaaaa', 'within': 123}]))
+        self.assertEqual(rows, {'l-aaaaaaaaaa': None})
+        codes = [f.code for f in findings]
+        self.assertIn('PL006', codes)
 
     def test_within_on_settlement_flagged(self) -> None:
         # Hartley home (micro-place) is within Fairview (settlement).
@@ -255,6 +279,25 @@ class PlacesCandidatesTests(unittest.TestCase):
     def test_no_photos_db_skips_gps_clusters_without_error(self) -> None:
         _add_claim(self.conn, 'c-1111111111', place_text='Topeka, Kansas')
         self.conn.commit()
+        result = places.run_candidates(self.archive_root, {}, threshold=3)
+        self.assertEqual(result['gps_clusters'], [])
+
+    def test_reconcile_missing_photos_excluded_from_gps_clusters(self) -> None:
+        # Photos that `fha photoindex reconcile` has flagged vanished (path
+        # rewritten to 'MISSING:<path>') must not still count toward a new
+        # GPS cluster — there's no on-disk photo left to process.
+        self.conn.commit()
+        from photoindex import _DDL as _PHOTO_DDL
+        cache = self.archive_root / '.cache'
+        pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
+        pconn.executescript(_PHOTO_DDL)
+        for i in range(3):
+            pconn.execute(
+                'INSERT INTO photos(path, group_id, is_primary, gps_lat, gps_lon) VALUES (?,?,1,?,?)',
+                (f'MISSING:photos/p{i}.jpg', f'g{i}', 39.0 + i * 0.00001, -95.0 + i * 0.00001),
+            )
+        pconn.commit()
+        pconn.close()
         result = places.run_candidates(self.archive_root, {}, threshold=3)
         self.assertEqual(result['gps_clusters'], [])
 

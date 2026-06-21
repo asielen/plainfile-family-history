@@ -30,8 +30,8 @@ spread. A second, independent detector clusters geotagged photos
 CODE MAP
 --------
   Lint
-    _lint_orphan_place_ids, _lint_duplicate_names, _lint_dangling_within,
-    _lint_cyclic_within, _lint_within_on_settlement
+    _within_map, _lint_orphan_place_ids, _lint_duplicate_names,
+    _lint_dangling_within, _lint_cyclic_within, _lint_within_on_settlement
     run_lint
 
   Candidates
@@ -120,8 +120,30 @@ def _lint_duplicate_names(conn: sqlite3.Connection) -> list[Finding]:
     return findings
 
 
-def _lint_dangling_within(conn: sqlite3.Connection) -> list[Finding]:
-    rows = {row['id']: normalize_id(row['within'] or '') for row in conn.execute('SELECT id, within FROM places')}
+def _within_map(conn: sqlite3.Connection) -> tuple[dict[str, str | None], list[Finding]]:
+    """
+    Build {place_id: normalized within: target or None}, flagging (PL006)
+    any `within:` value that isn't a string (e.g. a YAML scalar like `within:
+    123`) instead of letting normalize_id's `.strip()` raise.
+    """
+    rows: dict[str, str | None] = {}
+    findings: list[Finding] = []
+    for row in conn.execute('SELECT id, within FROM places'):
+        raw = row['within']
+        if raw is None or raw == '':
+            rows[row['id']] = None
+        elif isinstance(raw, str):
+            rows[row['id']] = normalize_id(raw) or None
+        else:
+            findings.append(Finding(
+                'E', 'PL006', 'places/places.yaml',
+                f'{fmt_id_display(row["id"])} has a non-string within: value ({raw!r}) — within: must be an L-id string',
+            ))
+            rows[row['id']] = None
+    return rows, findings
+
+
+def _lint_dangling_within(rows: dict[str, str | None]) -> list[Finding]:
     known = set(rows.keys())
     findings = []
     for pid, target in sorted(rows.items()):
@@ -133,8 +155,7 @@ def _lint_dangling_within(conn: sqlite3.Connection) -> list[Finding]:
     return findings
 
 
-def _lint_cyclic_within(conn: sqlite3.Connection) -> list[Finding]:
-    rows = {row['id']: normalize_id(row['within'] or '') or None for row in conn.execute('SELECT id, within FROM places')}
+def _lint_cyclic_within(rows: dict[str, str | None]) -> list[Finding]:
     findings = []
     reported: set[frozenset[str]] = set()
     for start in sorted(rows.keys()):
@@ -159,7 +180,7 @@ def _lint_cyclic_within(conn: sqlite3.Connection) -> list[Finding]:
     return findings
 
 
-def _lint_within_on_settlement(conn: sqlite3.Connection) -> list[Finding]:
+def _lint_within_on_settlement(rows: dict[str, str | None]) -> list[Finding]:
     """
     A place that is itself the target of another place's `within:` link has
     been established as a containing settlement (something physically inside
@@ -167,7 +188,6 @@ def _lint_within_on_settlement(conn: sqlite3.Connection) -> list[Finding]:
     expressed via `within:` (only via dated `history:` strings), so that same
     place carrying its own outward `within:` link is invalid.
     """
-    rows = {row['id']: normalize_id(row['within'] or '') or None for row in conn.execute('SELECT id, within FROM places')}
     targets = {target for target in rows.values() if target}
     findings = []
     for pid, target in sorted(rows.items()):
@@ -191,9 +211,11 @@ def run_lint(archive_root: Path) -> dict:
         findings: list[Finding] = []
         findings += _lint_orphan_place_ids(conn)
         findings += _lint_duplicate_names(conn)
-        findings += _lint_dangling_within(conn)
-        findings += _lint_cyclic_within(conn)
-        findings += _lint_within_on_settlement(conn)
+        rows, within_findings = _within_map(conn)
+        findings += within_findings
+        findings += _lint_dangling_within(rows)
+        findings += _lint_cyclic_within(rows)
+        findings += _lint_within_on_settlement(rows)
     except sqlite3.OperationalError:
         print(
             'ERROR: .cache/index.sqlite is unreadable or has an incompatible schema. '
@@ -320,7 +342,7 @@ def _gps_clusters(
         by_group: dict[str, tuple[str, float, float]] = {}
         for row in conn.execute(
             'SELECT path, group_id, gps_lat, gps_lon FROM photos '
-            'WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL '
+            "WHERE gps_lat IS NOT NULL AND gps_lon IS NOT NULL AND path NOT LIKE 'MISSING:%' "
             'ORDER BY group_id, is_primary DESC'
         ):
             by_group.setdefault(row['group_id'], (row['path'], row['gps_lat'], row['gps_lon']))
