@@ -787,8 +787,16 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path) -> None:
 def _index_citations(conn: sqlite3.Connection, archive_root: Path) -> None:
     """Scan all .md files for [ID] citation tokens."""
     from _lib import TOKEN_RE
+    # archive_root/out/ is fha packet's default, gitignored output directory
+    # (TOOLING §8) — disposable export copies, not archive truth, so they
+    # must not become citation sites in the index. Only the root-level out/
+    # is skipped — a record tree's own 'out' subdirectory (sources/out/, …)
+    # is real archive content and must still be scanned.
+    packet_out_root = archive_root / 'out'
     for path in archive_root.rglob('*.md'):
         if '.cache' in path.parts:
+            continue
+        if path.is_relative_to(packet_out_root):
             continue
         try:
             lines = path.read_text(encoding='utf-8', errors='ignore').splitlines()

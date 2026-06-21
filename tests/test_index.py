@@ -215,6 +215,36 @@ class IndexNotesResearchLogTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM search_log').fetchone()[0], 0)
 
 
+class IndexCitationsPacketOutputTests(unittest.TestCase):
+    """fha packet's default out/ dir must not become a citation site, but a
+    record tree's own legitimately-named 'out' subdirectory still must."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.archive_root = Path(self._tmp.name)
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(index._DDL)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_root_level_out_dir_skipped(self) -> None:
+        _write(self.archive_root / 'out' / 'packet_x' / 'profile.md', '[P-aaaaaaaaaa]\n')
+
+        index._index_citations(self.conn, self.archive_root)
+
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM citations').fetchone()[0], 0)
+
+    def test_nested_out_directory_elsewhere_still_scanned(self) -> None:
+        _write(self.archive_root / 'sources' / 'out' / 'note.md', '[P-aaaaaaaaaa]\n')
+
+        index._index_citations(self.conn, self.archive_root)
+
+        rows = self.conn.execute('SELECT token FROM citations').fetchall()
+        self.assertEqual([r['token'] for r in rows], ['p-aaaaaaaaaa'])
+
+
 class FullRebuildClearsStaleRowsTests(unittest.TestCase):
     """A full rebuild must not leave stale hypotheses/search_log rows behind
     once an entry is removed from disk — _drop_tables already lists both
