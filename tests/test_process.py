@@ -434,6 +434,57 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rec['meta']['provenance'], 'found in a shoebox')
         self.assertIn('A custom citation string.', record.read_text(encoding='utf-8'))
 
+    def test_sidecar_unknown_source_type_hint_refused(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'mistyped.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'mistyped.notes.md'
+        sidecar.write_text(
+            '---\nsource_type: cnsus\n---\nbody notes\n', encoding='utf-8',
+        )
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())  # not consumed on failure
+        self.assertTrue(asset.exists())  # not renamed
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_proof_argument_routed_to_proofs_dir_with_authored_class(self) -> None:
+        argument = self.archive / 'documents' / 'census' / 'birth-order.txt'
+        argument.write_text('x', encoding='utf-8')
+        rc = self._run([str(argument), '--type', 'proof-argument'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'proofs').glob('*_S-*.md'))
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['source_class'], 'authored')
+
+    def test_path_to_alias_normalizes_dotdot_external_root(self) -> None:
+        # A relative external root like 'documents: ../family-docs' resolves to a
+        # path containing '..' segments; path_to_alias must resolve it before
+        # comparing against an already-resolved file path, or every file under
+        # it falls back to a non-portable absolute alias.
+        external_root = self.tmp / 'family-docs'
+        external_root.mkdir()
+        cfg = {'roots': {'documents': '../family-docs'}}
+        doc = external_root / 'sub' / 'deed.pdf'
+        doc.parent.mkdir(parents=True)
+        doc.write_text('x', encoding='utf-8')
+        alias = process.path_to_alias(doc.resolve(), 'documents', cfg, self.archive)
+        self.assertEqual(alias, 'documents/sub/deed.pdf')
+
+    def test_more_document_record_read_failure_is_a_tool_failure(self) -> None:
+        page1 = self.archive / 'documents' / 'census' / 'unreadable1.txt'
+        page1.write_text('p1', encoding='utf-8')
+        self.assertEqual(self._run([str(page1), '--type', 'census']), EXIT_CLEAN)
+        renamed1 = next((self.archive / 'documents' / 'census').glob('*_S-*.txt'))
+        record = next((self.archive / 'sources' / 'census').glob('*_S-*.md'))
+        record.unlink()
+        record.mkdir()  # read_text() on a directory raises IsADirectoryError (OSError)
+
+        page2 = self.archive / 'documents' / 'census' / 'unreadable2.txt'
+        page2.write_text('p2', encoding='utf-8')
+        rc = self._run([str(renamed1), '--more', str(page2), 'page-2'])
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertTrue(page2.exists())  # not renamed
+
     def test_append_file_entry_handles_inline_files_value(self) -> None:
         record_text = '---\nid: S-aaaaaaaaaa\nfiles: []\ncreated: 2026-01-01\n---\n\nbody\n'
         entry = ['  - file: documents/census/page2.txt', '    role: page-2']

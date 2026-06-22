@@ -342,7 +342,9 @@ def _scaffold_text(
     ]
     if source_date:
         lines.append(f'source_date: {_yaml_inline(source_date)}')
-    lines.append('source_class: original')
+    # Proof-argument sources are authored conclusions, not captured originals
+    # (SPEC §14: source_class: authored, filed under sources/proofs/).
+    lines.append(f'source_class: {"authored" if source_type == "proof-argument" else "original"}')
     lines.append(f'repository: {_yaml_inline(repository) if repository else "unknown"}')
     lines.append('citation: >')
     citation_text = citation if citation else title
@@ -593,8 +595,12 @@ def process_document(
             final_title = str(sidecar_meta['title'])
         if source_type == _DEFAULT_DOCUMENT_TYPE and sidecar_meta.get('source_type'):
             hinted = str(sidecar_meta['source_type'])
-            if hinted in SOURCE_TYPES:
-                source_type = hinted
+            if hinted not in SOURCE_TYPES:
+                raise ProcessError(
+                    f'{sidecar.name} hints unknown source_type {hinted!r}; fix the '
+                    'sidecar (or pass --type explicitly) before processing.'
+                )
+            source_type = hinted
 
     # DNA sources always carry restricted: true and must live under
     # documents/dna/ (SPEC §8.5.5, lint E017) — refuse before scaffolding a
@@ -613,7 +619,9 @@ def process_document(
     new_name = f'{final_slug}_{sid}{ext}'
     new_path = file_path.with_name(new_name)
 
-    record_dir = archive_root / 'sources' / source_type
+    # SPEC §14: proof-argument sources live under sources/proofs/, not a
+    # sources/proof-argument/ directory matching the source_type literally.
+    record_dir = archive_root / 'sources' / ('proofs' if source_type == 'proof-argument' else source_type)
     record_path = record_dir / f'{final_slug}_{sid}.md'
     file_alias = path_to_alias(new_path, 'documents', fha_config, archive_root)
 
@@ -866,7 +874,12 @@ def attach_more(
         # Read the record before writing the keyword: if the read fails
         # (permission issue, transient I/O error, non-UTF-8 record), nothing
         # has been written to the photo yet, so there's nothing to roll back.
-        old_text = record_path.read_text(encoding='utf-8')
+        try:
+            old_text = record_path.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError) as e:
+            print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}',
+                  file=sys.stderr)
+            return EXIT_FAILURE
         err = _run_exiftool_embed_source(more_file, sid)
         if err is not None:
             print(f'ERROR: exiftool could not embed SOURCE keyword in {more_file.name}: {err}',
@@ -926,7 +939,11 @@ def attach_more(
         return EXIT_CLEAN
 
     undo: list = []
-    old_text = record_path.read_text(encoding='utf-8')
+    try:
+        old_text = record_path.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as e:
+        print(f'ERROR: could not read {_rel(record_path, archive_root)}: {e}', file=sys.stderr)
+        return EXIT_FAILURE
     try:
         more_file.rename(new_path)
         undo.append(lambda: new_path.rename(more_file))

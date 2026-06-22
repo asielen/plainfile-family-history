@@ -284,8 +284,13 @@ def path_to_alias(path: str | Path, alias: str, fha_config: dict, archive_root: 
     Falls back to the absolute path's forward-slash form if `path` isn't under the
     alias's resolved root (e.g. an absolute root configured outside archive_root).
     """
-    root = resolve_path(alias, fha_config, archive_root)
-    path = Path(path)
+    # Resolve both sides: a relative root containing '..' (an external asset
+    # root like 'documents: ../family-docs') stays lexically distinct from a
+    # caller's already-resolved file path even though they name the same
+    # directory, which would otherwise send every file under it to the
+    # non-portable absolute-path fallback below.
+    root = resolve_path(alias, fha_config, archive_root).resolve()
+    path = Path(path).resolve()
     try:
         rel = path.relative_to(root)
     except ValueError:
