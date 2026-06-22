@@ -728,6 +728,23 @@ class ProcessTestCase(unittest.TestCase):
         rec = read_record(record)
         self.assertTrue(rec['meta']['restricted'])
 
+    def test_sidecar_people_hint_surfaces_in_notes(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'people-hint.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'people-hint.notes.md'
+        sidecar.write_text(
+            '---\ntitle: Hint Test\npeople:\n  - Calvin Hartley\n  - Edith Hartley\n'
+            '---\nPage text.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources').rglob('*_S-*.md'))
+        text = record.read_text(encoding='utf-8')
+        self.assertIn('Calvin Hartley', text)
+        self.assertIn('Edith Hartley', text)
+        self.assertIn('unreconciled', text)
+
     def test_slugify(self) -> None:
         self.assertEqual(process._slugify('Fairview, Kansas! 1880'), 'fairview-kansas-1880')
         self.assertEqual(process._slugify('   '), 'source')

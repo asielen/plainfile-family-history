@@ -611,6 +611,9 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     The stub's optional frontmatter seeds record fields (title/source_type/
     repository hints); its prose body flows into the record's `## Notes`, since
     those notes are the starting point a reviewer reads (never accepted facts).
+    A `people:` hint (names the captured page showed, not yet resolved to
+    P-ids) has nowhere else to land in a §14 record, so it is folded into that
+    same prose rather than silently dropped when the sidecar is consumed.
 
     Raises ProcessError on malformed frontmatter rather than silently dropping
     it: the sidecar is consumed (deleted) on a successful run, so any citation/
@@ -624,6 +627,10 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
     meta = rec.get('meta') or {}
     # Strip the frontmatter off the body; keep the prose the human wrote.
     body = (rec.get('body') or '').strip()
+    names = [str(n) for n in (meta.get('people') or []) if str(n).strip()]
+    if names:
+        hint = 'Captured people mentioned on source page (unreconciled): ' + ', '.join(names)
+        body = f'{body}\n\n{hint}' if body else hint
     return meta, body
 
 
