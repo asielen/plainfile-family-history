@@ -33,9 +33,9 @@ marriage details of any family they belong to are withheld. Structural links
 lifts the redaction for a fully private export.
 
 GEDCOM is public/export-facing unless the human opts into a future private mode,
-so restricted and DNA sources are not eligible fact sources. Their relationship
-edges can still preserve structure because `relationships` is a cache of the
-tree shape, but their vital and marriage event details are withheld.
+so restricted and DNA sources are not eligible fact sources. Relationship edges
+backed exclusively by restricted/DNA sources are excluded alongside their vital
+and marriage event details.
 
 SOURCES
 -------
@@ -214,9 +214,9 @@ class _RelIndex:
         for row in rows:
             rel = row['rel']
             a, b = row['person_id'], row['other_id']
-            self._all.setdefault(a, set()).add(b)
             if rel in self._by_rel:
                 self._by_rel[rel].setdefault(a, set()).add(b)
+                self._all.setdefault(a, set()).add(b)
 
     def neighbors(self, pid: str, rel: str) -> set[str]:
         return self._by_rel.get(rel, {}).get(pid, set())
@@ -278,8 +278,10 @@ def _build_families(
 
     # Children → their parent set (restricted to included persons).
     for child in sorted(included):
-        parents = {p for p in rel.neighbors(child, 'parent') if p in included}
+        parents = sorted(p for p in rel.neighbors(child, 'parent') if p in included)
         if parents:
+            if len(parents) > 2:
+                parents = parents[:2]
             key = frozenset(parents)
             fam_children.setdefault(key, set()).add(child)
 
@@ -317,11 +319,11 @@ def _load_persons(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
 def _public_source_filter_sql() -> str:
     """SQL predicate for public/export-safe sources.
 
-    SPEC §21 excludes restricted sources from public output, and DNA is excluded
-    even more strictly. GEDCOM's current CLI has no include-restricted flag, so
+    SPEC §21 excludes restricted, DNA, and publication_ok=false sources from
+    public output. GEDCOM's current CLI has no include-restricted flag, so
     public-safe selection is the only supported path.
     """
-    return "(COALESCE(s.restricted, 0) = 0 AND COALESCE(s.source_type, '') != 'dna')"
+    return "(COALESCE(s.restricted, 0) = 0 AND COALESCE(s.source_type, '') != 'dna' AND COALESCE(s.publication_ok, 1) != 0)"
 
 
 def _load_vitals(conn: sqlite3.Connection, pids: set[str]) -> dict[tuple[str, str], sqlite3.Row]:
@@ -592,7 +594,10 @@ def run_gedcom(
         # One load of the relationship graph serves both traversal and family
         # building (it was previously read twice for the non-`--all` path).
         rel = _RelIndex(conn.execute(
-            'SELECT person_id, rel, other_id FROM relationships'
+            f"""SELECT r.person_id, r.rel, r.other_id FROM relationships r
+               LEFT JOIN claims c ON c.id = r.claim_id
+               LEFT JOIN sources s ON s.id = c.source_id
+               WHERE r.claim_id IS NULL OR {_public_source_filter_sql()}"""
         ).fetchall())
 
         if all_persons:

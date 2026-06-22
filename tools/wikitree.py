@@ -95,6 +95,8 @@ _TEMPLATES_FILE = Path(__file__).parent / 'wikitree_templates.yaml'
 
 _PLACEHOLDER_RE = re.compile(r'^\s*\*?\(none yet\)\*?\s*$', re.I)
 
+_TODO_MARKER_RE = re.compile(r'\(TODO:', re.I)
+
 
 # ── Template hooks ──────────────────────────────────────────────────────────────
 
@@ -177,8 +179,8 @@ def _source_reference(archive_root: Path, source_row: sqlite3.Row) -> str:
 
 # ── Person links & spacetime ────────────────────────────────────────────────────
 
-def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str | None, list[str], str | None]:
-    """Return (name, name-forms, wikitree_id) for a P-id, memoized per run.
+def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str | None, list[str], str | None, str | None]:
+    """Return (name, name-forms, wikitree_id, living) for a P-id, memoized per run.
 
     name-forms are the strings that, if they already appear in the prose right
     before the cross-ref token, identify a "Name [P-id]" pattern: the full name,
@@ -187,8 +189,9 @@ def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str |
     """
     if pid in cache:
         return cache[pid]
-    row = conn.execute('SELECT name FROM persons WHERE id = ?', (pid,)).fetchone()
+    row = conn.execute('SELECT name, living FROM persons WHERE id = ?', (pid,)).fetchone()
     name = row['name'] if row else None
+    living = row['living'] if row else None
     wt = conn.execute(
         "SELECT ext_id FROM person_external WHERE person_id = ? AND system = 'wikitree'",
         (pid,),
@@ -207,7 +210,7 @@ def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str |
                 forms.append(v['variant'])
     # Deduplicate, longest first so 'Margaret A. Cole' beats 'Margaret'.
     forms = sorted({f for f in forms if f}, key=len, reverse=True)
-    result = (name, forms, wikitree_id)
+    result = (name, forms, wikitree_id, living)
     cache[pid] = result
     return result
 
@@ -238,6 +241,22 @@ def _fold_preceding_name(rendered: str, forms: list[str], wikitree_id: str | Non
                 head = tail[:start]
                 return f'{head}[[{wikitree_id}|{tail[start:]}]]{trailing_ws}'
             return rendered  # name already present; drop the token only
+    return None
+
+
+def _redact_living_name(rendered: str, forms: list[str]) -> str | None:
+    """If `rendered` ends with one of the person's name forms, strip it for
+    privacy redaction. Returns the stripped text, or None if no match."""
+    tail = rendered.rstrip()
+    trailing_ws = rendered[len(tail):]
+    low = tail.lower()
+    for form in forms:
+        fl = form.lower()
+        if low.endswith(fl):
+            start = len(tail) - len(form)
+            if start > 0 and (tail[start - 1].isalnum() or tail[start - 1] == '_'):
+                continue
+            return tail[:start].rstrip() + trailing_ws
     return None
 
 
@@ -289,12 +308,13 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
 
 
 def _restricted_source_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3.Row]:
-    """Restricted/DNA source tokens cited in the profile body.
+    """Non-publishable source tokens cited in the profile body.
 
-    SPEC §21 bars restricted and DNA sources from public output. The WikiTree
-    exporter works from curated prose, so deleting just the `<ref>` would leave
-    an unsupported public fact behind. Failing closed gives the human a precise
-    cleanup list and avoids silent leakage.
+    SPEC §21 bars restricted, DNA, and publication_ok=false sources from
+    public output. The WikiTree exporter works from curated prose, so
+    deleting just the `<ref>` would leave an unsupported public fact behind.
+    Failing closed gives the human a precise cleanup list and avoids silent
+    leakage.
     """
     source_ids = sorted({
         normalize_id(t) for t in TOKEN_RE.findall(text)
@@ -305,10 +325,10 @@ def _restricted_source_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3
     placeholders = ','.join('?' * len(source_ids))
     return conn.execute(
         f"""
-        SELECT id, title, source_type, restricted
+        SELECT id, title, source_type, restricted, publication_ok
         FROM sources
         WHERE id IN ({placeholders})
-          AND (COALESCE(restricted, 0) != 0 OR COALESCE(source_type, '') = 'dna')
+          AND (COALESCE(restricted, 0) != 0 OR COALESCE(source_type, '') = 'dna' OR COALESCE(publication_ok, 1) = 0)
         ORDER BY id
         """,
         source_ids,
@@ -352,12 +372,18 @@ def _render_tokens(
                 used_sources.append(pid)
             out.append(f'<ref name="{fmt_id_display(pid)}"/>')
         elif kind == 'P':
-            name, forms, wikitree_id = _person_info(conn, pid, person_cache)
-            folded = _fold_preceding_name(''.join(out), forms, wikitree_id) if forms else None
-            if folded is not None:
-                out = [folded]
+            name, forms, wikitree_id, living = _person_info(conn, pid, person_cache)
+            if living in ('true', 'unknown'):
+                redacted = _redact_living_name(''.join(out), forms) if forms else None
+                if redacted is not None:
+                    out = [redacted]
+                out.append('[living person]')
             else:
-                out.append(_person_token_form(pid, name, wikitree_id))
+                folded = _fold_preceding_name(''.join(out), forms, wikitree_id) if forms else None
+                if folded is not None:
+                    out = [folded]
+                else:
+                    out.append(_person_token_form(pid, name, wikitree_id))
         elif kind == 'L':
             row = conn.execute('SELECT name FROM places WHERE id = ?', (pid,)).fetchone()
             out.append(row['name'] if row and row['name'] else fmt_id_display(pid))
@@ -447,8 +473,13 @@ def _render_templates(conn: sqlite3.Connection, pid: str, templates: dict) -> li
     rows = conn.execute(
         """
         SELECT c.type, c.subtype, c.date_edtf, c.place_id, c.place_text, c.value
-        FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id
+        FROM claim_persons cp
+        JOIN claims c ON cp.claim_id = c.id
+        JOIN sources s ON s.id = c.source_id
         WHERE cp.person_id = ? AND c.status = 'accepted'
+          AND COALESCE(s.restricted, 0) = 0
+          AND COALESCE(s.source_type, '') != 'dna'
+          AND COALESCE(s.publication_ok, 1) != 0
         """,
         (pid,),
     ).fetchall()
@@ -493,6 +524,9 @@ def run_wikitree(archive_root: Path, pid: str) -> dict:
         ).fetchone()
         if person is None:
             return {'status': 'not-found', 'text': None, 'messages': []}
+        if person['status'] == 'merged':
+            return {'status': 'merged', 'text': None,
+                    'messages': [f'{fmt_id_display(pid)} is a merged record — export the active identity instead.']}
         if person['tier'] != 'curated':
             return {'status': 'not-curated', 'text': None,
                     'messages': [f'{fmt_id_display(pid)} is not curated — wikitree exports curated profiles only.']}
@@ -524,6 +558,8 @@ def run_wikitree(archive_root: Path, pid: str) -> dict:
         body_lines: list[str] = []
         for raw in body.splitlines():
             if _PLACEHOLDER_RE.match(raw):
+                continue
+            if _TODO_MARKER_RE.search(raw):
                 continue
             if raw.lstrip().startswith('#'):
                 converted = _convert_heading(raw)
@@ -610,6 +646,8 @@ def _cmd_wikitree(args: argparse.Namespace) -> int:
     if status == 'bad-args':
         return EXIT_FAILURE
     if status == 'no-index':
+        return EXIT_FAILURE
+    if status == 'merged':
         return EXIT_FAILURE
     if status == 'living-subject':
         return EXIT_FAILURE

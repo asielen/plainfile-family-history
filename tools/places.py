@@ -712,6 +712,7 @@ def run_geocode(
     place_id: str | None = None,
     all_places: bool = False,
     offline: bool = False,
+    dry_run: bool = False,
     confirm=None,
 ) -> dict:
     """
@@ -728,7 +729,7 @@ def run_geocode(
     if confirm is None:
         confirm = _interactive_confirm
 
-    conn = open_index_db(archive_root, _GEOCODE_REQUIRED_TABLES)
+    conn = open_index_db(archive_root, _GEOCODE_REQUIRED_TABLES, strict=True)
     if conn is None:
         return {'status': 'failed', 'written': 0, 'messages': messages}
 
@@ -811,6 +812,13 @@ def run_geocode(
             + (f'; alt_names: {alt_names}' if alt_names else '')
             + '\n  Write this to places.yaml?'
         )
+        if dry_run:
+            messages.append(
+                f'{fmt_id_display(pid)}: would write coords [{geo.lat}, {geo.lon}]'
+                + (f'; alt_names: {alt_names}' if alt_names else '') + '.'
+            )
+            written += 1
+            continue
         if not confirm(prompt):
             messages.append(f'{fmt_id_display(pid)}: declined — not written.')
             continue
@@ -941,6 +949,7 @@ def _cmd_places_geocode(args: argparse.Namespace) -> int:
         archive_root, fha_config,
         place_id=place_id, all_places=all_places,
         offline=getattr(args, 'offline', False),
+        dry_run=getattr(args, 'dry_run', False),
     )
     for m in result['messages']:
         print(m)
@@ -980,6 +989,8 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     geocode_p.add_argument('--all', action='store_true', help='Geocode every registry place lacking coordinates.')
     geocode_p.add_argument('--offline', action='store_true',
                            help='Never download; match only against an already-cached GeoNames dump.')
+    geocode_p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                           help='Preview proposed changes without writing.')
     geocode_p.set_defaults(func=_cmd_places_geocode)
 
     p.set_defaults(func=lambda a: p.print_help() or EXIT_FAILURE)
@@ -1008,6 +1019,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     geocode_p.add_argument('--place', metavar='L-id')
     geocode_p.add_argument('--all', action='store_true')
     geocode_p.add_argument('--offline', action='store_true')
+    geocode_p.add_argument('--dry-run', action='store_true', dest='dry_run')
     geocode_p.set_defaults(func=_cmd_places_geocode)
 
     args = parser.parse_args(argv)

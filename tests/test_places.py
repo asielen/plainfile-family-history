@@ -428,6 +428,10 @@ class GeocodeRunTests(unittest.TestCase):
         self.conn.close()
         self._tmp.cleanup()
 
+    def _fresh_index(self):
+        import os
+        os.utime(self.root / '.cache' / 'index.sqlite')
+
     def _write_gazetteer(self, rows):
         gdir = self.root / '.cache' / 'geonames'
         gdir.mkdir(parents=True, exist_ok=True)
@@ -450,6 +454,7 @@ class GeocodeRunTests(unittest.TestCase):
         self.conn.commit()
         (self.root / 'places' / 'places.yaml').write_text(
             '- id: L-7c1a9f4e22\n  name: Fairview\n', encoding='utf-8')
+        self._fresh_index()
         result = places.run_geocode(self.root, {}, all_places=True, offline=True)
         self.assertEqual(result['status'], 'no-gazetteer')
         self.assertEqual(result['written'], 0)
@@ -471,6 +476,7 @@ class GeocodeRunTests(unittest.TestCase):
         original = '- id: L-7c1a9f4e22\n  name: Fairview\n  hierarchy: Fairview, Kansas, USA\n'
         yaml_path.write_text(original, encoding='utf-8')
         self._write_gazetteer([{'name': 'Fairview', 'lat': 39.8, 'lon': -95.6, 'admin1': 'KS'}])
+        self._fresh_index()
         result = places.run_geocode(self.root, {}, all_places=True, offline=True,
                                     confirm=lambda prompt: False)
         self.assertEqual(result['written'], 0)
@@ -486,6 +492,7 @@ class GeocodeRunTests(unittest.TestCase):
             '- id: L-7c1a9f4e22\n  name: Fairview\n  hierarchy: Fairview, Kansas, USA\n',
             encoding='utf-8')
         self._write_gazetteer([{'name': 'Fairview', 'lat': 39.8, 'lon': -95.6, 'admin1': 'KS'}])
+        self._fresh_index()
         result = places.run_geocode(self.root, {}, all_places=True, offline=True,
                                     confirm=lambda prompt: True)
         self.assertEqual(result['written'], 1)
