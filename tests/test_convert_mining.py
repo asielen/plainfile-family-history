@@ -154,12 +154,74 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertIsNone(convert_mining.legacy_to_edtf('', ''))
         self.assertIsNone(convert_mining.legacy_to_edtf('unknown', ''))
 
+    def test_legacy_to_edtf_unknown_digit_decade(self) -> None:
+        # TOOLING §11: legacy `??`/`?` unknown-final-digit markers -> EDTF `X`.
+        self.assertEqual(convert_mining.legacy_to_edtf('189?', ''), '189X')
+        self.assertEqual(convert_mining.legacy_to_edtf('189??', ''), '189X')
+        self.assertEqual(convert_mining.legacy_to_edtf('', '189??'), '189X')
+        self.assertEqual(convert_mining.legacy_to_edtf('189??', '189??'), '189X')
+
     def test_missing_mining_dir_errors(self) -> None:
         empty = self.archive.parent / 'empty'
         empty.mkdir()
         (empty / 'fha.yaml').write_text('roots: {}\n', encoding='utf-8')
         rc = convert_mining.run_convert(empty, load_fha_yaml(empty, strict=True), apply=False)
         self.assertEqual(rc, EXIT_ERRORS)
+
+    def test_parse_aliases_rejects_non_person_id(self) -> None:
+        with self.assertRaises(convert_mining.ConvertError):
+            convert_mining.parse_aliases('Mary Hartley = S-a1a1a1a1a1\n')
+
+    def test_alias_dedup_stub_by_pid(self) -> None:
+        # Two alias names pointing at the same unminted P-id must yield one stub.
+        aliases_path = self.archive / 'mining' / 'aliases.txt'
+        existing = aliases_path.read_text(encoding='utf-8') if aliases_path.is_file() else ''
+        aliases_path.write_text(
+            existing + '\nAunt Sue = P-deadbeef00\nSusan = P-deadbeef00\n', encoding='utf-8',
+        )
+        (self.archive / 'mining' / 'stories.txt').write_text(
+            '## Aunt Sue (S001)\nShe brought pie to every reunion.\n', encoding='utf-8',
+        )
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        stub_pids = [p.pid.lower() for p in plan.stub_people]
+        self.assertEqual(stub_pids.count('p-deadbeef00'), 1)
+
+    def test_story_only_person_added_to_source_people(self) -> None:
+        (self.archive / 'mining' / 'stories.txt').write_text(
+            '## Uncle Theo (S001)\nHe told the same joke every Thanksgiving.\n',
+            encoding='utf-8',
+        )
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        s001 = next(s for s in plan.sources if s.legacy_id == 'S001')
+        theo_pid = next(p.pid for p in plan.stub_people if p.name == 'Uncle Theo')
+        self.assertIn(theo_pid, s001.people)
+
+    def test_missing_transcript_omits_files_block(self) -> None:
+        sources_path = self.archive / 'mining' / 'sources.txt'
+        text = sources_path.read_text(encoding='utf-8')
+        sources_path.write_text(
+            text + '\n\nS999\ntitle: Ghost Interview\ninterviewee: Mary Hartley\n'
+            'transcript: does-not-exist.txt\n',
+            encoding='utf-8',
+        )
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        ghost = next(s for s in plan.sources if s.legacy_id == 'S999')
+        rendered = convert_mining._render_source_record(ghost)
+        self.assertNotIn('files:', rendered)
+
+    def test_preflight_apply_handles_external_root_conflict(self) -> None:
+        # A planned destination outside the archive root must not crash with
+        # ValueError from Path.relative_to; it should surface as a ConvertError.
+        outside = Path(self._tmp.name) / 'outside.md'
+        outside.write_text('exists', encoding='utf-8')
+        plan = convert_mining.ConversionPlan(
+            archive_root=self.archive, sources=[], stub_people=[], questions=[],
+            mapping_rows=[], warnings=[],
+        )
+        with mock.patch.object(convert_mining, '_record_path', return_value=outside):
+            plan.sources.append(mock.Mock(transcript_src=Path('/nonexistent')))
+            with self.assertRaises(convert_mining.ConvertError):
+                convert_mining._preflight_apply(plan)
 
 
 if __name__ == '__main__':

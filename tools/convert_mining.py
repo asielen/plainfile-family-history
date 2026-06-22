@@ -95,8 +95,8 @@ from _lib import (
     FhaConfigError,
     configure_utf8_stdout,
     fmt_id_display,
+    id_type_of,
     is_valid_edtf,
-    is_valid_id,
     load_fha_yaml,
     mint_ids,
     normalize_id,
@@ -176,7 +176,7 @@ def parse_aliases(text: str) -> dict[str, str]:
         name, pid = name.strip(), pid.strip()
         if not name or not pid:
             continue
-        if not is_valid_id(pid):
+        if id_type_of(pid) != 'P':
             raise ConvertError(f'alias {name!r} maps to an invalid P-id {pid!r}.')
         aliases[name.lower()] = fmt_id_display(normalize_id(pid))
     return aliases
@@ -331,13 +331,33 @@ def _year_marker(cell: str) -> tuple[str | None, bool]:
     return (m.group(1) if m else None), approx
 
 
+def _decade_marker(cell: str) -> str | None:
+    """Return the EDTF decade form (`189X`) for a legacy unknown-digit cell.
+
+    TOOLING §11: the legacy `??` (and bare `?` on a 3-digit-plus-marker cell)
+    unknown-final-digit marker maps to EDTF `X`, e.g. `189?`/`189??` → `189X`.
+    """
+    cell = (cell or '').strip()
+    m = re.match(r'^(1[5-9]\d|20\d)\?{1,2}$', cell)
+    return f'{m.group(1)}X' if m else None
+
+
 def legacy_to_edtf(earliest: str, latest: str) -> str | None:
     """Map legacy Earliest/Latest cells to a valid EDTF date, or None.
 
     Equal (or single) → one value (`1890`, `1890~` when uncertain); a real range
-    → the `min/max` interval. Anything that won't validate as EDTF is dropped
-    rather than written (lint E014 would reject a malformed date).
+    → the `min/max` interval. An unknown-final-digit cell (`189?`/`189??`) maps
+    to the EDTF decade form `189X` (TOOLING §11) when the other side agrees or
+    is blank. Anything that won't validate as EDTF is dropped rather than
+    written (lint E014 would reject a malformed date).
     """
+    e_decade = _decade_marker(earliest)
+    l_decade = _decade_marker(latest)
+    if e_decade and (not latest.strip() or e_decade == l_decade):
+        return e_decade if is_valid_edtf(e_decade) else None
+    if l_decade and not earliest.strip():
+        return l_decade if is_valid_edtf(l_decade) else None
+
     e_year, e_approx = _year_marker(earliest)
     l_year, l_approx = _year_marker(latest)
 
@@ -635,7 +655,10 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
             if s.get('source') == legacy_id:
                 token = ''
                 if s.get('person'):
-                    token = f'[{resolver.resolve(s["person"]).pid}] '
+                    story_person = resolver.resolve(s['person'])
+                    token = f'[{story_person.pid}] '
+                    if story_person.pid not in people_pids:
+                        people_pids.append(story_person.pid)
                 source_stories.append(f'{token}{s["body"]}'.strip())
 
         extraction_date = meta.get('date') or ''
@@ -669,13 +692,16 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
             refs.append(legacy_to_sid[q['source']])
         rendered_questions.append({'question': q['question'], 'refs': refs})
 
-    # People mapping + which need stubs.
+    # People mapping + which need stubs (de-duplicated by P-id: multiple alias
+    # names can point at the same unminted P-id, and that P-id gets one stub).
     stub_people: list[_Person] = []
+    stubbed_pids: set[str] = set()
     for person in resolver.all_people():
         origin = 'alias' if person.from_alias else 'minted'
         mapping_rows.append((person.name, person.pid, f'person ({origin})'))
-        if person.needs_stub:
+        if person.needs_stub and normalize_id(person.pid) not in stubbed_pids:
             stub_people.append(person)
+            stubbed_pids.add(normalize_id(person.pid))
 
     return ConversionPlan(
         archive_root=archive_root, sources=built_sources, stub_people=stub_people,
@@ -732,10 +758,15 @@ def _render_source_record(source: _Source) -> str:
         'citation: >',
         f'  {source.title} (oral-history interview; imported from legacy mining {source.legacy_id}).',
         f'people: {people_inline}',
-        'files:',
-        f'  - file: {_yaml_inline(source.doc_dest_alias)}',
-        '    role: primary',
-        f'    original_filename: {_yaml_inline(source.transcript_src.name)}',
+    ]
+    if source.transcript_src.is_file():
+        lines += [
+            'files:',
+            f'  - file: {_yaml_inline(source.doc_dest_alias)}',
+            '    role: primary',
+            f'    original_filename: {_yaml_inline(source.transcript_src.name)}',
+        ]
+    lines += [
         f'created: {_today()}',
         '---',
         '',
@@ -843,7 +874,12 @@ def _preflight_apply(plan: ConversionPlan) -> None:
     destinations += [_record_path(root, s) for s in plan.sources]
     conflicts = [p for p in destinations if p.exists()]
     if conflicts:
-        shown = ', '.join(str(p.relative_to(root)) for p in conflicts[:5])
+        def display(p: Path) -> str:
+            try:
+                return str(p.relative_to(root))
+            except ValueError:
+                return str(p)
+        shown = ', '.join(display(p) for p in conflicts[:5])
         if len(conflicts) > 5:
             shown += f', ... ({len(conflicts)} total)'
         raise ConvertError(f'planned destination already exists: {shown}')
