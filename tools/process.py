@@ -1041,6 +1041,9 @@ def process_pointer_only(
     fha_config: dict,
     sidecar: Path,
     *,
+    source_type: str | None = None,
+    slug: str | None = None,
+    title: str | None = None,
     dry_run: bool,
 ) -> int:
     """TOOLING §13b case (c): mint a source record with no asset.
@@ -1051,17 +1054,17 @@ def process_pointer_only(
     no-companion case still refuses in `_companion_for_sidecar`.
     """
     sidecar_meta, notes_body = _read_sidecar(sidecar)
-    source_type = _DEFAULT_DOCUMENT_TYPE
-    if sidecar_meta.get('source_type'):
-        hinted = str(sidecar_meta['source_type'])
-        if hinted not in SOURCE_TYPES:
-            raise ProcessError(
-                f'{sidecar.name} hints unknown source_type {hinted!r}; fix the '
-                'sidecar before processing.'
-            )
-        source_type = hinted
+    resolved_type = source_type or _DEFAULT_DOCUMENT_TYPE
+    if source_type is None and sidecar_meta.get('source_type'):
+        resolved_type = str(sidecar_meta['source_type'])
+    if resolved_type not in SOURCE_TYPES:
+        raise ProcessError(
+            f'unknown source_type {resolved_type!r} ({"--type" if source_type else sidecar.name}); '
+            'fix the sidecar (or pass --type explicitly) before processing.'
+        )
+    source_type = resolved_type
 
-    final_title = (
+    final_title = title or (
         str(sidecar_meta['title']) if sidecar_meta.get('title')
         else _slugify(sidecar.stem).replace('-', ' ')
     )
@@ -1072,8 +1075,12 @@ def process_pointer_only(
             'add at least one before processing.'
         )
 
+    # DNA sources always carry restricted: true (SPEC §8.5.5, lint E017),
+    # same as process_document — a missing asset doesn't relax that rule.
+    restricted = source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted')
+
     sid = _mint_one_source_id(archive_root)
-    final_slug = _derive_slug(None, final_title, sidecar)
+    final_slug = _derive_slug(slug, final_title, sidecar)
     record_dir = archive_root / 'sources' / _record_subdir(source_type)
     record_path = record_dir / f'{final_slug}_{sid}.md'
     if record_path.exists():
@@ -1082,7 +1089,7 @@ def process_pointer_only(
     text = _scaffold_text(
         sid, final_title, source_type, [],
         notes_body=notes_body,
-        restricted=_sidecar_flag(sidecar_meta, 'restricted'),
+        restricted=restricted,
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
         source_date=_sidecar_str(sidecar_meta, 'source_date'),
@@ -2017,7 +2024,11 @@ def _run_process(args: argparse.Namespace) -> int:
         if _is_sidecar_path(file_path):
             companion = _companion_for_sidecar(file_path)
             if companion is None:
-                return process_pointer_only(archive_root, fha_config, file_path, dry_run=dry_run)
+                return process_pointer_only(
+                    archive_root, fha_config, file_path,
+                    source_type=args.source_type, slug=args.slug, title=args.title,
+                    dry_run=dry_run,
+                )
             file_path = companion
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)

@@ -161,6 +161,11 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertEqual(convert_mining.legacy_to_edtf('', '189??'), '189X')
         self.assertEqual(convert_mining.legacy_to_edtf('189??', '189??'), '189X')
 
+    def test_legacy_to_edtf_disagreeing_decade_interval(self) -> None:
+        # Earliest/Latest land in different decades, each with an unknown
+        # final digit -> the EDTF decade interval, not a dropped date.
+        self.assertEqual(convert_mining.legacy_to_edtf('189?', '190?'), '189X/190X')
+
     def test_missing_mining_dir_errors(self) -> None:
         empty = self.archive.parent / 'empty'
         empty.mkdir()

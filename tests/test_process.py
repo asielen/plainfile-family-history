@@ -694,6 +694,40 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(sidecar.exists())
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
+    def test_sidecar_pointer_only_honors_cli_overrides(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'override.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'title: Sidecar Title\n'
+            'asset_elsewhere: true\n'
+            'external_links:\n'
+            '  - url: https://county.test/courthouse\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar), '--type', 'newspaper', '--title', 'CLI Title',
+                         '--slug', 'cli-slug'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        record = next((self.archive / 'sources' / 'newspaper').glob('cli-slug_S-*.md'))
+        rec = read_record(record)
+        self.assertEqual(rec['meta']['title'], 'CLI Title')
+
+    def test_sidecar_pointer_only_dna_always_restricted(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'dna-pointer.notes.md'
+        sidecar.write_text(
+            '---\nasset_elsewhere: true\n'
+            'external_links:\n  - url: https://dna.test/kit\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar), '--type', 'dna'])
+        self.assertEqual(rc, EXIT_CLEAN)
+
+        record = next((self.archive / 'sources' / 'dna').glob('*_S-*.md'))
+        rec = read_record(record)
+        self.assertTrue(rec['meta']['restricted'])
+
     def test_slugify(self) -> None:
         self.assertEqual(process._slugify('Fairview, Kansas! 1880'), 'fairview-kansas-1880')
         self.assertEqual(process._slugify('   '), 'source')

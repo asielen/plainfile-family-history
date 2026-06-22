@@ -348,8 +348,9 @@ def legacy_to_edtf(earliest: str, latest: str) -> str | None:
     Equal (or single) → one value (`1890`, `1890~` when uncertain); a real range
     → the `min/max` interval. An unknown-final-digit cell (`189?`/`189??`) maps
     to the EDTF decade form `189X` (TOOLING §11) when the other side agrees or
-    is blank. Anything that won't validate as EDTF is dropped rather than
-    written (lint E014 would reject a malformed date).
+    is blank, or to a `189X/190X` decade interval when the two sides disagree.
+    Anything that won't validate as EDTF is dropped rather than written (lint
+    E014 would reject a malformed date).
     """
     e_decade = _decade_marker(earliest)
     l_decade = _decade_marker(latest)
@@ -357,6 +358,9 @@ def legacy_to_edtf(earliest: str, latest: str) -> str | None:
         return e_decade if is_valid_edtf(e_decade) else None
     if l_decade and not earliest.strip():
         return l_decade if is_valid_edtf(l_decade) else None
+    if e_decade and l_decade:
+        edtf = f'{e_decade}/{l_decade}'
+        return edtf if is_valid_edtf(edtf) else None
 
     e_year, e_approx = _year_marker(earliest)
     l_year, l_approx = _year_marker(latest)
@@ -913,8 +917,11 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
 
     def copy_new(src: Path, dest: Path) -> None:
         ensure_parent(dest)
-        shutil.copy2(src, dest)
+        # Register the cleanup before copying: a copy2() that fails partway
+        # (e.g. disk full) can still leave a partially-written dest behind,
+        # and missing_ok=True makes the unlink harmless if it never got that far.
         undo.append(lambda p=dest: p.unlink(missing_ok=True))
+        shutil.copy2(src, dest)
 
     try:
         # 1) Person stubs.
