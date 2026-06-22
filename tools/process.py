@@ -345,7 +345,8 @@ def _scaffold_text(
     lines.append('source_class: original')
     lines.append(f'repository: {_yaml_inline(repository) if repository else "unknown"}')
     lines.append('citation: >')
-    lines.append(f'  {citation if citation else title}')
+    citation_text = citation if citation else title
+    lines += [f'  {line}' for line in (citation_text.splitlines() or [''])]
     lines.append('people: []')
     if restricted:
         lines.append('restricted: true')
@@ -399,6 +400,20 @@ def _find_record_for_sid(archive_root: Path, s_id: str) -> Path | None:
     return None
 
 
+def _render_file_entry(item: dict) -> list[str]:
+    """Render a parsed files: list item dict as block-style lines.
+
+    Used to re-emit an existing inline-list item (`files: [{file: ..., role:
+    primary}]`) in the same two-space block style a freshly appended entry
+    uses, so converting the key from inline to block form doesn't drop it.
+    """
+    keys = list(item.keys())
+    first, *rest = keys
+    lines = [f'  - {first}: {_yaml_inline(item[first])}']
+    lines += [f'    {k}: {_yaml_inline(item[k])}' for k in rest]
+    return lines
+
+
 def _append_file_entry(record_text: str, entry_lines: list[str]) -> str:
     """Insert a files: list item into a record's frontmatter (text surgery).
 
@@ -431,11 +446,19 @@ def _append_file_entry(record_text: str, entry_lines: list[str]) -> str:
         return '\n'.join(lines[:insert_at] + block + lines[insert_at:])
 
     if lines[files_idx].rstrip() != 'files:':
-        # An inline value ('files: []', 'files: ~', …) is valid YAML but has no
-        # block underneath it to append to; normalize it to a bare key first so
-        # the new entries land as a proper block list instead of dangling,
-        # unparseable lines after a scalar.
+        # An inline value ('files: []', 'files: [{file: ..., role: primary}]', …)
+        # is valid YAML but has no block underneath it to append to. Parse out
+        # any existing entries before normalizing to a bare key, so a non-empty
+        # inline list's items are preserved as block items rather than dropped.
+        inline_value = lines[files_idx].split(':', 1)[1].strip()
+        existing_items = yaml.safe_load(inline_value) if inline_value not in ('', '~', 'null') else None
         lines[files_idx] = 'files:'
+        if existing_items:
+            preserved_lines = []
+            for item in existing_items:
+                preserved_lines.extend(_render_file_entry(item))
+            lines[files_idx + 1:files_idx + 1] = preserved_lines
+            end += len(preserved_lines)
 
     # Find the end of the files: block: the first line at/after files_idx+1 that
     # is not indented (a new top-level key) or the closing ---.
@@ -781,7 +804,22 @@ def attach_more(
     demands — keyword for a photo (no rename), `-{role}_{S-id}` rename for a
     document — and a `files:` entry is appended to the located record.
     """
-    raw_sid = _source_id_of(primary_path, fha_config, archive_root)
+    # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
+    # it's a photo. The documented dry-run contract is "no exiftool call" — a
+    # machine without exiftool on PATH must still get a preview here, so only
+    # dry-run degrades that read failure to a warning and stops the preview
+    # rather than raising; the live path still needs the real read.
+    if dry_run and classify_asset(primary_path, fha_config, archive_root) == 'photo':
+        try:
+            raw_sid = _read_source_keyword(primary_path)
+        except RuntimeError as e:
+            print(f'WARNING: could not read existing keywords from {primary_path.name}: {e}',
+                  file=sys.stderr)
+            print('[dry-run] Cannot determine the existing S-id without exiftool; '
+                  'nothing more to preview.')
+            return EXIT_CLEAN
+    else:
+        raw_sid = _source_id_of(primary_path, fha_config, archive_root)
     if raw_sid is None:
         raise ProcessError(
             f'{primary_path.name} is not a processed source (no S-id in keyword or '
@@ -805,7 +843,16 @@ def attach_more(
                 f'{more_file.name} is not under the configured photos root '
                 f'({_rel(photos_root, archive_root)}); file it there before attaching it.'
             )
-        if _read_source_keyword(more_file):
+        if dry_run:
+            try:
+                more_existing = _read_source_keyword(more_file)
+            except RuntimeError as e:
+                print(f'WARNING: could not read existing keywords from {more_file.name}: {e}',
+                      file=sys.stderr)
+                more_existing = None
+        else:
+            more_existing = _read_source_keyword(more_file)
+        if more_existing:
             raise ProcessError(f'{more_file.name} already carries a SOURCE keyword.')
         new_alias = path_to_alias(more_file, _PHOTO_DIR, fha_config, archive_root)
         entry = [f'  - file: {_yaml_inline(new_alias)}', f'    role: {_yaml_inline(role)}']

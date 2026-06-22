@@ -365,6 +365,23 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_ERRORS)
         self.assertEqual(store.read(outside), [])
 
+    def test_more_dry_run_survives_exiftool_read_failure(self) -> None:
+        store = self._install_photo_store()
+        front = self.archive / 'photos' / '1880' / 'preview-front.jpg'
+        front.write_bytes(b'\xff\xd8\xff')
+        self.assertEqual(self._run([str(front)]), EXIT_CLEAN)
+
+        back = self.archive / 'photos' / '1880' / 'preview-back.jpg'
+        back.write_bytes(b'\xff\xd8\xff')
+
+        def _boom(_path: Path) -> list[str]:
+            raise RuntimeError('exiftool not on PATH')
+
+        process._run_exiftool_read_keywords = _boom
+        rc = self._run([str(front), '--more', str(back), 'back', '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(store.read(back), [])  # no keyword embedded
+
     def test_more_refuses_document_attachment_outside_documents_root(self) -> None:
         page1 = self.archive / 'documents' / 'census' / 'pagex1.txt'
         page1.write_text('p1', encoding='utf-8')
@@ -425,6 +442,43 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(parsed['parse_errors'], [])
         self.assertEqual(len(parsed['meta']['files']), 1)
         self.assertEqual(parsed['meta']['files'][0]['role'], 'page-2')
+
+    def test_append_file_entry_preserves_nonempty_inline_files_value(self) -> None:
+        record_text = (
+            '---\nid: S-aaaaaaaaaa\n'
+            'files: [{file: documents/census/page1.pdf, role: primary}]\n'
+            'created: 2026-01-01\n---\n\nbody\n'
+        )
+        entry = ['  - file: documents/census/page2.txt', '    role: page-2']
+        new_text = process._append_file_entry(record_text, entry)
+        parsed = read_record(self._write_temp_record(new_text))
+        self.assertEqual(parsed['parse_errors'], [])
+        files = parsed['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[0]['file'], 'documents/census/page1.pdf')
+        self.assertEqual(files[0]['role'], 'primary')
+        self.assertEqual(files[1]['role'], 'page-2')
+
+    def test_sidecar_multiline_citation_indented_correctly(self) -> None:
+        asset = self.archive / 'documents' / 'census' / 'multiline.txt'
+        asset.write_text('x', encoding='utf-8')
+        sidecar = self.archive / 'documents' / 'census' / 'multiline.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'citation: |\n'
+            '  Line one of the citation.\n'
+            '  Line two of the citation.\n'
+            '---\n'
+            'body notes\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(asset)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'other').glob('*_S-*.md'))
+        rec = read_record(record)
+        self.assertEqual(rec['parse_errors'], [])
+        self.assertIn('Line one of the citation.', rec['meta']['citation'])
+        self.assertIn('Line two of the citation.', rec['meta']['citation'])
 
     def test_more_document_renames_with_shared_sid(self) -> None:
         # Process a document, then attach a second document page to it.
