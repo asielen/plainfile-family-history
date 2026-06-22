@@ -632,6 +632,68 @@ class ProcessTestCase(unittest.TestCase):
         self.assertTrue(asset.exists())  # not renamed
         self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
 
+    # ── Pointer-only sources (TOOLING §13b case (c), explicit stub flag) ──────
+
+    def test_sidecar_no_companion_refused_without_flag(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'ghost.notes.md'
+        sidecar.write_text(
+            '---\ntitle: Ghost Record\nexternal_links:\n  - url: https://county.test/courthouse\n'
+            '---\nHeld at the county courthouse.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())  # not consumed on refusal
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_sidecar_pointer_only_mints_source_with_no_files_block(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'courthouse.notes.md'
+        sidecar.write_text(
+            '---\n'
+            'title: Deed Held at County Courthouse\n'
+            'asset_elsewhere: true\n'
+            'citation: >\n'
+            '  Deed book 12, page 4, Cass County courthouse.\n'
+            'external_links:\n'
+            '  - url: https://county.test/courthouse\n'
+            '    accessed: "2024-01-01"\n'
+            '---\n'
+            'Recorded but not retrieved yet.\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(sidecar.exists())  # stub consumed
+
+        records = list((self.archive / 'sources').rglob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        rec = read_record(records[0])
+        self.assertEqual(rec['meta']['title'], 'Deed Held at County Courthouse')
+        self.assertNotIn('files', rec['meta'])  # no asset -> no files: block
+        links = rec['meta']['external_links']
+        self.assertEqual(links[0]['url'], 'https://county.test/courthouse')
+        self.assertIn('Recorded but not retrieved yet', records[0].read_text(encoding='utf-8'))
+
+    def test_sidecar_pointer_only_dry_run_writes_nothing(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'preview.notes.md'
+        sidecar.write_text(
+            '---\nasset_elsewhere: true\nexternal_links:\n  - url: https://x.test/y\n'
+            '---\nbody\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(sidecar), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue(sidecar.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_sidecar_pointer_only_refused_without_external_links(self) -> None:
+        sidecar = self.archive / 'documents' / 'census' / 'empty.notes.md'
+        sidecar.write_text('---\nasset_elsewhere: true\n---\nbody\n', encoding='utf-8')
+        rc = self._run([str(sidecar)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(sidecar.exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
     def test_slugify(self) -> None:
         self.assertEqual(process._slugify('Fairview, Kansas! 1880'), 'fairview-kansas-1880')
         self.assertEqual(process._slugify('   '), 'source')

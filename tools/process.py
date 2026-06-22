@@ -389,6 +389,7 @@ def _scaffold_text(
     repository: str | None = None,
     source_date: str | None = None,
     provenance: str | None = None,
+    external_links: list[dict] | None = None,
 ) -> str:
     """Render a §14 source record as text, ready to write.
 
@@ -399,12 +400,15 @@ def _scaffold_text(
     lists every file the source covers: a single document or photo is one
     entry; a variation group or dissolved bundle is many, with the primary
     carrying `is_primary: true` (photos) and each renamed document carrying its
-    `original_filename` provenance.
+    `original_filename` provenance. `file_entries` is empty for a TOOLING §13b
+    "pointer-only" source (no asset, `external_links` only), in which case the
+    `files:` block is omitted rather than written empty.
 
-    `restricted`/`citation`/`repository`/`source_date`/`provenance` are §14
-    fields a source-stub sidecar may hint (or, for `restricted`, that a `dna`
-    source_type always forces) — without passing them through, capture-written
-    metadata in the stub would be silently dropped when the stub is consumed.
+    `restricted`/`citation`/`repository`/`source_date`/`provenance`/
+    `external_links` are §14 fields a source-stub sidecar may hint (or, for
+    `restricted`, that a `dna` source_type always forces) — without passing
+    them through, capture-written metadata in the stub would be silently
+    dropped when the stub is consumed.
     """
     lines = [
         '---',
@@ -426,9 +430,20 @@ def _scaffold_text(
         lines.append('restricted: true')
     if provenance:
         lines.append(f'provenance: {_yaml_inline(provenance)}')
-    lines.append('files:')
-    for entry in file_entries:
-        lines += _render_scaffold_file_entry(entry)
+    if external_links:
+        lines.append('external_links:')
+        for link in external_links:
+            url = link.get('url') if isinstance(link, dict) else str(link)
+            if not url:
+                continue
+            lines.append(f'  - url: {_yaml_inline(str(url))}')
+            accessed = link.get('accessed') if isinstance(link, dict) else None
+            if accessed:
+                lines.append(f'    accessed: {_yaml_inline(str(accessed))}')
+    if file_entries:
+        lines.append('files:')
+        for entry in file_entries:
+            lines += _render_scaffold_file_entry(entry)
     lines += [
         f'created: {_today()}',
         '---',
@@ -557,13 +572,19 @@ def _is_sidecar_path(file_path: Path) -> bool:
     return file_path.name.lower().endswith('.notes.md')
 
 
-def _companion_for_sidecar(sidecar: Path) -> Path:
+def _companion_for_sidecar(sidecar: Path) -> Path | None:
     """Return the single same-stem asset paired with a source-stub sidecar.
 
     M7.1 documents the convenient entrypoint `fha process sample.notes.md`.
     The sidecar is not the original; it is the notes wrapper around exactly one
     companion asset named `sample.*`. Refusing none-or-many matches prevents the
     tool from minting a source for the wrong file.
+
+    Returns None, rather than raising, when the stub explicitly flags
+    `asset_elsewhere: true` — TOOLING §13b case (c), the "pointer-only" source
+    (no asset, citation + `external_links` only, flagged for later retrieval).
+    Any other no-companion case still refuses: an unflagged missing asset is
+    far more likely a mistake than a deliberate pointer-only capture.
     """
     stem = sidecar.name[:-len('.notes.md')]
     candidates = [
@@ -571,6 +592,9 @@ def _companion_for_sidecar(sidecar: Path) -> Path:
         if p.is_file() and p.name != sidecar.name and p.stem == stem
     ]
     if not candidates:
+        meta, _ = _read_sidecar(sidecar)
+        if _sidecar_flag(meta, 'asset_elsewhere'):
+            return None
         raise ProcessError(f'no companion asset found for source stub {sidecar.name}')
     if len(candidates) > 1:
         names = ', '.join(sorted(p.name for p in candidates))
@@ -612,6 +636,24 @@ def _sidecar_str(sidecar_meta: dict, key: str) -> str | None:
 def _sidecar_flag(sidecar_meta: dict, key: str) -> bool:
     """A sidecar hint field as a bool — feeds an optional §14 flag field."""
     return sidecar_meta.get(key) in (True, 'true')
+
+
+def _sidecar_external_links(sidecar_meta: dict) -> list[dict]:
+    """A sidecar's `external_links:` hint as a list of `{url, accessed}` dicts.
+
+    Mirrors `capture.py`'s `RecipeResult.external_links` shape so a captured
+    stub's links survive unchanged into the §14 record.
+    """
+    raw = sidecar_meta.get('external_links')
+    if not isinstance(raw, list):
+        return []
+    links = []
+    for item in raw:
+        if isinstance(item, dict) and item.get('url'):
+            links.append({'url': str(item['url']), 'accessed': item.get('accessed')})
+        elif isinstance(item, str) and item:
+            links.append({'url': item})
+    return links
 
 
 def _bundle_file_hints(sidecar_meta: dict) -> dict[str, dict]:
@@ -991,6 +1033,81 @@ def process_document(
     print(f'Scaffolded {_rel(record_path, archive_root)}')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
+    return EXIT_CLEAN
+
+
+def process_pointer_only(
+    archive_root: Path,
+    fha_config: dict,
+    sidecar: Path,
+    *,
+    dry_run: bool,
+) -> int:
+    """TOOLING §13b case (c): mint a source record with no asset.
+
+    Only reached when `_companion_for_sidecar` found no same-stem file *and*
+    the stub explicitly flags `asset_elsewhere: true` — citation +
+    `external_links` only, flagged for a later retrieval pass. Every other
+    no-companion case still refuses in `_companion_for_sidecar`.
+    """
+    sidecar_meta, notes_body = _read_sidecar(sidecar)
+    source_type = _DEFAULT_DOCUMENT_TYPE
+    if sidecar_meta.get('source_type'):
+        hinted = str(sidecar_meta['source_type'])
+        if hinted not in SOURCE_TYPES:
+            raise ProcessError(
+                f'{sidecar.name} hints unknown source_type {hinted!r}; fix the '
+                'sidecar before processing.'
+            )
+        source_type = hinted
+
+    final_title = (
+        str(sidecar_meta['title']) if sidecar_meta.get('title')
+        else _slugify(sidecar.stem).replace('-', ' ')
+    )
+    external_links = _sidecar_external_links(sidecar_meta)
+    if not external_links:
+        raise ProcessError(
+            f'{sidecar.name} flags asset_elsewhere but has no external_links; '
+            'add at least one before processing.'
+        )
+
+    sid = _mint_one_source_id(archive_root)
+    final_slug = _derive_slug(None, final_title, sidecar)
+    record_dir = archive_root / 'sources' / _record_subdir(source_type)
+    record_path = record_dir / f'{final_slug}_{sid}.md'
+    if record_path.exists():
+        raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
+
+    text = _scaffold_text(
+        sid, final_title, source_type, [],
+        notes_body=notes_body,
+        restricted=_sidecar_flag(sidecar_meta, 'restricted'),
+        citation=_sidecar_str(sidecar_meta, 'citation'),
+        repository=_sidecar_str(sidecar_meta, 'repository'),
+        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        provenance=_sidecar_str(sidecar_meta, 'provenance'),
+        external_links=external_links,
+    )
+
+    if dry_run:
+        print(f'[dry-run] Would mint {sid}')
+        print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)} (no asset — asset-elsewhere)')
+        print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
+        return EXIT_CLEAN
+
+    try:
+        record_dir.mkdir(parents=True, exist_ok=True)
+        record_path.write_text(text, encoding='utf-8')
+        sidecar.unlink()
+    except Exception as e:
+        record_path.unlink(missing_ok=True)
+        print(f'ERROR: processing failed, rolled back: {e}', file=sys.stderr)
+        return EXIT_FAILURE
+
+    print(f'Minted {sid}')
+    print(f'Scaffolded {_rel(record_path, archive_root)} (asset-elsewhere; no companion file)')
+    print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
     return EXIT_CLEAN
 
 
@@ -1898,7 +2015,10 @@ def _run_process(args: argparse.Namespace) -> int:
 
     try:
         if _is_sidecar_path(file_path):
-            file_path = _companion_for_sidecar(file_path)
+            companion = _companion_for_sidecar(file_path)
+            if companion is None:
+                return process_pointer_only(archive_root, fha_config, file_path, dry_run=dry_run)
+            file_path = companion
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_ERRORS

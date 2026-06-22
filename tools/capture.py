@@ -477,18 +477,27 @@ def _yaml_inline(value: str) -> str:
     return rendered
 
 
-def _render_stub(result: RecipeResult, *, accessed: str) -> str:
+def _render_stub(result: RecipeResult, *, accessed: str, has_asset: bool) -> str:
     """Render the inbox `*.notes.md` source stub (SPEC §12.1) as text.
 
     Light, optional frontmatter (the recipe's citation fields) over a freeform
     body — never a §14 record. `people:` lists the *names* the page showed, a
     hint the processing pass reconciles against the index; it is not the §14
     P-id `people:` list (a stub has no resolved P-ids yet).
+
+    `has_asset` is False for TOOLING §13b case (c) — the page only points
+    elsewhere, no downloadable image/document and no HTML snapshot. That
+    pointer-only case is flagged `asset_elsewhere: true` so `fha process`
+    knows the missing companion is deliberate, not an oversight (the explicit
+    flag `process.py`'s `_companion_for_sidecar` requires before it will mint
+    a no-asset source record).
     """
     lines = ['---']
     if result.title:
         lines.append(f'title: {_yaml_inline(result.title)}')
     lines.append(f'source_type: {result.source_type}')
+    if not has_asset and result.external_links:
+        lines.append('asset_elsewhere: true')
     if result.citation:
         lines.append('citation: >')
         lines += [f'  {ln}' for ln in (result.citation.splitlines() or [''])]
@@ -555,20 +564,38 @@ def _write_capture_log(
     result: str,
     stub_rel: str,
 ) -> str:
-    """Record the capture as a research-log search (§16): index row, else jsonl.
+    """Record the capture as a research-log search (§16): index row + jsonl.
 
     Capture is itself a logged search, so `fha report`'s "already searched"
-    annotation can see it the moment it lands. When `.cache/index.sqlite` exists
-    the row goes straight into its `search_log` table (`person_id`/`source_id`
-    are null — a stub has no resolved person and no S-id yet); otherwise the
-    entry appends to `.cache/capture_log.jsonl`, the fallback for a capture run
-    before the archive has ever been indexed. Returns 'index' or 'jsonl' for the
-    caller's status line; a logging failure is reported but never fails the
-    capture (the stub is already safely written).
+    annotation can see it the moment it lands. The row always appends to
+    `.cache/capture_log.jsonl` first — that file is the durable record `fha
+    index` re-ingests into `search_log` on every full rebuild (which drops and
+    recreates that table from scratch), so a capture survives a reindex even
+    though the table itself doesn't persist it. When `.cache/index.sqlite`
+    already exists, the row is *also* written straight into its `search_log`
+    table (`person_id`/`source_id` are null — a stub has no resolved person
+    and no S-id yet) so `fha report` sees it immediately, without waiting for
+    the next rebuild. Returns 'index' or 'jsonl' for the caller's status line
+    (favoring 'index' when both succeed); a logging failure is reported but
+    never fails the capture (the stub is already safely written).
     """
     cache_dir = archive_root / '.cache'
     db_path = cache_dir / 'index.sqlite'
     row = (date, None, question, repository, collection, terms, result, None, stub_rel)
+
+    jsonl_ok = False
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with open(cache_dir / 'capture_log.jsonl', 'a', encoding='utf-8') as f:
+            f.write(json.dumps({
+                'date': date, 'question': question, 'repository': repository,
+                'collection': collection, 'terms': terms, 'result': result,
+                'path': stub_rel,
+            }, ensure_ascii=False) + '\n')
+        jsonl_ok = True
+    except OSError as e:
+        print(f'WARNING: could not write capture_log.jsonl: {e}', file=sys.stderr)
+
     if db_path.exists():
         try:
             conn = sqlite3.connect(str(db_path))
@@ -586,20 +613,10 @@ def _write_capture_log(
                 conn.close()
             return 'index'
         except Exception as e:  # noqa: BLE001
-            print(f'WARNING: could not write search_log row ({e}); falling back to jsonl',
-                  file=sys.stderr)
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        with open(cache_dir / 'capture_log.jsonl', 'a', encoding='utf-8') as f:
-            f.write(json.dumps({
-                'date': date, 'question': question, 'repository': repository,
-                'collection': collection, 'terms': terms, 'result': result,
-                'path': stub_rel,
-            }, ensure_ascii=False) + '\n')
-    except OSError as e:
-        print(f'WARNING: could not write capture_log.jsonl: {e}', file=sys.stderr)
-        return 'none'
-    return 'jsonl'
+            print(f'WARNING: could not write search_log row ({e})'
+                  + (' (still logged to jsonl)' if jsonl_ok else ''), file=sys.stderr)
+
+    return 'jsonl' if jsonl_ok else 'none'
 
 
 # ── Top-level ─────────────────────────────────────────────────────────────────
@@ -704,7 +721,7 @@ def run_capture(
     asset_suffix = asset.suffix.lower() if asset is not None else None
     stem = _unique_stub_stem(inbox, slug, asset_suffix)
     stub_path = inbox / f'{stem}.notes.md'
-    stub_text = _render_stub(result, accessed=accessed)
+    stub_text = _render_stub(result, accessed=accessed, has_asset=asset is not None)
 
     asset_dest: Path | None = None
     if asset is not None:

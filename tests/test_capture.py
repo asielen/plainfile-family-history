@@ -97,7 +97,9 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rows[0][0], 'Indexed')
         self.assertTrue(rows[0][1].startswith('staged inbox/'))
         self.assertIsNone(rows[0][3])                        # no S-id at capture time
-        self.assertFalse((cache / 'capture_log.jsonl').exists())
+        # Always also appended to the jsonl (durability across a search_log
+        # drop/rebuild), even though the index row already exists.
+        self.assertTrue((cache / 'capture_log.jsonl').exists())
 
     def test_flag_overrides_and_unknown_type_refused(self) -> None:
         html = '<html><title>Original</title></html>'

@@ -2,7 +2,7 @@
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
-![status](https://img.shields.io/badge/status-milestones_1--7_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![status](https://img.shields.io/badge/status-milestones_1%E2%80%937_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
