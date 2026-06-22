@@ -135,6 +135,7 @@ from _lib import (
     db_mtime,
     ParsedName,
     edtf_bounds,
+    grouping_stem as _grouping_stem,
     id_type_of,
     is_valid_edtf,
     is_valid_id,
@@ -142,6 +143,8 @@ from _lib import (
     newest_person_record_mtime,
     normalize_id,
     parse_media_filename,
+    select_variation_primary,
+    variant_role as _variant_role,
     path_to_alias,
     PHOTO_EXTENSIONS,
     photoindex_status,
@@ -597,35 +600,6 @@ def _edtf_confidence(edtf: str | None) -> tuple[int, int]:
     return (n_components, -marker_rank)
 
 
-def _variant_role(parsed: ParsedName) -> str | None:
-    """Compound role string for the photos.variant_role column (TOOLING §9)."""
-    if parsed.part_kind == 'page':
-        base = f'page-{parsed.page_num}'
-    elif parsed.part_kind == 'freeform':
-        base = parsed.freeform_role
-    elif parsed.part_kind != 'none':
-        base = parsed.part_kind
-    else:
-        base = None
-    if parsed.is_crop:
-        return f'{base}-crop' if base else 'crop'
-    return base
-
-
-def _grouping_stem(parsed: ParsedName) -> str:
-    """
-    base_id for use as a grouping key (TOOLING §9): the recognized suffix
-    grammar (copy letter, negative/back/front/page-N/bw, crop) is stripped,
-    but an unrecognized freeform suffix is kept folded back in. Freeform
-    roles are not part of the documented grouping grammar — two unrelated
-    files like 'smith-family.jpg' and 'smith-house.jpg' must not collapse
-    into one group just because both have a trailing '-word'.
-    """
-    if parsed.part_kind == 'freeform':
-        return f'{parsed.base_id}-{parsed.freeform_role}'
-    return parsed.base_id
-
-
 def _group_photos(conn: sqlite3.Connection) -> None:
     """
     Recompute group_id/is_primary/variant_copy/variant_role for every photo,
@@ -676,19 +650,8 @@ def _group_photos(conn: sqlite3.Connection) -> None:
         # Primary = a file with no variant/role/crop suffix at all (the plain
         # scan), then a front scan, then the lexicographically-first path when
         # every member carries some other suffix (e.g. a back-only group).
-        plain = [
-            p for p in paths
-            if parsed_by_path[p].variant_id is None
-            and parsed_by_path[p].part_kind == 'none'
-            and not parsed_by_path[p].is_crop
-        ]
-        fronts = [
-            p for p in paths
-            if parsed_by_path[p].variant_id in (None, 'a')
-            and parsed_by_path[p].part_kind == 'front'
-            and not parsed_by_path[p].is_crop
-        ]
-        primary = min(plain) if plain else (min(fronts) if fronts else min(paths))
+        # Shared with `fha process` so both tools agree on the primary file.
+        primary = select_variation_primary(paths, parsed_by_path.__getitem__)
 
         # Order candidates with the primary file first, then lexicographically,
         # so a confidence tie (e.g. two variants both 'year only, no marker')

@@ -37,7 +37,7 @@ the insertion point in the same edit.
 | 4 | Layer 4 — Cross-reference & connection | M4.1 – M4.3 | ✓ shipped — M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`) |
 | 5 | Layer 5 — Research report | M5.1 – M5.3 | ✓ shipped — M5.1 (`fha report` §0–4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6–8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 — Data output | M6.1 – M6.5 | ✓ shipped — M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
-| 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | ◐ in progress — M7.1 (`fha process` documents), M7.2 (`fha process` photos + `--more`) shipped; M7.3–M7.8 future |
+| 7 | Layer 7 — Intake pipeline | M7.1 – M7.8 | ◐ in progress — M7.1 (`fha process` documents), M7.2 (`fha process` photos + `--more`), M7.3 (folder triage + variation detection), M7.4 (bundle dissolution) shipped; M7.5–M7.8 future |
 | 8 | Layer 8 — Publication | M8.1 – M8.5 | future |
 | 9 | Layer 9 — Scaffolding | M9.1 – M9.2 | future |
 
@@ -1089,7 +1089,7 @@ fha process photo.jpg --more photo_back.jpg role:back ... # adds files: entry
 
 ---
 
-### M7.3 — `fha process` — folder mode + variation detection
+### M7.3 — `fha process` — folder mode + variation detection (✓ shipped)
 
 **One PR.** Extend `tools/process.py` (TOOLING §6).
 
@@ -1116,7 +1116,7 @@ fha process tests/fixtures/photo-fixture/ --root ...
 
 ---
 
-### M7.4 — `fha process` — bundle folder dissolution
+### M7.4 — `fha process` — bundle folder dissolution (✓ shipped)
 
 **One PR.** Extend `tools/process.py` (SPEC §12.1, TOOLING §6).
 

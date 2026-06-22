@@ -146,7 +146,7 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 
 | Tool | File | Status |
 |---|---|---|
-| `fha process FILE [--type TYPE] [--title …] [--slug SLUG] [--more FILE ROLE[:copy]] [--dry-run]` | `process.py` | ✓ M7.1–M7.2 — single-file documents and photos + `--more`; see "fha process — implementation status" below |
+| `fha process FILE|FOLDER [--type TYPE] [--title …] [--slug SLUG] [--more FILE ROLE[:copy]] [--dry-run]` | `process.py` | ✓ M7.1–M7.4 — single-file documents and photos + `--more`; folder triage + tier-1 variation detection (M7.3); `notes.md` bundle dissolution (M7.4); see "fha process — implementation status" below |
 
 ## fha process — implementation status
 
@@ -158,26 +158,41 @@ pipeline; the AI draft pass and review pass are the `process-source` /
 |---|---|---|
 | Document intake (M7.1) | ✓ | Detect a non-photo file (extension + not under the resolved photos root); refuse a filename already carrying `_{S-id}`; mint an S-id via `_lib.mint_ids`; **rename in place** to `{slug}_{S-id}.{ext}` recording `original_filename`; scaffold `sources/{type}/{slug}_{S-id}.md` from the §14 template with an empty `## Claims` block. Transactional — the rename and record-write each register an undo and any failure rolls back; destination conflicts and unknown `--type` values refuse before writing |
 | Photo intake (M7.2) | ✓ | Detect a photo (extension or under the photos root); refuse a file already carrying a `SOURCE:` keyword; mint an S-id; **never rename** — embed `SOURCE: {S-id}` via `exiftool -keywords+= -overwrite_original_in_place` (abort, scaffold nothing, on failure); scaffold `sources/photos/{slug}_{S-id}.md` with `role: primary`, `is_primary: true`. `source_type` is always `photo` |
-| Source-stub sidecar (`*.notes.md`) | ✓ | A lone `{stem}.notes.md` beside a single asset (SPEC §12.1) is read as the starting point whether the user passes the asset or the sidecar itself: its optional `title`/`source_type` frontmatter hints refine the record (photos remain `source_type: photo`), its prose body becomes the record's `## Notes`, and the stub is deleted after the record is safely written. Bundle folders (multiple files + one `notes.md`) are M7.4, not handled here |
+| Source-stub sidecar (`*.notes.md`) | ✓ | A lone `{stem}.notes.md` beside a single asset (SPEC §12.1) is read as the starting point whether the user passes the asset or the sidecar itself: its optional `title`/`source_type` frontmatter hints refine the record (photos remain `source_type: photo`), its prose body becomes the record's `## Notes`, and the stub is deleted after the record is safely written. Bundle folders (multiple files + one bare `notes.md`) are handled by M7.4 below |
 | `--more FILE ROLE[:copy]` | ✓ | Attach an additional file to the existing source named by the positional asset's S-id (its embedded `SOURCE:` keyword for a photo, its `_{S-id}` filename for a document). A photo `--more` file is keyword-marked and left in place; a document `--more` file is renamed `{slug}-[{copy}-]{role}_{S-id}.{ext}` with `original_filename` recorded. The new file's inventory entry is appended to the record via surgical text edit (frontmatter comments/order preserved, mirroring `fha places geocode`) |
 | `--type TYPE` | ✓ | Source type + subdirectory for a document (default `other`); ignored for photos (always `photo`). A `*.notes.md` `source_type` hint overrides the default when it is in the controlled vocabulary |
 | `--title` / `--slug` | ✓ | `--slug` wins; else `--title`; else the filename stem — slugified to lowercase-hyphenated. `--title` also seeds the record `title`/`citation` |
 | `--dry-run` | ✓ | Previews mint/rename/keyword/scaffold/stub-delete and performs no filesystem effect (no exiftool call) |
-| Folder mode / variation grouping (M7.3) | ⚑ deferred | Passing a directory is refused with a pointer to M7.3/M7.4. Triage scorer over a folder, tier-1 variation detection, and the `one / separate / skip` prompt are M7.3 |
-| Bundle folder dissolution (M7.4) | ⚑ deferred | `notes.md`-bearing inbox bundle folders (SPEC §12.1) are M7.4 |
+| Folder triage (M7.3) | ✓ | Passing a directory (without a `notes.md`) lists its unprocessed top-level photos, grouped into variation sets by the shared `_lib.grouping_stem` and ranked by the same evidence signals as `fha photoindex triage` (caption +3, pid-keyword +2, confident date +1, back-variant +1, AI-only −2; metadata read best-effort, degrading to filename-only when exiftool is absent). The human selects groups (numbers, comma/space list, or `all`; blank skips); each selected group runs through the variation flow below |
+| Tier-1 variation detection (M7.3) | ✓ | Before processing a single photo, its directory is scanned for siblings sharing a filename `base_id` (front/back, copy letters, crops, negatives, booklet pages — the TOOLING §6 grammar, shared with `fha photoindex` via `_lib`). A real set is surfaced with its batch-type label (A–D) and the `one / separate / skip` prompt: `one` mints a shared S-id over the whole set (one record, each file role-annotated, `is_primary` on the plain scan, SOURCE: embedded on every file, transactional rollback); `separate` processes each as its own source; `skip` (also blank/unrecognized — never mutates on an unclear answer) defers. Tier-2 `--with-vision` perceptual grouping remains backlog |
+| Bundle folder dissolution (M7.4) | ✓ | A folder holding a bare `notes.md` (SPEC §12.1) becomes one source: one S-id covers every asset, documents are renamed `{slug}[-{role}]_{S-id}.{ext}` and filed under the documents root, photos are moved under the photos root **without renaming** and carry the SOURCE: keyword, one record is scaffolded from the notes (frontmatter hints → §14 fields, prose → `## Notes`) listing all assets in `files:`, and the emptied folder is deleted. Transactional — every move/rename/embed registers an undo and any failure unwinds them. Destination convention (documents → `documents/{subdir}/`, photos → photos-root top level; `{subdir}` is the plural/`proofs` mapping `_record_subdir` applies) is an implementation choice — SPEC §12 treats asset subfolders as free projection; the §12.1 dissolution rules (shared S-id, `[-role]` document grammar, photo SOURCE: keyword, notes → `## Notes`, folder removed) are honored exactly |
 | `--with-vision` tier-2 grouping | ⚑ deferred | Backlog (TOOLING §6) |
-| Exit codes | ✓ | 0 success; 2 for a refusal / missing file / folder mode / `_{S-id}` already present; 3 for a tool failure (exiftool missing or write error, rolled-back record write) |
+| Exit codes | ✓ | 0 success (incl. a skipped variation set or an empty selection — no mutation requested); 2 for a refusal / missing file / unknown `--type` / `_{S-id}` already present / `--more` on a folder / bundle with no assets; 3 for a tool failure (exiftool missing or write error, rolled-back record/keyword write) |
+
+M7.4 bundle note: `notes.md` role hints are honored from either `roles:
+{filename: role}` or `files:` entries carrying `file`, `role`, optional `copy`,
+and optional `is_primary`; malformed or stale hints refuse before any move.
+Bundles also refuse already-processed photos before moving assets, include
+`*.notes.md`-named assets as ordinary files (only bare `notes.md` is the stub),
+and restore `notes.md` if a late dissolution failure rolls back the folder.
 
 Automated tests: `tests/test_process.py` (stdlib `unittest`) builds a throwaway
 archive and monkeypatches the exiftool seams
 (`_run_exiftool_read_keywords` / `_run_exiftool_embed_source` /
-`_run_exiftool_remove_source`) with an in-memory
-`FakePhotoStore`, covering document mint/rename/scaffold, the empty-`## Claims`
+`_run_exiftool_remove_source` / `_run_exiftool_read_meta`) with an in-memory
+`FakePhotoStore`, and the interactive `_prompt` seam with a scripted answer
+queue, covering document mint/rename/scaffold, the empty-`## Claims`
 parse, `--dry-run` no-op, already-processed refusal, sidecar-into-`## Notes`
 (with `source_type` hint routing), rollback on a record-write failure, photo
 keyword-embed-no-rename, the already-keyworded refusal, the embed-failure abort,
-`--more` for both a photo back and a document page, asset classification, and the
-slug helpers. Run with `python -m unittest tests.test_process -v` from the repo root.
+`--more` for both a photo back and a document page, asset classification, the
+slug helpers, M7.3 variation detection (`one`/`separate`/`skip`, partly-processed
+refusal, group rollback), M7.3 folder triage (grouping + selection + the empty
+folder no-op), and M7.4 bundle dissolution (single-source dissolution, dry-run,
+role hints, already-processed-photo refusal, sidecar-named asset inclusion,
+late-failure rollback, no-asset refusal). Run with `python -m unittest
+tests.test_process -v` from the
+repo root.
 
 ## fha packet — implementation status
 

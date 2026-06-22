@@ -45,8 +45,11 @@ class FakePhotoStore:
     def __init__(self) -> None:
         self.keywords: dict[str, list[str]] = {}
         self.fail_paths: set[str] = set()
+        self.read_fail_paths: set[str] = set()
 
     def read(self, file_path: Path) -> list[str]:
+        if str(file_path) in self.read_fail_paths:
+            raise RuntimeError('simulated exiftool read failure')
         return list(self.keywords.get(str(file_path), []))
 
     def embed(self, file_path: Path, s_id: str) -> str | None:
@@ -72,11 +75,20 @@ class ProcessTestCase(unittest.TestCase):
         self._orig_read = process._run_exiftool_read_keywords
         self._orig_embed = process._run_exiftool_embed_source
         self._orig_remove = process._run_exiftool_remove_source
+        self._orig_read_meta = process._run_exiftool_read_meta
+        self._orig_prompt = process._prompt
+        # Folder triage reads caption/date signals per file; default to "no
+        # metadata" so scoring is deterministic and never shells out in tests.
+        process._run_exiftool_read_meta = lambda _p: {
+            'caption': None, 'user_comment': None, 'edtf': None, 'has_pid_keyword': False,
+        }
 
     def tearDown(self) -> None:
         process._run_exiftool_read_keywords = self._orig_read
         process._run_exiftool_embed_source = self._orig_embed
         process._run_exiftool_remove_source = self._orig_remove
+        process._run_exiftool_read_meta = self._orig_read_meta
+        process._prompt = self._orig_prompt
         self._tmp.cleanup()
 
     def _install_photo_store(self) -> FakePhotoStore:
@@ -85,6 +97,11 @@ class ProcessTestCase(unittest.TestCase):
         process._run_exiftool_embed_source = store.embed
         process._run_exiftool_remove_source = store.remove
         return store
+
+    def _install_prompt(self, *answers: str) -> None:
+        """Queue scripted answers for the interactive prompt seam."""
+        queue = list(answers)
+        process._prompt = lambda _msg: queue.pop(0) if queue else ''
 
     def _run(self, argv: list[str]) -> int:
         return process._standalone_main(argv + ['--root', str(self.archive)])
@@ -623,12 +640,352 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(
             process._derive_slug(None, None, Path('1880-census.pdf')), '1880-census')
 
-    def test_folder_mode_refused(self) -> None:
-        rc = self._run([str(self.archive / 'documents')])
-        self.assertEqual(rc, EXIT_ERRORS)
-
     def test_missing_file(self) -> None:
         rc = self._run([str(self.archive / 'documents' / 'nope.txt')])
+        self.assertEqual(rc, EXIT_ERRORS)
+
+    # ── M7.3 variation detection (single photo) ────────────────────────────────
+
+    def _make_pair(self) -> tuple[Path, Path]:
+        d = self.archive / 'photos' / '1880'
+        front = d / 'portrait_1880.jpg'
+        back = d / 'portrait_1880-back.jpg'
+        front.write_bytes(b'\xff\xd8\xff')
+        back.write_bytes(b'\xff\xd8\xff')
+        return front, back
+
+    def test_photo_siblings_detected_by_base_id(self) -> None:
+        front, back = self._make_pair()
+        # An unrelated photo in the same dir must not join the group.
+        (self.archive / 'photos' / '1880' / 'family_reunion.jpg').write_bytes(b'\xff\xd8\xff')
+        sibs = process._photo_variation_siblings(front)
+        self.assertEqual([p.name for p in sibs],
+                         ['portrait_1880-back.jpg', 'portrait_1880.jpg'])
+
+    def test_variation_one_makes_single_record_with_two_files(self) -> None:
+        store = self._install_photo_store()
+        front, back = self._make_pair()
+        self._install_prompt('one')
+
+        rc = self._run([str(front)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        # Neither photo renamed; both carry the same single S-id.
+        self.assertTrue(front.exists() and back.exists())
+        self.assertEqual(len(store.read(front)), 1)
+        self.assertEqual(store.read(front), store.read(back))
+
+        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        files = read_record(records[0])['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertEqual(files[0]['role'], 'primary')
+        self.assertEqual(files[0]['is_primary'], 'true')
+        self.assertTrue(files[0]['file'].endswith('portrait_1880.jpg'))
+        self.assertEqual(files[1]['role'], 'back')
+        self.assertTrue(files[1]['file'].endswith('portrait_1880-back.jpg'))
+
+    def test_variation_separate_makes_two_records(self) -> None:
+        store = self._install_photo_store()
+        front, back = self._make_pair()
+        self._install_prompt('separate')
+
+        rc = self._run([str(front)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        self.assertEqual(len(records), 2)
+        # Two distinct S-ids, one per photo.
+        self.assertNotEqual(store.read(front)[0], store.read(back)[0])
+
+    def test_variation_skip_writes_nothing(self) -> None:
+        store = self._install_photo_store()
+        front, back = self._make_pair()
+        self._install_prompt('skip')
+
+        rc = self._run([str(front)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(store.read(front), [])
+        self.assertEqual(store.read(back), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_variation_unrecognized_answer_is_safe_skip(self) -> None:
+        store = self._install_photo_store()
+        front, _ = self._make_pair()
+        self._install_prompt('maybe?')
+        rc = self._run([str(front)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_variation_group_dry_run_writes_nothing(self) -> None:
+        store = self._install_photo_store()
+        front, back = self._make_pair()
+        self._install_prompt('one')
+        rc = self._run([str(front), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(store.read(front), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_variation_group_refuses_partly_processed_set(self) -> None:
+        store = self._install_photo_store()
+        front, back = self._make_pair()
+        store.keywords[str(back)] = ['SOURCE: S-aaaaaaaaaa']
+        self._install_prompt('one')
+        rc = self._run([str(front)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertEqual(store.read(front), [])  # nothing minted onto the set
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_variation_group_rolls_back_on_record_failure(self) -> None:
+        store = self._install_photo_store()
+        front, back = self._make_pair()
+        self._install_prompt('one')
+        # Block the record dir so the scaffold write fails after keyword embeds.
+        (self.archive / 'sources' / 'photos').write_text('blocker', encoding='utf-8')
+        rc = self._run([str(front)])
+        self.assertEqual(rc, EXIT_FAILURE)
+        # Both keyword writes rolled back.
+        self.assertEqual(store.read(front), [])
+        self.assertEqual(store.read(back), [])
+
+    # ── M7.3 folder triage ─────────────────────────────────────────────────────
+
+    def test_folder_triage_processes_selected_group_as_one(self) -> None:
+        store = self._install_photo_store()
+        d = self.archive / 'photos' / '1880'
+        front, back = self._make_pair()
+        reunion = d / 'family_reunion.jpg'
+        reunion.write_bytes(b'\xff\xd8\xff')
+        # Two groups: the portrait pair and the lone reunion photo. Select group
+        # holding the pair, then answer the variation prompt with "one".
+        self._install_prompt('all', 'one', 'one')
+
+        rc = self._run([str(d)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        # The pair became one 2-file record; the reunion became its own record.
+        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        self.assertEqual(len(records), 2)
+        self.assertEqual(len(store.read(front)), 1)
+        self.assertEqual(store.read(front), store.read(back))
+        self.assertEqual(len(store.read(reunion)), 1)
+
+    def test_folder_triage_blank_selection_writes_nothing(self) -> None:
+        store = self._install_photo_store()
+        d = self.archive / 'photos' / '1880'
+        self._make_pair()
+        self._install_prompt('')  # blank → nothing selected
+        rc = self._run([str(d)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_folder_with_no_photos_is_clean_noop(self) -> None:
+        rc = self._run([str(self.archive / 'documents' / 'census')])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    # ── M7.4 bundle folder dissolution ─────────────────────────────────────────
+
+    def _make_bundle(self) -> Path:
+        # Copy the committed sample bundle (the one the M7.4 done-criteria names)
+        # into the throwaway archive's inbox, so the fixture is exercised but the
+        # dissolving run only ever deletes the temp copy.
+        fixture = ROOT / 'tests' / 'fixtures' / 'bundle-folder'
+        bundle = self.archive / 'inbox' / 'reunion-bundle'
+        shutil.copytree(fixture, bundle)
+        return bundle
+
+    def test_bundle_dissolves_into_one_source(self) -> None:
+        store = self._install_photo_store()
+        bundle = self._make_bundle()
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        # Bundle folder dissolved.
+        self.assertFalse(bundle.exists())
+        # One record covering both assets.
+        records = list((self.archive / 'sources' / 'photos').glob('*_S-*.md'))
+        self.assertEqual(len(records), 1)
+        rec = read_record(records[0])
+        self.assertEqual(rec['meta']['title'], 'The Reunion')
+        files = rec['meta']['files']
+        self.assertEqual(len(files), 2)
+        self.assertIn('A reunion snapshot', records[0].read_text(encoding='utf-8'))
+
+        # Photo moved to the photos root (kept its name) and carries SOURCE.
+        moved_photo = self.archive / 'photos' / 'reunion.jpg'
+        self.assertTrue(moved_photo.exists())
+        self.assertEqual(len(store.read(moved_photo)), 1)
+        # Document renamed + filed under the documents root (same plural subdir
+        # mapping the photo record uses).
+        docs = list((self.archive / 'documents' / 'photos').glob('caption*_S-*.txt'))
+        self.assertEqual(len(docs), 1)
+
+    def test_bundle_refuses_already_processed_photo_before_moves(self) -> None:
+        store = self._install_photo_store()
+        bundle = self._make_bundle()
+        photo = bundle / 'reunion.jpg'
+        store.keywords[str(photo)] = ['SOURCE: S-aaaaaaaaaa']
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(bundle.exists())
+        self.assertTrue((bundle / 'reunion.jpg').exists())
+        self.assertTrue((bundle / 'caption.txt').exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+        self.assertFalse((self.archive / 'photos' / 'reunion.jpg').exists())
+        self.assertEqual(list((self.archive / 'documents' / 'photos').glob('*_S-*.txt')), [])
+
+    def test_bundle_includes_notes_named_assets(self) -> None:
+        bundle = self.archive / 'inbox' / 'interview-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\ntitle: Interview Packet\nsource_type: interview\n---\nStub notes.\n',
+            encoding='utf-8',
+        )
+        (bundle / 'interview.mp3').write_bytes(b'audio')
+        (bundle / 'interview.notes.md').write_text('transcript-ish notes\n', encoding='utf-8')
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertFalse(bundle.exists())
+        record = next((self.archive / 'sources' / 'interview').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 2)
+        filed = [f['file'] for f in files]
+        self.assertTrue(any(path.endswith('.mp3') for path in filed))
+        self.assertTrue(any(path.endswith('.md') for path in filed))
+
+    def test_bundle_uses_role_hints_from_notes_frontmatter(self) -> None:
+        bundle = self.archive / 'inbox' / 'recording-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\n'
+            'title: Oral History\n'
+            'source_type: interview\n'
+            'roles:\n'
+            '  oral-history.mp3: recording\n'
+            'files:\n'
+            '  - file: transcript.txt\n'
+            '    role: transcript\n'
+            '    is_primary: true\n'
+            '---\n'
+            'Interview notes.\n',
+            encoding='utf-8',
+        )
+        (bundle / 'oral-history.mp3').write_bytes(b'audio')
+        (bundle / 'transcript.txt').write_text('transcript', encoding='utf-8')
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'interview').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        by_original = {item['original_filename']: item for item in files}
+        self.assertEqual(by_original['oral-history.mp3']['role'], 'recording')
+        self.assertTrue(by_original['oral-history.mp3']['file'].endswith('-recording_' + record.stem.split('_')[-1] + '.mp3'))
+        self.assertEqual(by_original['transcript.txt']['role'], 'transcript')
+        self.assertEqual(by_original['transcript.txt']['is_primary'], 'true')
+        self.assertTrue(by_original['transcript.txt']['file'].endswith('-transcript_' + record.stem.split('_')[-1] + '.txt'))
+
+    def test_bundle_document_filename_includes_copy_hint(self) -> None:
+        bundle = self.archive / 'inbox' / 'translation-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\n'
+            'title: Land Deed\n'
+            'source_type: land-record\n'
+            'roles:\n'
+            '  deed-translation.txt: translation\n'
+            'files:\n'
+            '  - file: deed-translation.txt\n'
+            '    role: translation\n'
+            '    copy: b\n'
+            '---\n'
+            'Deed notes.\n',
+            encoding='utf-8',
+        )
+        (bundle / 'deed-translation.txt').write_text('translation text', encoding='utf-8')
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'land-record').glob('*_S-*.md'))
+        files = read_record(record)['meta']['files']
+        sid = record.stem.split('_')[-1]
+        self.assertEqual(files[0]['copy'], 'b')
+        self.assertTrue(files[0]['file'].endswith(f'-b-translation_{sid}.txt'))
+
+    def test_bundle_refuses_role_hint_for_missing_file(self) -> None:
+        bundle = self.archive / 'inbox' / 'missing-hint-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\nroles:\n  missing.txt: transcript\n---\nnotes\n',
+            encoding='utf-8',
+        )
+        (bundle / 'actual.txt').write_text('x', encoding='utf-8')
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue((bundle / 'notes.md').exists())
+        self.assertTrue((bundle / 'actual.txt').exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_bundle_refuses_subfolders_without_touching_assets(self) -> None:
+        bundle = self._make_bundle()
+        (bundle / 'nested').mkdir()
+
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue((bundle / 'notes.md').exists())
+        self.assertTrue((bundle / 'reunion.jpg').exists())
+        self.assertTrue((bundle / 'caption.txt').exists())
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_bundle_restores_notes_when_final_rmdir_fails(self) -> None:
+        store = self._install_photo_store()
+        bundle = self._make_bundle()
+        original_notes = (bundle / 'notes.md').read_text(encoding='utf-8')
+        original_rmdir = process.Path.rmdir
+
+        def fail_for_bundle(path: Path) -> None:
+            if path == bundle:
+                raise OSError('simulated rmdir failure')
+            original_rmdir(path)
+
+        process.Path.rmdir = fail_for_bundle
+        try:
+            rc = self._run([str(bundle)])
+        finally:
+            process.Path.rmdir = original_rmdir
+
+        self.assertEqual(rc, EXIT_FAILURE)
+        self.assertTrue(bundle.exists())
+        self.assertEqual((bundle / 'notes.md').read_text(encoding='utf-8'), original_notes)
+        self.assertTrue((bundle / 'reunion.jpg').exists())
+        self.assertTrue((bundle / 'caption.txt').exists())
+        self.assertEqual(store.read(self.archive / 'photos' / 'reunion.jpg'), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_bundle_dry_run_leaves_folder_intact(self) -> None:
+        store = self._install_photo_store()
+        bundle = self._make_bundle()
+        rc = self._run([str(bundle), '--dry-run'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertTrue((bundle / 'notes.md').exists())
+        self.assertTrue((bundle / 'reunion.jpg').exists())
+        self.assertEqual(store.read(bundle / 'reunion.jpg'), [])
+        self.assertEqual(list((self.archive / 'sources').rglob('*.md')), [])
+
+    def test_bundle_with_only_notes_refused(self) -> None:
+        bundle = self.archive / 'inbox' / 'empty-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text('---\ntitle: Nothing\n---\njust notes\n', encoding='utf-8')
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_ERRORS)
+        self.assertTrue(bundle.exists())  # not dissolved
+
+    def test_more_rejects_folder(self) -> None:
+        d = self.archive / 'photos' / '1880'
+        self._make_pair()
+        extra = self.archive / 'photos' / '1880' / 'extra.jpg'
+        extra.write_bytes(b'\xff\xd8\xff')
+        rc = self._run([str(d), '--more', str(extra), 'back'])
         self.assertEqual(rc, EXIT_ERRORS)
 
 

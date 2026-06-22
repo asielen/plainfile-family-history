@@ -719,6 +719,84 @@ def parse_media_filename(stem: str) -> ParsedName:
     )
 
 
+def grouping_stem(parsed: ParsedName) -> str:
+    """The base_id to group variation siblings by (TOOLING §6/§9).
+
+    The recognised suffix grammar (copy letter, negative/back/front/page-N/bw,
+    crop) is stripped so different scans of one physical photo collapse to one
+    key, but an *unrecognised* freeform suffix is folded back in: two unrelated
+    files like 'smith-family.jpg' and 'smith-house.jpg' must not merge into one
+    group just because both end in '-word'.
+
+    Lives in _lib (not photoindex) because two tools must agree on what counts
+    as a variation group: `fha photoindex` caches the grouping, and `fha
+    process` re-derives it to surface the one/separate/skip prompt. If the two
+    used different rules, a folder would group differently depending on which
+    tool looked at it (AGENTS_TOOLING symmetry: photoindex grouping ↔ process
+    variation detection). Tools never import tools, so the shared rule lives
+    here.
+    """
+    if parsed.part_kind == 'freeform':
+        return f'{parsed.base_id}-{parsed.freeform_role}'
+    return parsed.base_id
+
+
+def variant_role(parsed: ParsedName) -> str | None:
+    """Compound role string for a non-primary variation member (TOOLING §6/§9).
+
+    Returns None for a plain scan (no recognised suffix) — the caller treats a
+    None role as the primary. 'page' carries its number ('page-3'); a freeform
+    suffix becomes the role verbatim; '-crop' stacks onto whatever part-kind it
+    accompanies ('back-crop') or stands alone ('crop'). Shared by `fha
+    photoindex` (the cached `variant_role` column) and `fha process` (the
+    `files:` role annotation written on a grouped source), so both label the
+    same physical relationship identically.
+    """
+    if parsed.part_kind == 'page':
+        base = f'page-{parsed.page_num}'
+    elif parsed.part_kind == 'freeform':
+        base = parsed.freeform_role
+    elif parsed.part_kind != 'none':
+        base = parsed.part_kind
+    else:
+        base = None
+    if parsed.is_crop:
+        return f'{base}-crop' if base else 'crop'
+    return base
+
+
+def select_variation_primary(members: list, parsed_of) -> object:
+    """Pick the primary member of a variation group (TOOLING §6/§9).
+
+    `members` is any list of comparable keys (Paths or path strings) and
+    `parsed_of(member) -> ParsedName` maps each to its parsed filename. The
+    primary is, in priority order: a plain scan (no variant letter, no
+    part-kind, no crop); else a front scan of copy a/none; else the
+    lexicographically-first member. Min() over the candidate set makes the
+    choice deterministic when several qualify (e.g. two plain scans).
+
+    Shared so `fha process` flags the same file as `is_primary: true` that
+    `fha photoindex` records in `photo_groups.primary_path`.
+    """
+    plain = [
+        m for m in members
+        if parsed_of(m).variant_id is None
+        and parsed_of(m).part_kind == 'none'
+        and not parsed_of(m).is_crop
+    ]
+    if plain:
+        return min(plain)
+    fronts = [
+        m for m in members
+        if parsed_of(m).variant_id in (None, 'a')
+        and parsed_of(m).part_kind == 'front'
+        and not parsed_of(m).is_crop
+    ]
+    if fronts:
+        return min(fronts)
+    return min(members)
+
+
 # ── EDTF handling (TOOLING.md §1) ────────────────────────────────────────────
 
 # Validation regex for the EDTF subset this system uses.
