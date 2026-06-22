@@ -142,11 +142,13 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | `fha gedcom [<P-id>] [--mode descendants\|ancestors\|connected] [--generations N] [--all] [--include-living] [--out FILE]` | `gedcom.py` | ✓ M6.4 — see "fha gedcom — implementation status" below |
 | `fha wikitree <P-id> [--out FILE]` | `wikitree.py` | ✓ M6.5 — see "fha wikitree — implementation status" below |
 
-## Implemented tools (milestone 7, in progress)
+## Implemented tools (milestone 7)
 
 | Tool | File | Status |
 |---|---|---|
 | `fha process FILE|FOLDER [--type TYPE] [--title …] [--slug SLUG] [--more FILE ROLE[:copy]] [--dry-run]` | `process.py` | ✓ M7.1–M7.4 — single-file documents and photos + `--more`; folder triage + tier-1 variation detection (M7.3); `notes.md` bundle dissolution (M7.4); see "fha process — implementation status" below |
+| `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ M7.5–M7.7 — paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; see "fha capture — implementation status" below |
+| `fha convert-mining [--apply]` | `convert_mining.py` | ✓ M7.8 — one-time legacy transcript-mining migration into conformant sources/claims/stubs/questions; dry-run by default; see "fha convert-mining — implementation status" below |
 
 ## fha process — implementation status
 
@@ -193,6 +195,62 @@ role hints, already-processed-photo refusal, sidecar-named asset inclusion,
 late-failure rollback, no-asset refusal). Run with `python -m unittest
 tests.test_process -v` from the
 repo root.
+
+## fha capture — implementation status
+
+The web-record intake on-ramp (TOOLING §13b). Capture reads the HTML the human
+already has — piped on stdin, or an HTML `--asset` — and stages a **source stub**
+in `inbox/` (SPEC §12.1); it never logs in, fetches behind auth, or mints an
+S-id. Stdlib only (HTML parsed with `html.parser` — no third-party library).
+
+| Flag / feature | Status | Notes |
+|---|---|---|
+| Generic recipe (M7.5) | ✓ | The universal fallback for an unknown site: title (`<title>`/`og:title`/`<h1>`), URL (`--url`/`<link rel=canonical>`/`<base href>`/`og:url`), accessed-date (today), `repository` (page host), and visible text (~2000 chars, script/style stripped, truncated on a word boundary) as the citation basis. `source_type: website` (the controlled-vocabulary value for BUILD.md's shorthand `web`, so the stub processes cleanly) |
+| Inbox stub | ✓ | `{slug}.notes.md` with light optional frontmatter (title, source_type, citation, repository, source_date, external_links, person-name hints) over a freeform body. Re-parses cleanly via `read_record`, so `fha process` consumes it. Stub and asset slug collisions both uniquify (`slug-2`, `slug-3`); the stub and its `--asset` copy share a stem so they pair by basename without overwriting an existing inbox file |
+| `--asset FILE` | ✓ | Copied alongside the stub with the matching stem; an HTML `--asset` doubles as the page source when nothing is piped. Existing same-stem asset files force a new stem before writing |
+| Flag overrides | ✓ | `--title`/`--type`/`--date` always win over recipe/generic inference; `--type` is validated against the controlled vocabulary and `--date` is validated as EDTF (typos refuse here, not as an unprocessable stub later). A recipe-produced non-EDTF source date is warned and dropped |
+| `--dry-run` | ✓ | Previews the recipe match, stub path, optional asset copy, and research-log write without creating `inbox/` or `.cache/` |
+| Research-log entry | ✓ | Capture is itself a logged search: a `search_log` row when `.cache/index.sqlite` exists (so `fha report`'s "already searched" sees it immediately; `person_id`/`source_id` null — a stub has neither yet), else appended to `.cache/capture_log.jsonl`. A logging failure warns but never fails the capture |
+| stdin encoding | ✓ | stdin is read as raw bytes and decoded UTF-8 (not the locale codec), so a piped page's en-dashes/accents survive into the stub |
+| Site recipes (M7.6/M7.7) | ✓ | `tools/capture_recipes/` plug-in modules (`detect`/`extract`, discovered at runtime, tried in ascending `PRIORITY`, generic fallback last): **Ancestry** (collection title, date, household/index persons, image URL), **FamilySearch** (title, date, collection, fact-table persons), **Newspapers.com** (publication, date, page, snippet, citation; `source_type: newspaper`), **FindAGrave** (memorial name, birth/death, cemetery as a place hint, family members). Each detects its own page by host (with an `og:site_name` fallback) and rejects the others'. A broken or failing recipe is skipped with a warning — the page still captures generically |
+
+Automated tests: `tests/test_capture.py` (stdlib `unittest`, no network) drives
+`run_capture` over the anonymized `tests/fixtures/capture-samples/*.html`,
+covering generic frontmatter + jsonl fallback + the `search_log` write path,
+flag overrides + unknown-type/non-EDTF-date refusal, `--dry-run` no-op,
+write-failure exit status, `--asset` stem pairing, slug/asset collision, the
+UTF-8 stdin path, each recipe's extraction, mutually-exclusive recipe detection,
+and the truncation/domain helpers. Run with `python -m unittest
+tests.test_capture -v` from the repo root.
+
+## fha convert-mining — implementation status
+
+One-time migration of a legacy transcript-mining export (the `mining/` folder of
+`sources.txt`, `facts.txt`, `stories.txt`, `questions.txt`, `aliases.txt`, and
+`transcripts/`) into conformant records (TOOLING §11). **Dry-run by default**;
+`--apply` writes. Self-contained re-use of `_lib` primitives (tools never import
+tools — it does not import `process.py`).
+
+| Step / feature | Status | Notes |
+|---|---|---|
+| Sources first | ✓ | Each legacy `S###` → transcript copied to `documents/interviews/{slug}_{S-id}.txt` (renamed with the minted S-id, `original_filename` kept), a `sources/interview/{slug}_{S-id}.md` record scaffolded (`source_type: interview`, `people:` resolved via the alias map), and the extraction pass (model + run date) recorded in `## AI Passes` with human-readable import context in `## Notes` |
+| Facts → suggested claims | ✓ | `facts.txt` markdown rows → `suggested` claims: Claim→`value`; Earliest/Latest→a single EDTF or `min/max` interval (legacy `~`/`?`→EDTF `~`; anything that won't validate is dropped, never written); Confidence H/M/L→`confidence`; type by keyword heuristic (birth/marriage/served/worked/lived… → vocabulary) defaulting to `event` + the Section as `subtype`. `relationship`/`name` are never inferred (relationship needs `roles`). `Update(T###):` continuation lines merge into the preceding claim's `notes` |
+| Anchors | ✓ | Best-effort: the 3 rarest content words of a claim value are searched in the transcript; the first uniquely-matching line (all 3, then 2, then the rarest) → `anchor: line N`, else omitted |
+| Stories → `## Stories` | ✓ | `stories.txt` blocks attach to their source record, person resolved to a `[P-id]` token |
+| Questions → `notes/questions.md` | ✓ | `## Q:` blocks appended (`origin: tool`, `status: open`) with the person/source refs mapped to their new P-id/S-id |
+| People + stubs | ✓ | Every named person resolves to a P-id (alias map, else freshly minted); a P-id with no existing record is minted as a `people/stubs/` stub (`tier: stub`, `living: unknown`), so every claim/story/question reference resolves (lint E005-clean) while privacy defaults stay conservative |
+| Audit trail | ✓ | `.cache/convert_mapping.csv` (`legacy_id, new_id, notes`) for every source/claim/person mapping |
+| Apply safety | ✓ | Dry-run is the default. `--apply` refuses if `.cache/convert_mapping.csv` already exists (one-shot repeat-run sentinel) or if any planned destination exists; live writes register undo actions and roll back created files/directories plus any appended `notes/questions.md` text on a later failure |
+| Result | ✓ | The converted archive lints with no E-level findings (only the expected W102 suggested-claim backlog) — the M7.8 "Done when" |
+
+Automated tests: `tests/test_convert_mining.py` copies
+`tests/fixtures/legacy-export/` to a throwaway tree and exercises the dry-run
+(writes nothing), `--apply` (sources/claims/privacy-safe stubs, story + question
+import, mapping CSV), repeat-apply refusal, rollback after a write failure, the
+AI pass audit block, EDTF/type-heuristic units, the missing-`mining/` error, and
+— the contract — that the converted archive lints with zero errors via
+`lint.run_lint_silent`. Run with `python -m unittest tests.test_convert_mining
+-v` from the repo root.
 
 ## fha packet — implementation status
 
