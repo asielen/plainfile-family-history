@@ -43,9 +43,11 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    archive_root_missing_message,
     configure_utf8_stdout,
     edtf_bounds,
     find_archive_root,
+    format_edtf_error,
     id_type_of,
     is_valid_edtf,
     is_valid_id,
@@ -1656,7 +1658,7 @@ def run_related(
     date_bounds = None
     if date_filter is not None:
         if not is_valid_edtf(date_filter):
-            print(f'ERROR: {date_filter!r} is not a valid EDTF date.', file=sys.stderr)
+            print(f'ERROR: {format_edtf_error(date_filter, field="--date")}', file=sys.stderr)
             return EXIT_FAILURE
         date_bounds = edtf_bounds(date_filter)
 
@@ -1883,7 +1885,7 @@ def _run_find(args: argparse.Namespace) -> int:
     else:
         archive_root = find_archive_root()
         if archive_root is None:
-            print('ERROR: cannot find archive root. Use --root.', file=sys.stderr)
+            print(f'ERROR: {archive_root_missing_message()}', file=sys.stderr)
             return EXIT_FAILURE
 
     try:
