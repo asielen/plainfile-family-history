@@ -1325,25 +1325,31 @@ def process_photo(
             'a record outside the asset roots cannot be expressed as a portable alias path.'
         )
 
-    # The documented dry-run contract is "preview without any exiftool call or
-    # writes" — a machine without exiftool on PATH (or a photo whose metadata
-    # can't be read) must still get a preview, not a tool failure. The live
-    # path still needs this read to refuse re-processing, so only dry-run
-    # degrades a read failure to a warning and treats it as "unknown".
+    # Read all keywords at once: one exiftool call detects a pre-existing SOURCE:
+    # keyword (refuses re-processing) and identifies which P-ids from --people are
+    # already present. Only the absent ones are embedded and rolled back; ExifTool's
+    # -= operator removes every occurrence of a value, so rolling back a P-id that
+    # predated this run would delete it permanently.
     if dry_run:
         try:
-            existing = _read_source_keyword(file_path)
+            raw_kws = _run_exiftool_read_keywords(file_path)
         except RuntimeError as e:
             print(f'WARNING: could not read existing keywords from {file_path.name}: {e}',
                   file=sys.stderr)
-            existing = None
+            raw_kws = []
     else:
-        existing = _read_source_keyword(file_path)
+        raw_kws = _run_exiftool_read_keywords(file_path)
+    existing = next(
+        (mo.group(1).lower() for kw in raw_kws if (mo := _SOURCE_KEYWORD_RE.match(kw.strip()))),
+        None,
+    )
     if existing:
         raise ProcessError(
             f'{file_path.name} already carries SOURCE: {existing.upper()}; '
             'it looks already processed. Refusing to mint a second ID.'
         )
+    existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+    new_people = [p for p in (people or []) if p not in existing_pids]
 
     final_title = title or _slugify(file_path.stem).replace('-', ' ')
     sidecar = _find_sidecar(file_path)
@@ -1377,16 +1383,16 @@ def process_photo(
 
     if dry_run:
         print(f'[dry-run] Would mint {sid}')
-        kw_desc = f'SOURCE: {sid}' + (f' + {len(people)} P-id keyword(s)' if people else '')
+        kw_desc = f'SOURCE: {sid}' + (f' + {len(new_people)} P-id keyword(s)' if new_people else '')
         print(f'[dry-run] Would embed {kw_desc} in {file_path.name} (no rename)')
         print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
-        if people:
-            print(f'[dry-run] people: {", ".join(people)}')
+        if new_people:
+            print(f'[dry-run] people: {", ".join(new_people)}')
         if sidecar is not None:
             print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
 
-    err = _run_exiftool_embed_source(file_path, sid, extra_keywords=people or None)
+    err = _run_exiftool_embed_source(file_path, sid, extra_keywords=new_people or None)
     if err is not None:
         print(f'ERROR: exiftool could not embed SOURCE keyword in {file_path.name}: {err}',
               file=sys.stderr)
@@ -1404,7 +1410,7 @@ def process_photo(
         except Exception:
             pass
         try:
-            rollback_err = _run_exiftool_remove_source(file_path, sid, extra_keywords=people or None)
+            rollback_err = _run_exiftool_remove_source(file_path, sid, extra_keywords=new_people or None)
         except RuntimeError as rollback_exc:
             rollback_err = str(rollback_exc)
         print(f'ERROR: SOURCE keyword was embedded in {file_path.name} but the record '
@@ -1418,8 +1424,8 @@ def process_photo(
 
     print(f'Minted {sid}')
     print(f'Embedded SOURCE: {sid} in {file_path.name} (not renamed)')
-    if people:
-        print(f'Tagged people: {", ".join(people)}')
+    if new_people:
+        print(f'Tagged people: {", ".join(new_people)}')
     print(f'Scaffolded {_rel(record_path, archive_root)}')
     if sidecar is not None:
         print(f'Consumed stub {sidecar.name} (notes -> ## Notes)')
@@ -1477,15 +1483,32 @@ def process_photo_group(
                 f'({_rel(photos_root, archive_root)}); file the whole set there before processing.'
             )
 
-    # Refuse the set if any member is already processed — the user should attach
-    # with --more rather than mint a second ID over an existing source.
+    # Refuse the set if any member is already processed, and collect per-member
+    # existing P-id keywords so rollback only removes the ones this run added.
+    # ExifTool's -= operator removes every occurrence of a value, so rolling back
+    # a P-id keyword that predated this run would delete it permanently.
+    per_member_new_people: dict[Path, list[str]] = {}
     for m in members:
-        existing, _ = _read_existing_source_keyword(m, dry_run)
-        if existing:
+        if dry_run:
+            try:
+                raw_kws = _run_exiftool_read_keywords(m)
+            except RuntimeError as e:
+                print(f'WARNING: could not read existing keywords from {m.name}: {e}',
+                      file=sys.stderr)
+                raw_kws = []
+        else:
+            raw_kws = _run_exiftool_read_keywords(m)
+        existing_source = next(
+            (mo.group(1).lower() for kw in raw_kws if (mo := _SOURCE_KEYWORD_RE.match(kw.strip()))),
+            None,
+        )
+        if existing_source:
             raise ProcessError(
-                f'{m.name} already carries SOURCE: {existing.upper()}; the set looks '
+                f'{m.name} already carries SOURCE: {existing_source.upper()}; the set looks '
                 'partly processed. Attach the rest with --more instead.'
             )
+        existing_pids = {kw.strip() for kw in raw_kws if id_type_of(kw.strip()) == 'P'}
+        per_member_new_people[m] = [p for p in (people or []) if p not in existing_pids]
 
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     ordered = [primary] + [m for m in members if m != primary]
@@ -1545,7 +1568,7 @@ def process_photo_group(
     embedded: list[Path] = []
     try:
         for m in ordered:
-            err = _run_exiftool_embed_source(m, sid, extra_keywords=people or None)
+            err = _run_exiftool_embed_source(m, sid, extra_keywords=per_member_new_people[m] or None)
             if err is not None:
                 raise RuntimeError(f'exiftool could not embed SOURCE keyword in {m.name}: {err}')
             embedded.append(m)
@@ -1560,7 +1583,7 @@ def process_photo_group(
             pass
         for m in reversed(embedded):
             try:
-                _run_exiftool_remove_source(m, sid, extra_keywords=people or None)
+                _run_exiftool_remove_source(m, sid, extra_keywords=per_member_new_people[m] or None)
             except RuntimeError:
                 pass
         print(f'ERROR: processing the variation set failed, rolled back: {e}', file=sys.stderr)

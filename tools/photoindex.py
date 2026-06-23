@@ -147,6 +147,7 @@ from _lib import (
     is_valid_id,
     load_fha_yaml,
     newest_person_record_mtime,
+    normalize_date,
     normalize_id,
     parse_media_filename,
     select_variation_primary,
@@ -815,6 +816,7 @@ def _paths_by_edtf(conn: sqlite3.Connection, query: str) -> set[str]:
     unparseable string to the open range 0001..9999, which would turn a typo like
     --edtf banana into a match-every-dated-photo query; reject it up front instead.
     """
+    query = normalize_date(query) or query
     if not is_valid_edtf(query):
         raise ValueError(format_edtf_error(query, field='--edtf'))
     q_min, q_max = edtf_bounds(query)

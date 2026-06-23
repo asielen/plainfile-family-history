@@ -680,7 +680,7 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     record_mtime = newest_person_record_mtime(archive_root)
     if record_mtime > max_mtime:
         max_mtime = record_mtime
-    source_mtime = newest_source_record_mtime(archive_root)
+    source_mtime = newest_source_record_mtime(archive_root, subdir='photos')
     if source_mtime > max_mtime:
         max_mtime = source_mtime
 
@@ -1469,7 +1469,7 @@ def newest_record_mtime(archive_root: Path) -> float:
     return max_mtime
 
 
-def newest_source_record_mtime(archive_root: Path) -> float:
+def newest_source_record_mtime(archive_root: Path, subdir: str | None = None) -> float:
     """Max mtime (epoch seconds) across source records only.
 
     `photoindex` re-reads source `people:` lists to create the authoritative
@@ -1477,9 +1477,15 @@ def newest_source_record_mtime(archive_root: Path) -> float:
     even when no original photo file changed. Kept separate from
     newest_record_mtime so photo freshness does not react to unrelated notes or
     generated views.
+
+    Pass `subdir` to limit the scan to a specific subdirectory under sources/
+    (e.g. `'photos'`), which avoids false staleness when unrelated source types
+    such as census records are edited.
     """
     max_mtime = 0.0
     sources_dir = archive_root / 'sources'
+    if subdir:
+        sources_dir = sources_dir / subdir
     if not sources_dir.is_dir():
         return max_mtime
     for p in sources_dir.rglob('*.md'):

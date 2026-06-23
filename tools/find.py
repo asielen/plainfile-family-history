@@ -53,6 +53,7 @@ from _lib import (
     is_valid_id,
     load_fha_yaml,
     newest_record_mtime,
+    normalize_date,
     normalize_id,
     normalize_place_text,
     open_index_db,
@@ -1045,7 +1046,7 @@ def _print_person_photos(
     if status == 'stale':
         print('  photos: photo index is stale — run fha photoindex')
         return
-    if status == 'unreadable':
+    if status in ('unreadable', 'old-schema'):
         print('  photos: photo index is unreadable; rebuild with fha photoindex')
         return
     photos_db = archive_root / '.cache' / 'photos.sqlite'
@@ -1199,7 +1200,7 @@ def _print_place_photos(
     if status == 'stale':
         print('  photos: photo index is stale — run fha photoindex')
         return
-    if status == 'unreadable':
+    if status in ('unreadable', 'old-schema'):
         print('  photos: photo index is unreadable; rebuild with fha photoindex')
         return
     photos_db = archive_root / '.cache' / 'photos.sqlite'
@@ -1657,6 +1658,7 @@ def run_related(
 
     date_bounds = None
     if date_filter is not None:
+        date_filter = normalize_date(date_filter) or date_filter
         if not is_valid_edtf(date_filter):
             print(f'ERROR: {format_edtf_error(date_filter, field="--date")}', file=sys.stderr)
             return EXIT_FAILURE
