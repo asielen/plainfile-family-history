@@ -94,6 +94,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import html
 import json
 import os
@@ -630,12 +631,26 @@ class _SiteBuilder:
         return {'label': label, 'note': (role_note + ' · ' if role_note else '') + 'original kept in the archive',
                 'link_href': None, 'thumb_href': None}
 
+    def _media_dest(self, alias_path: str, subdir: str) -> Path:
+        """Collision-free derivative path under media/{subdir}.
+
+        Two assets can share a filename stem across different folders (scan
+        archives often reuse per-folder sequential names like `001.jpg`).
+        Namespacing by stem alone would let the second overwrite the first and
+        publish the wrong image. A short hash of the full alias path makes the
+        name unique while staying deterministic — the same asset always maps to
+        the same derivative, so it is built once and reused across pages rather
+        than churning or colliding."""
+        norm = alias_path.replace('\\', '/')
+        digest = hashlib.sha1(norm.encode('utf-8')).hexdigest()[:8]
+        return self.media_dir / subdir / f'{Path(norm).stem}_{digest}.jpg'
+
     def _standalone_image_entry(self, sid: str, asset_rel: str, role: str | None, page_dir: Path) -> dict:
         """Create the media derivative for a standalone image asset and return
         its file entry. Split from `_file_entry` because it needs the source id
         for the media subfolder and may emit a warning into `self.messages`."""
         resolved = resolve_path(asset_rel, self.fha_config, self.archive_root)
-        dest = self.media_dir / normalize_id(sid) / (Path(asset_rel).stem + '.jpg')
+        dest = self._media_dest(asset_rel, normalize_id(sid))
         if _make_derivative(resolved, dest):
             href = _rel_href(dest, page_dir)
             return {'label': Path(asset_rel).name, 'note': f'role: {role}' if role else None,
@@ -667,10 +682,16 @@ class _SiteBuilder:
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); showing the title only.')
 
+        # A standalone snapshot publishes only the archive's current position —
+        # accepted + needs-review. `suggested` (unreviewed AI drafts; "your
+        # suggestions are not facts") and `rejected`/`superseded` (known not
+        # current) are withheld from public output, matching the timeline's
+        # rule. `--linked` (developer preview) shows every status with its badge.
+        status_filter = '' if self.linked else "AND status IN ('accepted', 'needs-review')"
         claims = []
         for c in self.conn.execute(
             'SELECT id, type, value, date_edtf, place_id, place_text, status FROM claims '
-            'WHERE source_id = ? ORDER BY '
+            f'WHERE source_id = ? {status_filter} ORDER BY '
             "CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min ASC",
             (sid,),
         ):
@@ -878,7 +899,7 @@ class _SiteBuilder:
             return {'href': href, 'full_href': href, 'caption': caption}
         if not _PIL_AVAILABLE:
             return None
-        dest = self.media_dir / 'people' / (Path(row['path']).stem + '.jpg')
+        dest = self._media_dest(row['path'], 'people')
         if not _make_derivative(resolved, dest):
             self.messages.append(f'WARNING: could not build a web image for {row["path"]} (omitted from photo strip)')
             return None
@@ -1103,11 +1124,13 @@ class _SiteBuilder:
         }
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
-                       page_dir: Path, caption: str) -> dict | None:
+                       page_dir: Path, caption: str, *, initial_depth: int | None = None) -> dict | None:
         """Build a tree, write its `data/tree_{seed}_{mode}.json` artifact, and
         return the template context (inline-embeddable JSON + caption). Returns
         None when the tree has no edges (a lone node is not worth rendering), so
-        the page simply omits the tree section."""
+        the page simply omits the tree section. `initial_depth` bounds the
+        renderer's initial paint (deeper nodes start collapsed) for potentially
+        large descendant explorers; None shows every generation expanded."""
         tree = self._build_tree_data(seed, mode, max_hops, page_dir)
         if not tree['edges']:
             return None
@@ -1117,7 +1140,8 @@ class _SiteBuilder:
                 json.dumps(tree, indent=2, ensure_ascii=False), encoding='utf-8')
         except OSError as e:
             self.messages.append(f'WARNING: could not write tree data for {fmt_id_display(seed)} ({e}).')
-        return {'data_json': self._markup(_json_for_script(tree)), 'caption': caption}
+        return {'data_json': self._markup(_json_for_script(tree)), 'caption': caption,
+                'initial_depth': initial_depth}
 
     def _copy_vendor(self) -> None:
         """Copy the vendored tree renderer + adapter into the site so it stays
@@ -1181,8 +1205,11 @@ class _SiteBuilder:
             apex = self._apex_ancestor(root_person)
             apex_meta = self.person_meta.get(apex)
             apex_name = apex_meta['name'] if apex_meta and apex_meta['name'] else fmt_id_display(apex)
+            # Descendant explorer: keep the full lineage but render the first few
+            # generations up front so a large family doesn't paint thousands of
+            # nodes at once (the reader expands forward).
             tree = self._make_tree_ctx(apex, 'descendants', None, page_dir,
-                                       f'Descendants of {apex_name}')
+                                       f'Descendants of {apex_name}', initial_depth=4)
 
         self._write_page(self.out_dir / 'index.html', 'index.html', {
             'surnames': surnames, 'discoveries': discoveries, 'sources': sources,

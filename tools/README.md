@@ -233,7 +233,7 @@ Writes only to the output directory.
 | Source page (M8.1) | ✓ | Citation block (read from the source `.md` frontmatter, title fallback), source metadata, claims table with status badges (all statuses shown; people linked to their pages), and a files list (thumbnails + links). A malformed source record warns plainly and still renders with its title in place of the citation; one bad page never aborts the build |
 | Person page (M8.2) | ✓ | Summary block from accepted vital claims; biography + Stories HTML (stdlib markdown→HTML + token swap, read from the person `.md`); timeline (accepted + needs-review, decade-grouped — same query as `fha views timeline`, suggested excluded); sources index grouped by `source_type` (same two-table UNION as `fha views sources-index`); photo strip (`photo_people`, one entry per variation group); Friends & Family from the `relationships` edges |
 | Token swap | ✓ | `TOKEN_RE` in prose → relative hrefs: `[P-id]` → person page (or "Living Person" when redacted, or plain name for a stub/page-less person); `[S-id]` → source page (or "Restricted — not included in this publication" when redacted); `[L-id]` → place name (place pages are M8.3, no link yet); any unresolved token → `<mark>[X-xxxx]</mark>` |
-| `--standalone` (default) | ✓ | Self-contained, redacted snapshot. Living/unknown persons get **no page** and render as "Living Person"; restricted, DNA, and `rights.publication_ok: false` sources get **no page** and render as "Restricted…"; image assets become resized (≤1200px), EXIF-stripped derivatives copied into `site/media/`. A page is linked only if it was generated (no dangling redacted links) |
+| `--standalone` (default) | ✓ | Self-contained, redacted snapshot. Living/unknown persons get **no page** and render as "Living Person"; restricted, DNA, and `rights.publication_ok: false` sources get **no page** and render as "Restricted…"; source pages publish only **accepted + needs-review** claims (`suggested` AI drafts and `rejected`/`superseded` claims are withheld — matching the timeline); image assets become resized (≤1200px), EXIF-stripped derivatives copied into `site/media/` under collision-free names (stem + a hash of the alias path, so two same-stem photos never overwrite each other). A page is linked only if it was generated (no dangling redacted links) |
 | `--linked` | ✓ | Local developer preview: real archive paths (no copies), no redaction. Mutually exclusive with `--standalone` |
 | `--out PATH` | ✓ | Output directory (default `.cache/site/` under the archive root); absolute or archive-relative |
 | `--dry-run` | ✓ | Reports how many pages would be built; writes nothing |
@@ -243,20 +243,23 @@ Writes only to the output directory.
 | Discoveries page (M8.3) | ✓ | Renders `notes/discoveries.md` through the same prose→HTML + token swap, so `[P-id]`/`[S-id]` mentions link (and living persons redact to "Living Person") for free. Missing/empty file → a plain "nothing logged yet" page |
 | Home page (M8.4) | ✓ | Surname A-Z index (built from `person_pages`, so redacted persons are already excluded), a recent-discoveries teaser (last 5 `##`/`###` sections or top-level bullets of `discoveries.md`, redacted), plus place and source navigation so every generated page is reachable |
 | Standalone redaction audit (M8.4) | ✓ | Enforced structurally: all cross-links resolve against the authoritative `person_pages`/`source_pages`/`place_pages` sets decided once in `prepare()`, so a page is linked only if it was generated. `tests/test_site.py` crawls every emitted standalone page (and every tree JSON node `url`) and asserts no `persons/`/`sources/` link points at a missing page |
-| Interactive tree rendering (M8.5) | ✓ | A vendored, dependency-free renderer (`templates/vendor/fha-tree.js`) + a single adapter seam (`tree-adapter.js`) map the neutral tree JSON contract (TOOLING §7/§14b) to an SVG collapsible tree; no D3, no CDN, works from file://. At build time the home page gets a **descendant** tree seeded from the apex of `root_person`'s line (so the explorer fans forward across the whole family — reconciling BUILD's "root person" with TOOLING's "root ancestor"); each curated person page gets a 3-generation **ancestor** pedigree. JSON is written to `site/data/tree_{P-id}_{mode}.json` (the reusable artifact) **and** embedded inline (read from the DOM, not fetched — file:// has no network). Redaction is applied server-side in the JSON (living/unknown → "Living Person", no vitals, no link), so a published tree file never carries a living person's name or a link to a page that wasn't generated |
+| Interactive tree rendering (M8.5) | ✓ | A vendored, dependency-free renderer (`templates/vendor/fha-tree.js`) + a single adapter seam (`tree-adapter.js`) map the neutral tree JSON contract (TOOLING §7/§14b) to an SVG collapsible tree; no D3, no CDN, works from file://. At build time the home page gets a **descendant** tree seeded from the apex of `root_person`'s line (so the explorer fans forward across the whole family — reconciling BUILD's "root person" with TOOLING's "root ancestor"); each curated person page gets a 3-generation **ancestor** pedigree. JSON is written to `site/data/tree_{P-id}_{mode}.json` (the reusable artifact) **and** embedded inline (read from the DOM, not fetched — file:// has no network). Redaction is applied server-side in the JSON (living/unknown → "Living Person", no vitals, no link), so a published tree file never carries a living person's name or a link to a page that wasn't generated. The home descendant explorer passes a bounded `initialDepth` to the renderer (deeper generations start collapsed) so a large family doesn't paint thousands of nodes at once; the data stays complete and the reader expands forward |
 | Exit codes | ✓ | 0 clean; 1 if any page warned (missing asset, malformed record, image that couldn't be processed); 3 (`EXIT_FAILURE`, the convention `fha packet` uses for can't-run refusals) for the Jinja2-missing, index-absent, and unsafe-output paths, each with a plain install / `fha index` / pick-another-folder hint |
 
 `fha site`'s file is `tools/site.py`, but the module stem `site` collides with
 Python's stdlib `site`; `fha.py` (and `tests/test_site.py`) load it by path under
 the private name `fha_site` to avoid the cached-stdlib-module collision.
 
-**Index dependency note:** M8.1 also corrected `index.py` to store
+**Index dependency note:** M8.1 corrected `index.py` to store
 `rights.publication_ok` three-state (`1`=true, `0`=explicit false, `NULL`=absent)
 instead of folding explicit false to `NULL`. The shared redaction predicate
 `COALESCE(publication_ok, 1) = 0` (used by `fha site`, `fha gedcom`, `fha wikitree`)
 only fires on a stored `0`, so this is what makes a `publication_ok: false` source
-actually withheld from public output. No DDL or schema-version change (the column
-already existed); rebuild with `fha index`.
+actually withheld from public output. The DDL is unchanged (the column already
+existed), but `INDEX_SCHEMA_VERSION` was bumped to **2** so an index built before
+this fix (which stored `false` as `NULL`) is treated as old-schema and rebuilt by
+`fha index` rather than silently under-redacting. The `.cache` is disposable and
+gitignored, so the cost is one rebuild.
 
 Automated tests: `tests/test_site.py` (stdlib `unittest`) builds a synthetic
 `.cache/index.sqlite` (and, where needed, `.cache/photos.sqlite`) the same way
@@ -284,7 +287,12 @@ remote/CDN reference; the home descendant tree seeds from the apex of
 `root_person`'s line (whole-line node set); the per-person 3-generation
 ancestor pedigree; tree JSON redaction (living apex → "Living Person", no url)
 and url-points-only-at-generated-pages; and the no-tree-without-`root_person`
-case. Run with `python -m unittest tests.test_site -v` from the repo root.
+case. Post-review hardening tests: two same-stem photos get distinct media
+derivatives (no overwrite); `--standalone` source pages exclude
+`suggested`/`rejected` claims while `--linked` keeps them; the home tree passes a
+bounded `initialDepth` and the pedigree passes null; and an old-schema (v1)
+index is refused, not trusted. Run with `python -m unittest tests.test_site -v`
+from the repo root.
 
 ## fha capture - implementation status
 

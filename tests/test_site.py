@@ -124,6 +124,30 @@ class SourcePageTests(_Base):
         self.assertIn('status-suggested', html)                  # all statuses shown w/ badge
         self.assertIn('../persons/p-aaaaaaaaaa.html', html)      # person link in People column
 
+    def test_standalone_excludes_unreviewed_and_rejected_claims(self):
+        # P2-2: a public snapshot shows only accepted + needs-review; --linked
+        # (developer preview) shows every status with its badge.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Mixed Source', people=('p-aaaaaaaaaa',))
+        self._seed_claim('c-1111111111', 's-1111111111', 'residence', 'Accepted fact',
+                         status='accepted', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-2222222222', 's-1111111111', 'occupation', 'Under review',
+                         status='needs-review', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-3333333333', 's-1111111111', 'occupation', 'AI draft guess',
+                         status='suggested', persons=('p-aaaaaaaaaa',))
+        self._seed_claim('c-4444444444', 's-1111111111', 'occupation', 'Known wrong',
+                         status='rejected', persons=('p-aaaaaaaaaa',))
+        self._run(linked=False)
+        public = self._read('sources/s-1111111111.html')
+        self.assertIn('Accepted fact', public)
+        self.assertIn('Under review', public)
+        self.assertNotIn('AI draft guess', public)        # suggested withheld
+        self.assertNotIn('Known wrong', public)            # rejected withheld
+        self._run(linked=True)
+        dev = self._read('sources/s-1111111111.html')
+        self.assertIn('AI draft guess', dev)               # linked shows everything
+        self.assertIn('Known wrong', dev)
+
     def test_missing_asset_listed_not_linked(self):
         self._seed_source('s-1111111111', 'Has Asset')
         self.conn.execute(
@@ -310,6 +334,32 @@ class ResilienceTests(_Base):
         # reopen so tearDown's close() doesn't error
         self.conn = sqlite3.connect(':memory:')
 
+    def test_old_schema_index_rejected(self):
+        # P2-4: an index built before the publication_ok three-state fix (older
+        # schema version) must be refused, not trusted, so a rebuild applies the
+        # corrected redaction. Overwrite with a v1-shaped index.
+        self.conn.close()
+        db = self.archive_root / '.cache' / 'index.sqlite'
+        db.unlink()
+        conn = sqlite3.connect(str(db))
+        conn.executescript(
+            "PRAGMA user_version=1;"
+            "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+            "INSERT INTO meta(key, value) VALUES ('schema_version', '1');"
+            "CREATE TABLE persons(id TEXT, name TEXT, surname TEXT, sex TEXT, living TEXT,"
+            " tier TEXT, status TEXT, merged_into TEXT, path TEXT);"
+            "CREATE TABLE sources(id TEXT, title TEXT, source_type TEXT, date_edtf TEXT,"
+            " repository TEXT, source_class TEXT, restricted INTEGER, publication_ok INTEGER,"
+            " status TEXT, path TEXT);"
+        )
+        conn.commit()
+        conn.close()
+        future = time.time() + 5
+        os.utime(db, (future, future))
+        res = site.run_site(self.archive_root, self.out_dir, linked=True)
+        self.assertEqual(res['status'], 'no-index')   # old schema → refused, prompt to rebuild
+        self.conn = sqlite3.connect(':memory:')
+
 
 class AssetTests(_Base):
     def _make_photos_db(self):
@@ -362,6 +412,28 @@ class AssetTests(_Base):
             self.assertLessEqual(max(im.size), site._DERIVATIVE_MAX_PX)
             self.assertEqual(im.info.get('exif'), None)
         self.assertIn('media/', self._read('sources/s-1111111111.html'))
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_same_stem_photos_get_distinct_derivatives(self):
+        # Two photos sharing a filename stem in different folders must not
+        # overwrite each other's derivative (P2-1).
+        from PIL import Image
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        pconn = self._make_photos_db()
+        for i, (group, sub) in enumerate(((1, '1880'), (2, '1890'))):
+            img = self.archive_root / 'photos' / sub / 'scan.jpg'
+            img.parent.mkdir(parents=True, exist_ok=True)
+            Image.new('RGB', (300, 200), (10 * i, 20, 30)).save(img)
+            pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) VALUES (?,?,?,?)',
+                          (f'photos/{sub}/scan.jpg', f'g{group}', 1, f'Scan {sub}'))
+            pconn.execute('INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                          (f'photos/{sub}/scan.jpg', 'p-aaaaaaaaaa', 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        self._make_photos_fresh()
+        self._run(linked=False)
+        derivs = list((self.out_dir / 'media' / 'people').glob('scan_*.jpg'))
+        self.assertEqual(len(derivs), 2, 'both same-stem photos should get distinct derivatives')
 
     def test_standalone_non_image_kept_in_archive(self):
         self._seed_source('s-1111111111', 'Doc Source', source_type='letter')
@@ -612,6 +684,14 @@ class TreeTests(_Base):
         self._seed_person('p-aaaaaaaaaa', 'Solo')   # no fha.yaml root_person, no edges
         self._run(linked=True)
         self.assertNotIn('fha-tree-data', self._read('index.html'))
+
+    def test_home_tree_bounds_initial_paint(self):
+        # P2-3: the home descendant explorer passes a bounded initialDepth to the
+        # renderer; the per-person pedigree leaves it null (small, shown in full).
+        self._seed_rels_chain()
+        self._run(linked=True)
+        self.assertIn('initialDepth: 4', self._read('index.html'))
+        self.assertIn('initialDepth: null', self._read('persons/p-aaaaaaaaaa.html'))
 
 
 class ProseConverterTests(unittest.TestCase):

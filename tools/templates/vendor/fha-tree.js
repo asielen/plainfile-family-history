@@ -60,6 +60,18 @@
     options = options || {};
     var collapsed = {};   // node id -> true when the user has collapsed it
 
+    // Bound the initial paint: nodes at or beyond options.initialDepth start
+    // collapsed, so a large descendant explorer renders a few generations up
+    // front and the reader expands forward on demand (the data is complete —
+    // nothing is dropped, only hidden). Omitting initialDepth shows everything.
+    if (options.initialDepth != null) {
+      (function seed(node, depth) {
+        var kids = node.children || [];
+        if (depth >= options.initialDepth && kids.length) collapsed[node.id] = true;
+        kids.forEach(function (c) { seed(c, depth + 1); });
+      })(root, 0);
+    }
+
     function draw() {
       var leaves = layout(root, collapsed);
       var depth = maxDepth(root, collapsed);

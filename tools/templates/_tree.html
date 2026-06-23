@@ -17,7 +17,8 @@
   try {
     var data = JSON.parse(holder.textContent);
     var root = window.FhaTreeAdapter.fromNeutral(data);
-    window.FhaTree.render(document.getElementById('fha-tree'), root, {});
+    var opts = { initialDepth: {{ tree.initial_depth if tree.initial_depth is not none else 'null' }} };
+    window.FhaTree.render(document.getElementById('fha-tree'), root, opts);
   } catch (e) { /* a bad tree must never blank the page */ }
 })();
 </script>
