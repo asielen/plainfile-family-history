@@ -167,12 +167,14 @@ _VITAL_LABELS = {
 }
 _VITAL_ORDER = ['birth', 'baptism', 'marriage', 'death', 'burial']
 
-# Friends & Family grouping, in display order (TOOLING §12).
+# Friends & Family grouping, in display order (TOOLING §12). These mirror the
+# relationship edge types the index actually derives (M1.3): parent/child/spouse
+# from vital+relationship claims, and friend/associate/neighbor from social
+# subtypes. No 'sibling' edge is derived, so it is intentionally absent.
 _FAMILY_GROUPS = [
     ('parent', 'Parents'),
     ('spouse', 'Spouses'),
     ('child', 'Children'),
-    ('sibling', 'Siblings'),
     ('friend', 'Friends'),
     ('associate', 'Associates'),
     ('neighbor', 'Neighbors'),
@@ -426,6 +428,9 @@ class _SiteBuilder:
         # every person page, closed by run_site — so the photos-root freshness
         # walk happens once per build, not once per curated person.
         self.photos_conn: sqlite3.Connection | None = None
+        # discoveries.md is read for both the discoveries page and the home
+        # teaser; memoize so the file is parsed once per build.
+        self._discoveries: tuple[str, list[str]] | None = None
 
         if jinja2 is not None:
             self.env = jinja2.Environment(
@@ -586,6 +591,21 @@ class _SiteBuilder:
             return self.place_names[place_id]
         return ''
 
+    def _place_html(self, place_text: str | None, place_id: str | None, page_dir: Path):
+        """Place cell for claims tables / timelines: the display text linked to
+        its place page when the claim carries a registered `place_id`, else plain
+        text (free-text `place_text` with no registry id stays unlinked). Returns
+        a Markup so the template renders the link; an empty Markup when there is
+        no place at all (so `{% if %}` guards still treat it as absent). Mirrors
+        the `[L-id]`-token link in prose — the symmetry the review flagged."""
+        label = self._place_label(place_text, place_id)
+        if not label:
+            return self._markup('')
+        if place_id and place_id in self.place_pages:
+            href = html.escape(_rel_href(self.places_dir / _page_filename(place_id), page_dir), quote=True)
+            return self._markup(f'<a href="{href}">{_escape(label)}</a>')
+        return self._markup(_escape(label))
+
     # — assets —
 
     def _file_entry(self, asset_rel: str, role: str | None, page_dir: Path) -> dict | None:
@@ -701,7 +721,7 @@ class _SiteBuilder:
             persons_html = ', '.join(self._person_link(p['person_id'], page_dir) for p in person_rows)
             claims.append({
                 'type': c['type'], 'value': c['value'], 'date': c['date_edtf'] or '',
-                'place': self._place_label(c['place_text'], c['place_id']),
+                'place': self._place_html(c['place_text'], c['place_id'], page_dir),
                 'persons_html': self._markup(persons_html), 'status': c['status'],
             })
 
@@ -776,7 +796,7 @@ class _SiteBuilder:
                 summary.append({
                     'label': _VITAL_LABELS[t],
                     'value': r['date_edtf'] or r['value'] or '',
-                    'place': self._place_label(r['place_text'], r['place_id']),
+                    'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                 })
         return summary
@@ -817,7 +837,7 @@ class _SiteBuilder:
                 entries = []
             entries.append({
                 'date': r['date_edtf'] or '(undated)', 'type': r['type'], 'value': r['value'],
-                'place': self._place_label(r['place_text'], r['place_id']),
+                'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                 'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
             })
         if entries:
@@ -1004,12 +1024,17 @@ class _SiteBuilder:
         `-` bullet — the dated, ref-carrying shape TOOLING §15a appends. The
         schema is loose by design, so this is tolerant: no recognizable entries
         means an empty teaser, never an error. The last five chunks (most
-        recently appended) are returned for the home-page teaser."""
+        recently appended) are returned for the home-page teaser. Memoized: the
+        discoveries page and the home teaser both call this, but the file is
+        parsed once per build."""
+        if self._discoveries is not None:
+            return self._discoveries
         path = self.archive_root / 'notes' / 'discoveries.md'
         try:
             text = path.read_text(encoding='utf-8')
         except OSError:
-            return '', []
+            self._discoveries = ('', [])
+            return self._discoveries
         lines = text.replace('\r\n', '\n').split('\n')
         # Drop a single leading H1 (the page supplies its own title).
         if lines and lines[0].startswith('# '):
@@ -1027,7 +1052,8 @@ class _SiteBuilder:
                     chunks.append(chunk)
         else:
             chunks = [ln.strip() for ln in lines if _LIST_RE.match(ln)]
-        return body, chunks[-5:]
+        self._discoveries = (body, chunks[-5:])
+        return self._discoveries
 
     # — interactive tree (M8.5) —
 
@@ -1069,7 +1095,12 @@ class _SiteBuilder:
                 if other not in depth:
                     depth[other] = depth[cur] + 1
                     queue.append(other)
-        return max(depth, key=lambda pid: (depth[pid], [-ord(ch) for ch in pid]))
+        # Deepest ancestor; ties broken by the lowest id so the seed is stable.
+        best = root_pid
+        for pid, d in depth.items():
+            if d > depth[best] or (d == depth[best] and pid < best):
+                best = pid
+        return best
 
     def _tree_node(self, pid: str, page_dir: Path) -> dict:
         """One neutral-JSON tree node, with redaction and a `url` applied here
@@ -1201,6 +1232,11 @@ class _SiteBuilder:
         # root_person's line so the tree fans forward across the whole family.
         tree = None
         root_person = normalize_id(str(self.fha_config.get('root_person', '')))
+        if root_person and root_person not in self.person_meta:
+            self.messages.append(
+                f"WARNING: fha.yaml root_person {fmt_id_display(root_person)} is not in the index; "
+                "the home family tree was skipped. Check the id, or run `fha index` if it was just added."
+            )
         if root_person and root_person in self.person_meta:
             apex = self._apex_ancestor(root_person)
             apex_meta = self.person_meta.get(apex)
@@ -1294,7 +1330,8 @@ def run_site(
     if jinja2 is None:
         return {'status': 'no-jinja', 'messages': [], 'out_dir': out_dir, 'pages': 0}
 
-    unsafe = _unsafe_output_reason(out_dir, archive_root)
+    fha_config = load_fha_yaml(archive_root)
+    unsafe = _unsafe_output_reason(out_dir, archive_root, fha_config)
     if unsafe:
         return {'status': 'bad-output', 'messages': [unsafe], 'out_dir': out_dir, 'pages': 0}
 
@@ -1302,7 +1339,7 @@ def run_site(
     if conn is None:
         return {'status': 'no-index', 'messages': [], 'out_dir': out_dir, 'pages': 0}
 
-    builder = _SiteBuilder(conn, archive_root, load_fha_yaml(archive_root), out_dir, linked=linked)
+    builder = _SiteBuilder(conn, archive_root, fha_config, out_dir, linked=linked)
     try:
         builder.prepare()
         if dry_run:
@@ -1318,39 +1355,54 @@ def run_site(
         conn.close()
 
 
-def _unsafe_output_reason(out_dir: Path, archive_root: Path) -> str | None:
+def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -> str | None:
     """Return a plain refusal message if writing the site to `out_dir` would
-    overwrite archive content, else None.
+    overwrite or pollute archive content, else None.
 
-    `fha site` clears the `persons/`, `sources/`, and `media/` subtrees of its
-    output directory before regenerating (idempotent rebuild). One of those —
-    `sources/` — is also the name of the archive's own record tree. So pointing
-    `--out` at the archive root (or any existing archive) would delete real
-    records. Refuse before any write rather than risk that. The default
-    `.cache/site/` is always safe.
+    `fha site` clears its owned subtrees (`persons/`, `sources/`, `places/`,
+    `media/`, `data/`, `vendor/`) of the output directory before regenerating
+    (idempotent rebuild). Two of those — `sources/` and `places/` — share names
+    with the archive's own record trees, so pointing `--out` at the archive root
+    would delete real records. And building *into* a record or asset tree (e.g.
+    `--out sources`) would scatter generated pages among the originals. Refuse
+    both before any write. The default `.cache/site/` is always safe.
     """
     try:
         out_res = out_dir.resolve()
         root_res = archive_root.resolve()
     except OSError:
         return None
-    # The catastrophic case: out_dir IS the archive root, so the site's
-    # sources/ subtree (cleared on rebuild) would be the archive's own record
-    # tree. The normal default (.cache/site, nested *inside* the archive) is
-    # fine — only an exact match is the danger.
     if out_res == root_res:
         return (
             f'Refusing to build the site into the archive root ({archive_root}). '
             'The site clears its own sources/ folder when it rebuilds, which would '
             'delete your records. Pick a separate folder, e.g. `--out .cache/site` (the default).'
         )
-    # A different archive (its own fha.yaml + record tree) must not be clobbered
-    # either — but the archive's own .cache/ etc. never carries an fha.yaml.
-    if out_res != root_res and (out_dir / 'fha.yaml').exists():
+    # A different archive (its own fha.yaml + record tree) must not be clobbered.
+    if (out_dir / 'fha.yaml').exists():
         return (
             f'Refusing to build the site into {out_dir}: it looks like another archive '
             '(it has an fha.yaml). Choose an empty or site-only folder, e.g. the default `.cache/site`.'
         )
+    # Building at or inside a record/asset tree would pollute the originals.
+    protected = ['sources', 'people', 'places', 'notes', 'inbox']
+    candidates = [archive_root / name for name in protected]
+    for alias in ('documents', 'photos'):
+        try:
+            candidates.append(resolve_path(alias, fha_config, archive_root))
+        except Exception:
+            pass
+    for cand in candidates:
+        try:
+            cand_res = cand.resolve()
+        except OSError:
+            continue
+        if out_res == cand_res or cand_res in out_res.parents:
+            return (
+                f'Refusing to build the site into {out_dir}: that is inside your archive\'s '
+                f'"{cand.name}" folder, where it would mix generated pages in with your originals. '
+                'Choose a separate folder, e.g. the default `.cache/site`.'
+            )
     return None
 
 

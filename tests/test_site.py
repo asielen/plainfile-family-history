@@ -282,6 +282,18 @@ class PersonRedactionTests(_Base):
         self._run(linked=True)
         self.assertFalse((self.out_dir / 'persons' / 'p-aaaaaaaaaa.html').exists())
 
+    def test_linked_shows_living_person_data(self):
+        # Inverse of redaction: in --linked, a living person keeps their real
+        # name and a working link (developer preview is unredacted).
+        self._seed_person('p-aaaaaaaaaa', 'Living Larry', living='true')
+        self._seed_person('p-bbbbbbbbbb', 'Dead Dan', living='false',
+                          body='# Dan\n## Biography\nKnew [P-aaaaaaaaaa] well.\n')
+        self._run(linked=True)
+        dan = self._read('persons/p-bbbbbbbbbb.html')
+        self.assertIn('Living Larry', dan)                       # real name, not redacted
+        self.assertIn('href="p-aaaaaaaaaa.html"', dan)           # real link (sibling page)
+        self.assertNotIn(site._LIVING_LABEL, dan)
+
 
 class ResilienceTests(_Base):
     def test_malformed_source_yaml_warns_and_continues(self):
@@ -324,6 +336,16 @@ class ResilienceTests(_Base):
         res = site.run_site(self.archive_root, self.archive_root, linked=True)
         self.assertEqual(res['status'], 'bad-output')
         self.assertTrue((self.archive_root / 'sources').exists())   # records untouched
+
+    def test_refuses_output_inside_record_tree(self):
+        # Building into the archive's own sources/ would scatter pages among the
+        # record .md files; refuse before any write.
+        self._seed_source('s-1111111111', 'A Source')
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.archive_root / '.cache' / 'index.sqlite', (future, future))
+        res = site.run_site(self.archive_root, self.archive_root / 'sources', linked=True)
+        self.assertEqual(res['status'], 'bad-output')
 
     def test_no_index_status(self):
         # Remove the index file entirely.
@@ -495,6 +517,33 @@ class PlacePageTests(_Base):
                           body='# Jane\n## Biography\nBorn in [L-1111111111].\n')
         self._run(linked=True)
         self.assertIn('../places/l-1111111111.html', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_claim_place_column_links_to_place_page(self):
+        # Symmetry fix: a claim's place cell links to the place page when the
+        # claim carries a registered place_id (not just prose [L-id] tokens).
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview')
+        self._seed_claim_at_place('c-1111111111', 's-1111111111', 'l-1111111111',
+                                  'Lived in Fairview', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        # Source page claims table and the person timeline both link the place.
+        self.assertIn('../places/l-1111111111.html', self._read('sources/s-1111111111.html'))
+        self.assertIn('../places/l-1111111111.html', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_freetext_place_without_id_is_not_linked(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        # place_text but no place_id → plain text, no link, no crash.
+        self.conn.execute(
+            "INSERT INTO claims(id, source_id, type, value, status, place_text) VALUES (?,?,?,?,?,?)",
+            ('c-1111111111', 's-1111111111', 'residence', 'Somewhere', 'accepted', 'Old Country'))
+        self.conn.execute('INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,?)',
+                          ('c-1111111111', 'p-aaaaaaaaaa', 0))
+        self._run(linked=True)
+        html = self._read('sources/s-1111111111.html')
+        self.assertIn('Old Country', html)
+        self.assertNotIn('places/', html.split('Old Country')[0][-200:])  # no place link around it
 
 
 class DiscoveriesTests(_Base):
@@ -692,6 +741,32 @@ class TreeTests(_Base):
         self._run(linked=True)
         self.assertIn('initialDepth: 4', self._read('index.html'))
         self.assertIn('initialDepth: null', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_relationship_cycle_terminates(self):
+        # A cousin-marriage style cycle must not loop forever; the BFS visited
+        # set bounds it and the node set is deduplicated.
+        self._seed_person('p-aaaaaaaaaa', 'A')
+        self._seed_person('p-bbbbbbbbbb', 'B')
+        for a, b in (('p-aaaaaaaaaa', 'p-bbbbbbbbbb'), ('p-bbbbbbbbbb', 'p-aaaaaaaaaa')):
+            self.conn.execute(
+                'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
+                (a, 'parent', b, 'c-1111111111'))
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots: {}\nroot_person: P-aaaaaaaaaa\n', encoding='utf-8')
+        res = self._run(linked=True)
+        self.assertEqual(res['status'], 'ok')
+        tree = json.loads(
+            (self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json').read_text(encoding='utf-8'))
+        ids = [n['p_id'] for n in tree['nodes']]
+        self.assertEqual(sorted(ids), ['P-aaaaaaaaaa', 'P-bbbbbbbbbb'])   # each node once
+
+    def test_mistyped_root_person_warns(self):
+        self._seed_person('p-aaaaaaaaaa', 'Real Person')
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots: {}\nroot_person: P-zzzzzzzzzz\n', encoding='utf-8')   # not in index
+        res = self._run(linked=True)
+        self.assertTrue(any('root_person' in m and 'not in the index' in m for m in res['messages']))
+        self.assertNotIn('fha-tree-data', self._read('index.html'))
 
 
 class ProseConverterTests(unittest.TestCase):

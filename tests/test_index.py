@@ -331,6 +331,29 @@ class IndexPublicationOkTests(unittest.TestCase):
     def test_rights_without_publication_ok_stored_as_null(self) -> None:
         self.assertIsNone(self._index('S-dddddddddd', 'rights:\n  holder: family collection\n'))
 
+    def test_incremental_upsert_matches_full_rebuild(self) -> None:
+        # The three-state mapping must hold on the incremental path too — both
+        # build_index and upsert_source go through _index_source, but verify
+        # end-to-end that a publication_ok:false source stays 0 after an upsert.
+        sid = 'S-eeeeeeeeee'
+        path = self.archive_root / 'sources' / 'other' / f'src_{sid}.md'
+        _write(path, f'---\nid: {sid}\ntitle: Test\nsource_type: other\nrights:\n  publication_ok: false\n---\n\n## Claims\n')
+        index.build_index(self.archive_root, {})
+        cache = self.archive_root / '.cache' / 'index.sqlite'
+        conn = sqlite3.connect(str(cache))
+        try:
+            self.assertEqual(
+                conn.execute('SELECT publication_ok FROM sources WHERE id=?', (sid.lower(),)).fetchone()[0], 0)
+        finally:
+            conn.close()
+        index.upsert_source(self.archive_root, {}, sid.lower())
+        conn = sqlite3.connect(str(cache))
+        try:
+            self.assertEqual(
+                conn.execute('SELECT publication_ok FROM sources WHERE id=?', (sid.lower(),)).fetchone()[0], 0)
+        finally:
+            conn.close()
+
 
 class FullRebuildClearsStaleRowsTests(unittest.TestCase):
     """A full rebuild must not leave stale hypotheses/search_log rows behind
