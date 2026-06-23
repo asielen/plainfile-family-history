@@ -1,0 +1,24 @@
+{# Interactive tree partial (M8.5). Expects `tree` = {data_json, caption} and
+   `root_prefix`. The neutral tree JSON is embedded inline in a non-executable
+   script tag (read from the DOM, not fetched) so it renders from file:// with
+   no CORS/network dependency; the .json file is also written to site/data/ as
+   the reusable data artifact. tree.data_json is pre-escaped for safe embedding
+   in a <script> element. #}
+{% if tree %}
+<div class="fha-tree" id="fha-tree"></div>
+<p class="fha-tree-note">{{ tree.caption }} — click a name to open that person; use −/+ to collapse or expand.</p>
+<script type="application/json" id="fha-tree-data">{{ tree.data_json }}</script>
+<script src="{{ root_prefix }}/vendor/fha-tree.js"></script>
+<script src="{{ root_prefix }}/vendor/tree-adapter.js"></script>
+<script>
+(function () {
+  var holder = document.getElementById('fha-tree-data');
+  if (!holder || !window.FhaTree || !window.FhaTreeAdapter) return;
+  try {
+    var data = JSON.parse(holder.textContent);
+    var root = window.FhaTreeAdapter.fromNeutral(data);
+    window.FhaTree.render(document.getElementById('fha-tree'), root, {});
+  } catch (e) { /* a bad tree must never blank the page */ }
+})();
+</script>
+{% endif %}

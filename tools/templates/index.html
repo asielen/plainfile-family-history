@@ -5,6 +5,11 @@
   <h1>{{ site_title }}</h1>
   <p>{{ intro }}</p>
 
+  {% if tree %}
+  <h2>Family tree</h2>
+  {% include "_tree.html" %}
+  {% endif %}
+
   {% if discoveries %}
   <h2>Recent discoveries</h2>
   <div class="discoveries-teaser">

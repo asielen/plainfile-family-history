@@ -12,6 +12,7 @@ path under the private name `fha_site` (the same trick fha.py uses).
 """
 
 import importlib.util
+import json
 import os
 import sqlite3
 import sys
@@ -519,6 +520,98 @@ class StandaloneRedactionAuditTests(_Base):
         # The redacted source/person pages must not exist at all.
         self.assertFalse((self.out_dir / 'sources' / 's-2222222222.html').exists())
         self.assertFalse((self.out_dir / 'persons' / 'p-bbbbbbbbbb.html').exists())
+        # The tree JSON artifacts are another surface: no node url may point at a
+        # person page that wasn't generated, and no living person may be named.
+        for data in self.out_dir.glob('data/*.json'):
+            tree = json.loads(data.read_text(encoding='utf-8'))
+            for n in tree['nodes']:
+                if n['url']:
+                    self.assertTrue((self.out_dir / 'persons' / Path(n['url']).name).exists(),
+                                    f'{data.name} node url -> missing page {n["url"]}')
+
+
+class TreeTests(_Base):
+    """M8.5: interactive trees — vendored renderer + adapter, build-time neutral
+    tree JSON (descendants from the root person's apex on the home page, ancestor
+    pedigree per curated person), redaction baked into the JSON."""
+
+    def _seed_rels_chain(self):
+        # Grandparent -> parent -> child (root_person). Edges both directions,
+        # matching index.py's derivation (X parent Y = Y is X's parent;
+        # X child Y = Y is X's child).
+        self._seed_person('p-aaaaaaaaaa', 'Child Carl', surname='Carl')
+        self._seed_person('p-bbbbbbbbbb', 'Parent Pat', surname='Pat')
+        self._seed_person('p-cccccccccc', 'Grandparent Gus', surname='Gus')
+        for child, parent in (('p-aaaaaaaaaa', 'p-bbbbbbbbbb'), ('p-bbbbbbbbbb', 'p-cccccccccc')):
+            self.conn.execute(
+                'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
+                (child, 'parent', parent, 'c-1111111111'))
+            self.conn.execute(
+                'INSERT INTO relationships(person_id, rel, other_id, claim_id) VALUES (?,?,?,?)',
+                (parent, 'child', child, 'c-1111111111'))
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots: {}\nroot_person: P-aaaaaaaaaa\n', encoding='utf-8')
+
+    def test_vendor_copied_and_offline(self):
+        self._seed_person('p-aaaaaaaaaa', 'Solo')
+        self._run(linked=True)
+        self.assertTrue((self.out_dir / 'vendor' / 'fha-tree.js').exists())
+        self.assertTrue((self.out_dir / 'vendor' / 'tree-adapter.js').exists())
+        # No CDN / remote-loading references in the vendored bundle. The SVG
+        # namespace URI (http://www.w3.org/2000/svg) is a required constant, not
+        # a network fetch, so it is excluded before the check.
+        for js in (self.out_dir / 'vendor').glob('*.js'):
+            text = js.read_text(encoding='utf-8').replace('http://www.w3.org/2000/svg', '')
+            self.assertNotIn('http://', text)
+            self.assertNotIn('https://', text)
+
+    def test_home_descendant_tree_from_apex(self):
+        self._seed_rels_chain()
+        self._run(linked=True)
+        # Data artifact written for the apex (grandparent) in descendants mode.
+        data = self.out_dir / 'data' / 'tree_p-cccccccccc_descendants.json'
+        self.assertTrue(data.exists())
+        tree = json.loads(data.read_text(encoding='utf-8'))
+        self.assertEqual(tree['seed'], 'P-cccccccccc')
+        self.assertEqual(tree['mode'], 'descendants')
+        ids = {n['p_id'] for n in tree['nodes']}
+        self.assertEqual(ids, {'P-aaaaaaaaaa', 'P-bbbbbbbbbb', 'P-cccccccccc'})  # whole line
+        # Home page embeds the tree data + includes both vendor scripts.
+        home = self._read('index.html')
+        self.assertIn('fha-tree-data', home)
+        self.assertIn('vendor/fha-tree.js', home)
+        self.assertIn('vendor/tree-adapter.js', home)
+
+    def test_person_ancestor_pedigree(self):
+        self._seed_rels_chain()
+        self._run(linked=True)
+        data = self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_ancestors.json'
+        self.assertTrue(data.exists())
+        tree = json.loads(data.read_text(encoding='utf-8'))
+        self.assertEqual(tree['mode'], 'ancestors')
+        # 3 generations: self + parent + grandparent (>= 2 generations).
+        self.assertGreaterEqual(len({n['p_id'] for n in tree['nodes']}), 3)
+        self.assertIn('fha-tree-data', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_tree_redacts_living_and_links_only_existing_pages(self):
+        self._seed_rels_chain()
+        # Make the grandparent (apex) living → must be "Living Person", no url.
+        self.conn.execute("UPDATE persons SET living='true' WHERE id='p-cccccccccc'")
+        self._run(linked=False)
+        tree = json.loads(
+            (self.out_dir / 'data' / 'tree_p-cccccccccc_descendants.json').read_text(encoding='utf-8'))
+        by_id = {n['p_id']: n for n in tree['nodes']}
+        self.assertEqual(by_id['P-cccccccccc']['name'], site._LIVING_LABEL)   # living apex redacted
+        self.assertIsNone(by_id['P-cccccccccc']['url'])
+        # Every node url that is set must point to a generated person page.
+        for n in tree['nodes']:
+            if n['url']:
+                self.assertTrue((self.out_dir / 'persons' / Path(n['url']).name).exists())
+
+    def test_no_tree_without_root_person(self):
+        self._seed_person('p-aaaaaaaaaa', 'Solo')   # no fha.yaml root_person, no edges
+        self._run(linked=True)
+        self.assertNotIn('fha-tree-data', self._read('index.html'))
 
 
 class ProseConverterTests(unittest.TestCase):

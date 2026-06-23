@@ -14,6 +14,11 @@
   </dl>
   {% endif %}
 
+  {% if tree %}
+  <h2>Ancestors</h2>
+  {% include "_tree.html" %}
+  {% endif %}
+
   {% if person.biography_html %}
   <h2>Biography</h2>
   {{ person.biography_html }}

@@ -157,11 +157,11 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ M7.5-M7.7 - paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; see "fha capture - implementation status" below |
 | `fha convert-mining [--apply]` | `convert_mining.py` | ✓ M7.8 - one-time legacy transcript-mining migration into conformant sources/claims/stubs/questions; dry-run by default; see "fha convert-mining - implementation status" below |
 
-## Implemented tools (milestone 8, in progress)
+## Implemented tools (milestone 8)
 
 | Tool | File | Status |
 |---|---|---|
-| `fha site [--out PATH] [--standalone \| --linked] [--dry-run]` | `site.py`, `templates/` | ◐ M8.1-M8.4 - static-HTML explorer: source page (M8.1), curated person page (M8.2), place + discoveries pages (M8.3), home page (surname A-Z + discoveries teaser) + standalone redaction audit (M8.4); interactive tree is M8.5 (not yet built). See "fha site - implementation status" below |
+| `fha site [--out PATH] [--standalone \| --linked] [--dry-run]` | `site.py`, `templates/` (incl. `templates/vendor/`) | ✓ M8.1-M8.5 - static-HTML explorer: source page (M8.1), curated person page (M8.2), place + discoveries pages (M8.3), home page (surname A-Z + discoveries teaser) + standalone redaction audit (M8.4), interactive descendant/ancestor trees via a vendored renderer (M8.5). See "fha site - implementation status" below |
 
 `fha site` reads structured data only from `.cache/index.sqlite` (so the site is
 as fresh as the last `fha index`), reads biography/Stories prose from the curated
@@ -242,8 +242,8 @@ Writes only to the output directory.
 | Place page (M8.3) | ✓ | Name, coords as an OpenStreetMap **URL** (no embedded map), dated `history:`, claims naming the place, contained micro-places (`within:` children, linked), and a people-frequency list. `[L-id]` tokens in prose now link here. People links redact as everywhere; the people-frequency list omits redacted persons entirely so a standalone place page never names a living person |
 | Discoveries page (M8.3) | ✓ | Renders `notes/discoveries.md` through the same prose→HTML + token swap, so `[P-id]`/`[S-id]` mentions link (and living persons redact to "Living Person") for free. Missing/empty file → a plain "nothing logged yet" page |
 | Home page (M8.4) | ✓ | Surname A-Z index (built from `person_pages`, so redacted persons are already excluded), a recent-discoveries teaser (last 5 `##`/`###` sections or top-level bullets of `discoveries.md`, redacted), plus place and source navigation so every generated page is reachable |
-| Standalone redaction audit (M8.4) | ✓ | Enforced structurally: all cross-links resolve against the authoritative `person_pages`/`source_pages`/`place_pages` sets decided once in `prepare()`, so a page is linked only if it was generated. `tests/test_site.py` crawls every emitted standalone page and asserts no `persons/`/`sources/` href points at a missing page |
-| Interactive tree rendering (M8.5) | ⚑ deferred | Future phase; consumes `fha views tree --format json` |
+| Standalone redaction audit (M8.4) | ✓ | Enforced structurally: all cross-links resolve against the authoritative `person_pages`/`source_pages`/`place_pages` sets decided once in `prepare()`, so a page is linked only if it was generated. `tests/test_site.py` crawls every emitted standalone page (and every tree JSON node `url`) and asserts no `persons/`/`sources/` link points at a missing page |
+| Interactive tree rendering (M8.5) | ✓ | A vendored, dependency-free renderer (`templates/vendor/fha-tree.js`) + a single adapter seam (`tree-adapter.js`) map the neutral tree JSON contract (TOOLING §7/§14b) to an SVG collapsible tree; no D3, no CDN, works from file://. At build time the home page gets a **descendant** tree seeded from the apex of `root_person`'s line (so the explorer fans forward across the whole family — reconciling BUILD's "root person" with TOOLING's "root ancestor"); each curated person page gets a 3-generation **ancestor** pedigree. JSON is written to `site/data/tree_{P-id}_{mode}.json` (the reusable artifact) **and** embedded inline (read from the DOM, not fetched — file:// has no network). Redaction is applied server-side in the JSON (living/unknown → "Living Person", no vitals, no link), so a published tree file never carries a living person's name or a link to a page that wasn't generated |
 | Exit codes | ✓ | 0 clean; 1 if any page warned (missing asset, malformed record, image that couldn't be processed); 3 (`EXIT_FAILURE`, the convention `fha packet` uses for can't-run refusals) for the Jinja2-missing, index-absent, and unsafe-output paths, each with a plain install / `fha index` / pick-another-folder hint |
 
 `fha site`'s file is `tools/site.py`, but the module stem `site` collides with
@@ -277,9 +277,14 @@ vs. non-image "kept in the archive", and the prose→HTML converter
 and `[L-id]` token linking; the discoveries page (P/S linking + living-person
 redaction) and the home discoveries teaser + missing-file path; the home surname
 A-Z index and its omission of living persons under standalone; and a
-standalone redaction audit that crawls every emitted page and asserts no
-`persons/`/`sources/` link points at a page that wasn't generated. Run with
-`python -m unittest tests.test_site -v` from the repo root.
+standalone redaction audit that crawls every emitted page (and every tree JSON
+node url) and asserts no `persons/`/`sources/` link points at a page that
+wasn't generated. M8.5 adds: the vendored bundle is copied and free of any
+remote/CDN reference; the home descendant tree seeds from the apex of
+`root_person`'s line (whole-line node set); the per-person 3-generation
+ancestor pedigree; tree JSON redaction (living apex → "Living Person", no url)
+and url-points-only-at-generated-pages; and the no-tree-without-`root_person`
+case. Run with `python -m unittest tests.test_site -v` from the repo root.
 
 ## fha capture - implementation status
 

@@ -25,11 +25,12 @@ Two build modes, one generator:
   - `--linked`: a fast *local* developer preview. Real archive paths (no
     copies), no redaction guarantees. Never hand this folder to anyone.
 
-This file ships milestones M8.1 (foundations: query layer, Jinja2, source
-page) and M8.2 (the curated person page). Place, discoveries, home-page
-enrichment, and the interactive tree are later phases (M8.3-M8.5); a minimal
-people/sources index page is generated now so navigation works and links
-never dangle.
+This file ships the whole Layer 8 publication suite: M8.1 (foundations: query
+layer, Jinja2, source page), M8.2 (curated person page), M8.3 (place +
+discoveries pages), M8.4 (home page: surname A-Z + discoveries teaser, and the
+standalone redaction audit enforced by the page-set design below), and M8.5
+(interactive trees — a vendored, dependency-free renderer fed the neutral tree
+JSON through a single adapter seam).
 
 WHY A LIBRARY FUNCTION (`run_site`): mirrors packet/report — a testable
 `run_site(archive_root, out_dir, ...) -> dict` core, with a thin CLI handler
@@ -66,6 +67,14 @@ CODE MAP
   Paths / hrefs
     _rel_href                  — relative href from a page dir to a target file
     _page_filename             — id → 'p-xxx.html' / 's-xxx.html'
+    _json_for_script           — JSON serialized safe for inline <script> embedding
+
+  Interactive tree (M8.5)
+    _apex_ancestor             — deepest ancestor of root_person (home-tree seed)
+    _build_tree_data           — BFS relationships → neutral tree JSON + url + redaction
+    _tree_node, _person_vitals — one redacted node; its birth/death labels
+    _make_tree_ctx             — build a tree, write data/tree_*.json, return template ctx
+    _copy_vendor               — copy the vendored renderer/adapter into the site
 
   Builder
     _SiteBuilder               — holds conn, mode, maps, page sets, jinja env
@@ -86,11 +95,13 @@ from __future__ import annotations
 import argparse
 import datetime
 import html
+import json
 import os
 import re
 import shutil
 import sqlite3
 import sys
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -138,6 +149,11 @@ _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.bmp', '.
 
 # The largest edge (px) a standalone derivative is resized to (TOOLING §12).
 _DERIVATIVE_MAX_PX = 1200
+
+# Ancestor pedigree depth on person pages (M8.5: "3 generations default" =
+# subject + 2 parent hops). The home descendant explorer is uncapped (the
+# vendored renderer collapses large trees on demand).
+_PEDIGREE_GENERATIONS = 3
 
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
@@ -348,6 +364,18 @@ def _page_filename(record_id: str) -> str:
     return f'{normalize_id(record_id)}.html'
 
 
+def _json_for_script(obj) -> str:
+    """Serialize `obj` for safe embedding inside an inline <script> element.
+
+    A bare `</script>` (or a `<!--`) inside JSON would close the script tag and
+    let the rest be parsed as HTML — an injection vector. Escaping `<`, `>`, and
+    `&` as JSON unicode escapes keeps the value valid JSON while making a
+    `</script>` sequence impossible. The result is read back via
+    `JSON.parse(scriptEl.textContent)`, never fetched (file:// has no network)."""
+    return (json.dumps(obj, ensure_ascii=False)
+            .replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026'))
+
+
 # ── Builder ─────────────────────────────────────────────────────────────────
 
 class _SiteBuilder:
@@ -383,6 +411,8 @@ class _SiteBuilder:
         self.sources_dir = out_dir / 'sources'
         self.places_dir = out_dir / 'places'
         self.media_dir = out_dir / 'media'
+        self.data_dir = out_dir / 'data'       # neutral tree JSON artifacts (M8.5)
+        self.vendor_dir = out_dir / 'vendor'    # vendored tree renderer + adapter (M8.5)
 
         self.person_meta: dict[str, sqlite3.Row] = {}
         self.source_meta: dict[str, sqlite3.Row] = {}
@@ -693,16 +723,19 @@ class _SiteBuilder:
         sources = self._person_sources(pid, page_dir)
         family = self._person_family(pid, page_dir)
         photos = self._person_photos(pid, page_dir)
+        name = row['name'] or fmt_id_display(pid)
+        tree = self._make_tree_ctx(pid, 'ancestors', _PEDIGREE_GENERATIONS - 1, page_dir,
+                                   f'Ancestor pedigree of {name}')
 
         ctx = {
-            'display_id': fmt_id_display(pid), 'name': row['name'] or fmt_id_display(pid),
+            'display_id': fmt_id_display(pid), 'name': name,
             'summary': summary,
             'biography_html': self._markup(biography_html) if biography_html else None,
             'stories_html': self._markup(stories_html) if stories_html else None,
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
-                         {'person': ctx, 'root_prefix': '..'})
+                         {'person': ctx, 'tree': tree, 'root_prefix': '..'})
 
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…)."""
@@ -975,6 +1008,130 @@ class _SiteBuilder:
             chunks = [ln.strip() for ln in lines if _LIST_RE.match(ln)]
         return body, chunks[-5:]
 
+    # — interactive tree (M8.5) —
+
+    def _person_vitals(self, pid: str) -> dict:
+        """First accepted birth/death `date_edtf` for a person, for tree labels.
+        Mirrors `fha views tree`'s node vitals (TOOLING §7 D3)."""
+        vitals = {'birth': None, 'death': None}
+        for r in self.conn.execute(
+            "SELECT c.type, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted'",
+            (pid,),
+        ):
+            if vitals.get(r['type']) is None:
+                vitals[r['type']] = r['date_edtf'] or None
+        return vitals
+
+    def _apex_ancestor(self, root_pid: str) -> str:
+        """Walk `parent` edges up from root_pid and return the deepest ancestor.
+
+        BUILD M8.5 seeds the home tree from "the root person (descendants mode)";
+        TOOLING §12 frames the home hero as a "descendant explorer from a root
+        *ancestor*". The configured `root_person` is the Ahnentafel proband (the
+        youngest), which has no descendants — so a literal descendants-from-proband
+        tree would be a single node. Seeding from the apex of the proband's direct
+        line (its most distant ancestor) reconciles the two: the explorer fans
+        forward across the whole lineage, and it is still derived from the
+        configured root person. Ties (two equally-deep ancestors) break on the
+        lowest id for determinism; a proband with no recorded parents is its own
+        apex."""
+        depth = {root_pid: 0}
+        queue = deque([root_pid])
+        while queue:
+            cur = queue.popleft()
+            for r in self.conn.execute(
+                "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? AND rel = 'parent'",
+                (cur,),
+            ):
+                other = r['other_id']
+                if other not in depth:
+                    depth[other] = depth[cur] + 1
+                    queue.append(other)
+        return max(depth, key=lambda pid: (depth[pid], [-ord(ch) for ch in pid]))
+
+    def _tree_node(self, pid: str, page_dir: Path) -> dict:
+        """One neutral-JSON tree node, with redaction and a `url` applied here
+        (server-side) so a standalone tree file never carries a living person's
+        name, vitals, or a link to a page that wasn't generated."""
+        meta = self.person_meta.get(pid)
+        display = fmt_id_display(pid)
+        if meta is None:
+            return {'p_id': display, 'name': display, 'sex': None,
+                    'vitals': {'birth': None, 'death': None}, 'url': None}
+        if not self.linked and self._person_is_redacted(meta):
+            return {'p_id': display, 'name': _LIVING_LABEL, 'sex': None,
+                    'vitals': {'birth': None, 'death': None}, 'url': None}
+        url = None
+        if pid in self.person_pages:
+            url = _rel_href(self.persons_dir / _page_filename(pid), page_dir)
+        return {'p_id': display, 'name': meta['name'] or display, 'sex': meta['sex'],
+                'vitals': self._person_vitals(pid), 'url': url}
+
+    def _build_tree_data(self, seed: str, mode: str, max_hops: int | None, page_dir: Path) -> dict:
+        """BFS the `relationships` graph from `seed` and emit the neutral tree
+        JSON (TOOLING §7/§14b) plus a per-node `url`. `descendants` follows
+        `child` edges, `ancestors` follows `parent` edges; a visited set guards
+        cousin-marriage cycles. Redaction is applied per node in `_tree_node`."""
+        rel = 'parent' if mode == 'ancestors' else 'child'
+        order = [seed]
+        seen = {seed}
+        edges: list[dict] = []
+        queue: deque[tuple[str, int]] = deque([(seed, 0)])
+        while queue:
+            cur, hop = queue.popleft()
+            if max_hops is not None and hop >= max_hops:
+                continue
+            for r in self.conn.execute(
+                'SELECT DISTINCT other_id, claim_id FROM relationships WHERE person_id = ? AND rel = ?',
+                (cur, rel),
+            ):
+                other = r['other_id']
+                edges.append({
+                    'type': rel, 'from': fmt_id_display(cur), 'to': fmt_id_display(other),
+                    'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
+                    'dates': {'start': None, 'end': None},
+                })
+                if other not in seen:
+                    seen.add(other)
+                    order.append(other)
+                    queue.append((other, hop + 1))
+        return {
+            'seed': fmt_id_display(seed), 'mode': mode,
+            'nodes': [self._tree_node(pid, page_dir) for pid in order],
+            'edges': edges,
+        }
+
+    def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
+                       page_dir: Path, caption: str) -> dict | None:
+        """Build a tree, write its `data/tree_{seed}_{mode}.json` artifact, and
+        return the template context (inline-embeddable JSON + caption). Returns
+        None when the tree has no edges (a lone node is not worth rendering), so
+        the page simply omits the tree section."""
+        tree = self._build_tree_data(seed, mode, max_hops, page_dir)
+        if not tree['edges']:
+            return None
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            (self.data_dir / f'tree_{normalize_id(seed)}_{mode}.json').write_text(
+                json.dumps(tree, indent=2, ensure_ascii=False), encoding='utf-8')
+        except OSError as e:
+            self.messages.append(f'WARNING: could not write tree data for {fmt_id_display(seed)} ({e}).')
+        return {'data_json': self._markup(_json_for_script(tree)), 'caption': caption}
+
+    def _copy_vendor(self) -> None:
+        """Copy the vendored tree renderer + adapter into the site so it stays
+        self-contained and offline (no CDN). The bundle lives beside the
+        templates; a missing bundle is a packaging error, surfaced plainly."""
+        src = Path(__file__).parent / 'templates' / 'vendor'
+        if not src.is_dir():
+            self.messages.append('WARNING: tools/templates/vendor is missing; interactive trees will not load.')
+            return
+        try:
+            shutil.copytree(src, self.vendor_dir, dirs_exist_ok=True)
+        except OSError as e:
+            self.messages.append(f'WARNING: could not copy the tree library into the site ({e}).')
+
     # — index / home page (M8.4) —
 
     def build_index_page(self) -> None:
@@ -1015,9 +1172,21 @@ class _SiteBuilder:
             'A safe-to-share snapshot of this family archive.' if not self.linked
             else 'Local developer preview (linked mode — not redacted, do not share).'
         )
+
+        # Descendant explorer (M8.5): seed from the apex of the configured
+        # root_person's line so the tree fans forward across the whole family.
+        tree = None
+        root_person = normalize_id(str(self.fha_config.get('root_person', '')))
+        if root_person and root_person in self.person_meta:
+            apex = self._apex_ancestor(root_person)
+            apex_meta = self.person_meta.get(apex)
+            apex_name = apex_meta['name'] if apex_meta and apex_meta['name'] else fmt_id_display(apex)
+            tree = self._make_tree_ctx(apex, 'descendants', None, page_dir,
+                                       f'Descendants of {apex_name}')
+
         self._write_page(self.out_dir / 'index.html', 'index.html', {
             'surnames': surnames, 'discoveries': discoveries, 'sources': sources,
-            'places': places, 'intro': intro, 'root_prefix': '.',
+            'places': places, 'intro': intro, 'tree': tree, 'root_prefix': '.',
         })
 
     # — rendering plumbing —
@@ -1050,6 +1219,7 @@ class _SiteBuilder:
     def run(self) -> int:
         """Generate the whole site. Returns the number of pages written."""
         self._reset_output()
+        self._copy_vendor()
         for sid in sorted(self.source_pages):
             self.build_source_page(sid)
         for pid in sorted(self.person_pages):
@@ -1066,7 +1236,8 @@ class _SiteBuilder:
         records that became redacted (idempotent regeneration — TOOLING §12)
         without disturbing anything else a human keeps in the output directory."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        for d in (self.persons_dir, self.sources_dir, self.places_dir, self.media_dir):
+        for d in (self.persons_dir, self.sources_dir, self.places_dir, self.media_dir,
+                  self.data_dir, self.vendor_dir):
             if d.exists():
                 shutil.rmtree(d, ignore_errors=True)
         for f in ('index.html', 'discoveries.html'):
