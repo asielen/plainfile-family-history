@@ -612,15 +612,15 @@ def _relocate_from_inbox(
     sidecar: Path | None,
     *,
     dry_run: bool,
-) -> tuple[Path, Path | None]:
+) -> tuple[Path, Path | None, object]:
     """Move an inbox-staged asset (+ sidecar) into its documents/photos root.
 
     `fha capture --asset` (and a hand-dropped file) stage in `inbox/`, but
     `process_document`/`process_photo` require the asset already under the
     configured root — that's the whole point of an inbox: every fha process
     entrypoint should know how to file something out of it rather than making
-    the user move it by hand first. A no-op (returns the inputs unchanged) when
-    `file_path` isn't under the resolved inbox root.
+    the user move it by hand first. A no-op (returns the inputs unchanged, undo
+    `None`) when `file_path` isn't under the resolved inbox root.
 
     The move is flat (same filename, no rename) into documents/ or photos/ —
     `process_document` mints its own `{slug}_{S-id}` rename afterward; photos
@@ -628,11 +628,34 @@ def _relocate_from_inbox(
     atomic on the same filesystem; on `dry_run` nothing is touched and a
     not-yet-existing destination path is returned so the caller's own preview
     can still report the post-move root.
+
+    Returns `(file_path, sidecar, undo)`. This relocation runs *before*
+    `process_document`/`process_photo`'s own validation (e.g. the `dna`
+    source_type's documents/dna/ requirement) and their own transactions, so a
+    refusal downstream would otherwise leave the asset filed out of the inbox
+    even though the command failed overall. The caller must call `undo()` (a
+    no-arg callable, or `None` for the no-op case) whenever it reports the
+    relocated file's command as anything other than success.
     """
     inbox_root = resolve_path('inbox', fha_config, archive_root)
     if not _is_under(file_path, inbox_root):
-        return file_path, sidecar
-    kind = classify_asset(file_path, fha_config, archive_root)
+        return file_path, sidecar, None
+
+    # A sidecar's `source_type` hint (e.g. `census`, `vital-record`) overrides
+    # the extension heuristic: a record image like `census.jpg` is a photo
+    # *extension* but the recipe/stub already knows it's a document-typed
+    # source, and filing it under photos/ would scaffold the wrong record type.
+    hinted_type = None
+    if sidecar is not None:
+        try:
+            sidecar_meta, _ = _read_sidecar(sidecar)
+            hinted_type = sidecar_meta.get('source_type')
+        except ProcessError:
+            pass  # downstream re-parse will raise the real error
+    if hinted_type:
+        kind = _PHOTO_SOURCE_TYPE if str(hinted_type) == _PHOTO_SOURCE_TYPE else 'document'
+    else:
+        kind = classify_asset(file_path, fha_config, archive_root)
     dest_root = (
         resolve_path(_PHOTO_DIR, fha_config, archive_root) if kind == 'photo'
         else resolve_path('documents', fha_config, archive_root)
@@ -647,14 +670,21 @@ def _relocate_from_inbox(
     if dry_run:
         print(f'[dry-run] Would move {file_path.name} out of inbox/ into '
               f'{_rel(dest_root, archive_root)}/')
-        return new_path, new_sidecar
+        return new_path, new_sidecar, None
 
     dest_root.mkdir(parents=True, exist_ok=True)
     file_path.rename(new_path)
     if sidecar is not None:
         sidecar.rename(new_sidecar)
     print(f'Moved {file_path.name} out of inbox/ into {_rel(dest_root, archive_root)}/')
-    return new_path, new_sidecar
+
+    def undo() -> None:
+        if new_path.exists():
+            new_path.rename(file_path)
+        if sidecar is not None and new_sidecar is not None and new_sidecar.exists():
+            new_sidecar.rename(sidecar)
+
+    return new_path, new_sidecar, undo
 
 
 def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
@@ -690,6 +720,23 @@ def _sidecar_str(sidecar_meta: dict, key: str) -> str | None:
     """A sidecar hint field as a string, or None — feeds an optional §14 field."""
     val = sidecar_meta.get(key)
     return str(val) if val not in (None, '') else None
+
+
+def _sidecar_source_date(sidecar_meta: dict, sidecar_name: str) -> str | None:
+    """A sidecar's `source_date:` hint, validated as EDTF (or None).
+
+    Mirrors `fha capture`'s `--date`/recipe `source_date` validation — an
+    unvalidated hint copied straight into the scaffold would write a §14
+    record that immediately fails lint E014, with the stub already consumed
+    by the time the human sees the lint error.
+    """
+    source_date = _sidecar_str(sidecar_meta, 'source_date')
+    if source_date is not None and not is_valid_edtf(source_date):
+        raise ProcessError(
+            f'{sidecar_name} hints source_date {source_date!r}, which is not valid EDTF; '
+            'fix the sidecar before processing.'
+        )
+    return source_date
 
 
 def _sidecar_flag(sidecar_meta: dict, key: str) -> bool:
@@ -1055,7 +1102,7 @@ def process_document(
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -1151,7 +1198,7 @@ def process_pointer_only(
         restricted=restricted,
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, sidecar.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
         external_links=external_links,
     )
@@ -1246,7 +1293,7 @@ def process_photo(
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else file_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -1391,7 +1438,7 @@ def process_photo_group(
         restricted=_sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, sidecar.name if sidecar else primary.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -1731,7 +1778,7 @@ def process_bundle(
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
         citation=_sidecar_str(sidecar_meta, 'citation'),
         repository=_sidecar_str(sidecar_meta, 'repository'),
-        source_date=_sidecar_str(sidecar_meta, 'source_date'),
+        source_date=_sidecar_source_date(sidecar_meta, notes_path.name),
         provenance=_sidecar_str(sidecar_meta, 'provenance'),
     )
 
@@ -2097,50 +2144,67 @@ def _run_process(args: argparse.Namespace) -> int:
             file_path = companion
         else:
             sidecar_path = _find_sidecar(file_path)
-        file_path, sidecar_path = _relocate_from_inbox(
+        file_path, sidecar_path, relocate_undo = _relocate_from_inbox(
             archive_root, fha_config, file_path, sidecar_path, dry_run=dry_run,
         )
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_ERRORS
 
+    # The relocation above runs before process_document/process_photo's own
+    # validation (e.g. dna's documents/dna/ requirement) and transactions, so
+    # any non-clean outcome below — refusal or rollback alike — must undo the
+    # move too, or a failed command would still leave the asset filed out of
+    # the inbox.
     try:
         if args.more:
             more_file = Path(args.more[0]).resolve()
             role_spec = args.more[1]
             if not more_file.is_file():
                 print(f'ERROR: --more file not found: {args.more[0]}', file=sys.stderr)
-                return EXIT_ERRORS
-            role, _, copy = role_spec.partition(':')
-            role = role.strip() or 'attachment'
-            copy = copy.strip() or None
-            return attach_more(archive_root, fha_config, file_path, more_file,
-                               role, copy, dry_run=dry_run)
-
-        kind = classify_asset(file_path, fha_config, archive_root)
-        if kind == 'photo':
-            # Tier-1 variation detection (M7.3): a single photo may have
-            # front/back/crop/copy siblings sitting beside it. _process_variation_set
-            # processes a lone photo straight through and only prompts when the
-            # directory actually holds a sibling set.
-            siblings = _photo_variation_siblings(file_path)
-            return _process_variation_set(
-                archive_root, fha_config, siblings,
-                slug=args.slug, title=args.title, dry_run=dry_run,
-            )
-        source_type = (args.source_type or _DEFAULT_DOCUMENT_TYPE).strip().lower()
-        if source_type not in SOURCE_TYPES:
-            print(f'ERROR: unknown source type {source_type!r}.', file=sys.stderr)
-            return EXIT_ERRORS
-        return process_document(
-            archive_root, fha_config, file_path,
-            source_type=source_type, slug=args.slug, title=args.title, dry_run=dry_run,
-        )
+                rc = EXIT_ERRORS
+            else:
+                role, _, copy = role_spec.partition(':')
+                role = role.strip() or 'attachment'
+                copy = copy.strip() or None
+                rc = attach_more(archive_root, fha_config, file_path, more_file,
+                                  role, copy, dry_run=dry_run)
+        else:
+            kind = classify_asset(file_path, fha_config, archive_root)
+            if kind == 'photo':
+                # Tier-1 variation detection (M7.3): a single photo may have
+                # front/back/crop/copy siblings sitting beside it.
+                # _process_variation_set processes a lone photo straight
+                # through and only prompts when the directory actually holds
+                # a sibling set.
+                siblings = _photo_variation_siblings(file_path)
+                rc = _process_variation_set(
+                    archive_root, fha_config, siblings,
+                    slug=args.slug, title=args.title, dry_run=dry_run,
+                )
+            else:
+                source_type = (args.source_type or _DEFAULT_DOCUMENT_TYPE).strip().lower()
+                if source_type not in SOURCE_TYPES:
+                    print(f'ERROR: unknown source type {source_type!r}.', file=sys.stderr)
+                    rc = EXIT_ERRORS
+                else:
+                    rc = process_document(
+                        archive_root, fha_config, file_path,
+                        source_type=source_type, slug=args.slug, title=args.title,
+                        dry_run=dry_run,
+                    )
+        if rc != EXIT_CLEAN and relocate_undo is not None:
+            relocate_undo()
+        return rc
     except ProcessError as e:
         print(f'ERROR: {e}', file=sys.stderr)
+        if relocate_undo is not None:
+            relocate_undo()
         return EXIT_ERRORS
     except RuntimeError as e:
         print(f'ERROR: {e}', file=sys.stderr)
+        if relocate_undo is not None:
+            relocate_undo()
         return EXIT_FAILURE
 
 

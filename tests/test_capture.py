@@ -237,6 +237,20 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(meta['repository'], 'FamilySearch')
         self.assertIn('Harriet Webb', meta['people'])
 
+    def test_familysearch_recipe_label_value_fact_table(self) -> None:
+        # A tree-person page lists facts as label/value rows (`Name | value`,
+        # `Father's Name | value`) rather than the record-detail column shape;
+        # the value cells must be read as people, not the labels themselves.
+        rc = self._capture(_sample('familysearch-tree-person'),
+                           url='https://www.familysearch.org/tree/person/details/ABCD-123')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertIn('John Smith', meta['people'])
+        self.assertIn('William Smith', meta['people'])
+        self.assertIn('Mary Smith', meta['people'])
+        self.assertNotIn("Father's Name", meta['people'])
+        self.assertNotIn("Mother's Name", meta['people'])
+
     def test_newspapers_recipe(self) -> None:
         rc = self._capture(_sample('newspapers'),
                            url='https://www.newspapers.com/clip/1/x/')

@@ -595,9 +595,13 @@ def _section_search_log(conn, current: dict) -> list[str]:
                 lines.append(f'- {label} — {collection}: {note}')
 
     recency = datetime.date.today() - datetime.timedelta(days=_CAPTURE_RECENCY_DAYS)
+    # notes/research-log.md entries are also person_id IS NULL (general/locality
+    # searches aren't person-scoped) but aren't inbox captures — `fha capture`
+    # is the only writer that stamps result `staged {path}` (capture.py:768),
+    # so that prefix is what actually distinguishes a capture row here.
     captured = conn.execute(
         "SELECT date, question, repository, collection FROM search_log "
-        "WHERE person_id IS NULL ORDER BY date DESC LIMIT 20"
+        "WHERE person_id IS NULL AND result LIKE 'staged %' ORDER BY date DESC LIMIT 20"
     ).fetchall()
     capture_lines = []
     for row in captured:

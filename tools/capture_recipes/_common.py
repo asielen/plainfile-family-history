@@ -27,6 +27,10 @@ _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z.'\-]*(?:\s+[A-Za-z.'\-]+)+$")
 
 _YEAR_RE = re.compile(r'\b(1[5-9]\d{2}|20\d{2})\b')
 
+# A label cell ending in "name" (e.g. "Father's Name", "Spouse's Name") marks a
+# label/value row, not a person row — the value cell holds the actual name.
+_NAME_LABEL_RE = re.compile(r'\bname\b', re.IGNORECASE)
+
 
 def looks_like_name(text: str) -> bool:
     """True when `text` reads like a personal name (≥2 alphabetic tokens)."""
@@ -43,12 +47,19 @@ def people_from_table(rows: list[list[str]], *, name_col: int = 0, limit: int = 
     name (`looks_like_name`) in column `name_col` become the person list, in
     document order, de-duplicated. A header row (its name cell is a header word)
     is skipped naturally because it never matches `looks_like_name`.
+
+    A row shaped as a label/value pair (`["Father's Name", "William Smith"]`,
+    as in FamilySearch's record-detail fact tables) is detected by its label
+    cell ending in "name" and the value cell is read instead — otherwise the
+    label itself would pass `looks_like_name` and be mistaken for a person.
     """
     people: list[str] = []
     for row in rows:
         if len(row) <= name_col:
             continue
         cell = row[name_col].strip()
+        if len(row) > name_col + 1 and _NAME_LABEL_RE.search(cell):
+            cell = row[name_col + 1].strip()
         if looks_like_name(cell) and cell not in people:
             people.append(cell)
         if len(people) >= limit:

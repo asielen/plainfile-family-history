@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import convert_mining
 import lint
-from _lib import EXIT_CLEAN, EXIT_ERRORS, load_fha_yaml, read_record
+from _lib import EXIT_CLEAN, EXIT_ERRORS, EXIT_WARNINGS, load_fha_yaml, read_record
 
 FIXTURE = ROOT / 'tests' / 'fixtures' / 'legacy-export'
 
@@ -206,6 +206,20 @@ class ConvertMiningTestCase(unittest.TestCase):
         self.assertEqual(convert_mining.legacy_to_edtf('189?', '1900'), '189X/1900')
         self.assertEqual(convert_mining.legacy_to_edtf('1890', '190?'), '1890/190X')
 
+    def test_run_convert_returns_warnings_exit_code_for_lossy_plan(self) -> None:
+        # A lossy plan (missing transcript, blank Claim cell, unknown source
+        # ref, ...) must not report a clean exit — automation driving this
+        # tool needs to see that something was skipped.
+        sources_path = self.archive / 'mining' / 'sources.txt'
+        text = sources_path.read_text(encoding='utf-8')
+        sources_path.write_text(
+            text + '\n\nS999\ntitle: Ghost Interview\ninterviewee: Mary Hartley\n'
+            'transcript: does-not-exist.txt\n',
+            encoding='utf-8',
+        )
+        rc = convert_mining.run_convert(self.archive, self.config, apply=False)
+        self.assertEqual(rc, EXIT_WARNINGS)
+
     def test_missing_mining_dir_errors(self) -> None:
         empty = self.archive.parent / 'empty'
         empty.mkdir()
@@ -252,6 +266,26 @@ class ConvertMiningTestCase(unittest.TestCase):
         plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
         ghost = next(s for s in plan.sources if s.legacy_id == 'S999')
         rendered = convert_mining._render_source_record(ghost)
+        self.assertNotIn('files:', rendered)
+
+    def test_transcript_path_traversal_refused(self) -> None:
+        # A malformed/hostile `transcript:` value that escapes mining/transcripts/
+        # (absolute path or `../`) must not be read or copied — treat it like a
+        # missing transcript, not a pointer to an arbitrary local file.
+        secret = self.archive.parent / 'secret.txt'
+        secret.write_text('private', encoding='utf-8')
+        sources_path = self.archive / 'mining' / 'sources.txt'
+        text = sources_path.read_text(encoding='utf-8')
+        sources_path.write_text(
+            text + f'\n\nS998\ntitle: Escape Attempt\ninterviewee: Mary Hartley\n'
+            f'transcript: {secret}\n',
+            encoding='utf-8',
+        )
+        plan = convert_mining.build_plan(self.archive, self.config, self.archive / 'mining')
+        escapee = next(s for s in plan.sources if s.legacy_id == 'S998')
+        self.assertFalse(escapee.transcript_src.is_file())
+        self.assertTrue(any('S998' in w and 'outside' in w for w in plan.warnings))
+        rendered = convert_mining._render_source_record(escapee)
         self.assertNotIn('files:', rendered)
 
     def test_preflight_apply_handles_external_root_conflict(self) -> None:

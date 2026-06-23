@@ -91,6 +91,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
+    EXIT_WARNINGS,
     CLAIM_TYPES,
     FhaConfigError,
     configure_utf8_stdout,
@@ -603,8 +604,19 @@ def build_plan(archive_root: Path, fha_config: dict, mining_dir: Path) -> Conver
         meta = sources_raw[legacy_id]
         legacy_to_sid[legacy_id] = sid
         transcript_name = meta.get('transcript') or f'{legacy_id}.txt'
-        transcript_src = mining_dir / 'transcripts' / transcript_name
-        if not transcript_src.is_file():
+        transcripts_dir = mining_dir / 'transcripts'
+        transcript_src = transcripts_dir / transcript_name
+        try:
+            transcript_src.resolve().relative_to(transcripts_dir.resolve())
+            escapes_transcripts_dir = False
+        except ValueError:
+            escapes_transcripts_dir = True
+        if escapes_transcripts_dir:
+            warnings.append(f'{legacy_id}: transcript {transcript_name!r} resolves outside '
+                            'mining/transcripts/; refusing to read or copy it. Source will '
+                            'have no asset file.')
+            transcript_src = transcripts_dir / f'{legacy_id}.txt.does-not-exist'
+        elif not transcript_src.is_file():
             warnings.append(f'{legacy_id}: transcript {transcript_name!r} not found; '
                             'source will have no asset file.')
         title = meta.get('title') or f'Interview {legacy_id}'
@@ -1003,7 +1015,7 @@ def run_convert(archive_root: Path, fha_config: dict, *, apply: bool) -> int:
         print('Run `fha index` then `fha lint` to review the imported records.')
     else:
         print_plan(plan, applied=False)
-    return EXIT_CLEAN
+    return EXIT_WARNINGS if plan.warnings else EXIT_CLEAN
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
