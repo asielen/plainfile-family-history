@@ -261,6 +261,7 @@ def _intercept_scaffold(argv: list[str]) -> int | None:
     Returns an exit code when the command is install or update-tools, or None
     to let normal argparse handling proceed.
     """
+    global_root: str | None = None
     command_idx: int | None = None
     i = 0
     while i < len(argv):
@@ -269,9 +270,15 @@ def _intercept_scaffold(argv: list[str]) -> int | None:
             i += 1
             continue
         if tok in ('--root', '--spec-root'):
+            if tok == '--root' and i + 1 < len(argv):
+                global_root = argv[i + 1]
             i += 2
             continue
-        if tok.startswith('--root=') or tok.startswith('--spec-root='):
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            i += 1
+            continue
+        if tok.startswith('--spec-root='):
             i += 1
             continue
         command_idx = i
@@ -281,7 +288,13 @@ def _intercept_scaffold(argv: list[str]) -> int | None:
         return None
 
     from scaffold import _standalone_main as scaffold_main
-    return scaffold_main(argv[command_idx:])
+    subargv = list(argv[command_idx:])
+    # `update-tools` accepts --root as a subcommand flag; inject the global
+    # --root (supplied before the command name) when not already present.
+    # `install` uses a positional ARCHIVE-PATH, so no injection needed.
+    if global_root and subargv[0] == 'update-tools' and '--root' not in subargv:
+        subargv = [subargv[0], '--root', global_root] + subargv[1:]
+    return scaffold_main(subargv)
 
 
 def main(argv: list[str] | None = None) -> int:

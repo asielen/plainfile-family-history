@@ -776,6 +776,15 @@ class _SiteBuilder:
         ):
             if not f['path']:
                 continue
+            # Standalone: skip images co-tagged to a living person in the photo catalog.
+            if not self.linked and self._is_living_tagged_photo(f['path']):
+                entries.append({
+                    'label': Path(f['path']).name,
+                    'note': 'image omitted — tagged to a living person',
+                    'link_href': None,
+                    'thumb_href': None,
+                })
+                continue
             entry = self._file_entry(f['path'], f['role'], page_dir)
             if entry is None:   # standalone image needing a derivative
                 entry = self._standalone_image_entry(sid, f['path'], f['role'], page_dir)
@@ -941,6 +950,27 @@ class _SiteBuilder:
             if r['source_id'] is None or r['source_id'] in self.source_pages:
                 return True
         return not rows  # no claims at all → relationship came from YAML directly, show it
+
+    def _is_living_tagged_photo(self, alias_path: str) -> bool:
+        """Return True when any person tagged to this photo in the catalog is living/unknown.
+
+        Source-page image derivatives must skip photos co-tagged to living persons
+        even when the source itself is otherwise public — the same rule applied
+        to person photo strips applies here."""
+        if self.photos_conn is None:
+            return False
+        try:
+            rows = self.photos_conn.execute(
+                'SELECT person_ref FROM photo_people WHERE path = ?',
+                (alias_path,),
+            ).fetchall()
+        except sqlite3.DatabaseError:
+            return False
+        for row in rows:
+            person = self.person_meta.get(row['person_ref'] or '')
+            if person and (person['living'] or '') in ('true', 'unknown'):
+                return True
+        return False
 
     def _person_family(self, pid: str, page_dir: Path) -> list[dict]:
         """Friends & Family from the relationships edges, grouped by relation."""
