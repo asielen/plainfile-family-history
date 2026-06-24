@@ -463,12 +463,14 @@ def run_install(
         return EXIT_FAILURE
 
     already = archive_path / VERSION_FILE
-    if already.is_file() or (archive_path / 'tools' / 'fha.py').is_file():
+    if already.is_file():
         raise ScaffoldError(
             f"{archive_path} already has the plainfile tools installed. To refresh "
             f"them with improvements from the public repo, run from inside that "
             f"archive:\n  fha update-tools --repo \"{repo_root}\""
         )
+    # tools/fha.py present without a stamp means a previous install was interrupted
+    # before it could write the stamp.  Allow re-running install to complete it.
 
     # Validate every source exists BEFORE writing anything, so a broken/partial
     # clone fails cleanly instead of leaving a half-installed archive.
@@ -486,6 +488,28 @@ def run_install(
             f"the manifest expects:\n  {listing}{more}\n"
             f"Re-download or re-clone the tools, then run install again."
         )
+
+    # Preflight: refuse to overwrite existing user content in skeleton destinations.
+    # The guard above already blocks double-installs; this catches the case where a
+    # user hand-started an archive (e.g. wrote fha.yaml or seeded their own README)
+    # before running `fha install`.
+    if not dry_run:
+        conflicts = [
+            entry['path']
+            for entry in files
+            if entry.get('category') == 'skeleton'
+            and Path(entry['path']).name not in {'.gitkeep', '.gitignore'}
+            and (archive_path / entry['path']).is_file()
+        ]
+        if conflicts:
+            listing = '\n  '.join(conflicts[:10])
+            more = '' if len(conflicts) <= 10 else f'\n  …and {len(conflicts) - 10} more'
+            raise ScaffoldError(
+                f"{archive_path} already contains files that install would overwrite:\n  "
+                f"{listing}{more}\n"
+                "Move or rename them first (or add --force to overwrite), "
+                "then re-run install."
+            )
 
     if dry_run:
         print(f'Dry run — would install into: {archive_path}')
@@ -682,7 +706,15 @@ def run_update_tools(
     def _copy_in(archive_path: str, src: Path) -> None:
         dest = archive_root / archive_path
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
+        # Write to a sibling temp file and atomically replace the destination so a
+        # disk-full or interrupted copy never leaves a truncated tool file behind.
+        tmp = dest.with_suffix(dest.suffix + '.fha-tmp')
+        try:
+            shutil.copy2(src, tmp)
+            tmp.replace(dest)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
         installed_ok[archive_path] = _sha256_file(dest)
 
     def _fail(archive_path: str, exc: OSError) -> None:
@@ -713,8 +745,23 @@ def run_update_tools(
         try:
             backup.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(dest), str(backup))
+        except OSError as exc:
+            _fail(archive_path, exc)
+            continue
+        try:
             _copy_in(archive_path, src)
         except OSError as exc:
+            # The move succeeded but the copy failed; restore so the archive is
+            # not left missing the file.
+            try:
+                shutil.move(str(backup), str(dest))
+            except OSError as restore_exc:
+                failures.append(
+                    f'{archive_path}: copy failed ({exc}) and restore also failed '
+                    f'({restore_exc}); your backup is at {backup}'
+                )
+                failed_paths.add(archive_path)
+                continue
             _fail(archive_path, exc)
             continue
         n_custom_ok += 1
@@ -776,7 +823,16 @@ def run_update_tools(
     for archive_path, _src in plan['retired']:
         if archive_path in failed_paths and archive_path in old_recorded:
             new_checksums[archive_path] = old_recorded[archive_path]
-    _write_version_stamp(archive_root, _stamp_dict(manifest, new_checksums))
+    try:
+        _write_version_stamp(archive_root, _stamp_dict(manifest, new_checksums))
+    except OSError as exc:
+        failures.append(f'{VERSION_FILE}: {exc}')
+        print(
+            f'WARNING: could not write {VERSION_FILE}: {exc}. '
+            'Your files were updated but the baseline was not recorded. '
+            'Run `fha update-tools` again to re-record the state.',
+            file=sys.stderr,
+        )
 
     print()
     print(

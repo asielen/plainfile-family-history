@@ -10,6 +10,13 @@
       "spec_version": "1.2"
     },
     {
+      "path": ".gitignore",
+      "category": "skeleton",
+      "sha256": "d98ed4e0715a19253a4f27c145eb0ce1fb8a7eb1dbbd23dc496a2eab9cb37301",
+      "spec_version": "1.2",
+      "src": "archive-template/.gitignore"
+    },
+    {
       "path": "AGENTS.md",
       "category": "operating",
       "sha256": "ab51d44c48d4f022500065946a0e1fb5884b69e0b369f291386086f7618b975d",
@@ -315,13 +322,13 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "afda8f57ea59ec5532613c6801d4b16ac47768e5db80d276c3566df0ca7caa9c",
+      "sha256": "8a34cfdfcadf02749de0b1bc40221f5f6cd661642180cef34bdf5635bd752e98",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "edf5efd5a644a0fa651e6a14a5f4044c4ce208d6e5239986793d1ce69e7267b1",
+      "sha256": "03a78afe85f164bc956331c381843c962cf0a7acdff3cf3d3385b865213757bc",
       "spec_version": "1.2"
     },
     {

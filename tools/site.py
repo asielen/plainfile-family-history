@@ -457,12 +457,21 @@ class _SiteBuilder:
             self.place_meta[row['id']] = row
             self.place_names[row['id']] = row['name'] or ''
 
-        # Build a map of source → linked person ids (for the living-subject check below).
+        # Build the set of source ids that name a living person — checked via both the
+        # explicit source_people table (frontmatter `people:`) and via claim_persons
+        # (claims attached to the source that name a living participant).
         source_living: set[str] = set()
         if not self.linked:
             for row in self.conn.execute(
                 "SELECT sp.source_id FROM source_people sp JOIN persons p ON sp.person_id = p.id "
                 "WHERE p.living IN ('true','unknown')"
+            ):
+                source_living.add(row['source_id'])
+            for row in self.conn.execute(
+                "SELECT DISTINCT c.source_id FROM claims c "
+                "JOIN claim_persons cp ON c.id = cp.claim_id "
+                "JOIN persons p ON cp.person_id = p.id "
+                "WHERE p.living IN ('true','unknown') AND c.source_id IS NOT NULL"
             ):
                 source_living.add(row['source_id'])
 
@@ -554,7 +563,9 @@ class _SiteBuilder:
             return name
         if kind == 'S' and pid in self.source_meta:
             row = self.source_meta[pid]
-            if not self.linked and self._source_is_redacted(row):
+            # Any source absent from source_pages (restricted, DNA, publication_ok=false,
+            # or linked to a living person) renders as the redacted label in standalone.
+            if not self.linked and pid not in self.source_pages:
                 return f'<span class="redacted">{_RESTRICTED_LABEL}</span>'
             title = _escape(row['title'] or display)
             if pid in self.source_pages:
@@ -799,10 +810,18 @@ class _SiteBuilder:
 
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…)."""
+        living_filter = (
+            '' if self.linked else
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM claim_persons cp2 JOIN persons p ON cp2.person_id = p.id "
+            "  WHERE cp2.claim_id = c.id AND p.living IN ('true','unknown')"
+            ")"
+        )
         rows = self.conn.execute(
             "SELECT type, value, date_edtf, place_id, place_text, source_id FROM claims c "
             "JOIN claim_persons cp ON c.id = cp.claim_id "
-            "WHERE cp.person_id = ? AND c.status = 'accepted' AND c.type IN ('birth','death','marriage','baptism','burial')",
+            f"WHERE cp.person_id = ? AND c.status = 'accepted' "
+            f"AND c.type IN ('birth','death','marriage','baptism','burial') {living_filter}",
             (pid,),
         ).fetchall()
         # Standalone: withold vitals whose only support is a withheld source; a fact
@@ -879,9 +898,10 @@ class _SiteBuilder:
     def _person_sources(self, pid: str, page_dir: Path) -> list[dict]:
         """Sources citing the person, grouped by source_type (TOOLING §12 — the
         same two-table UNION as `fha views sources-index`)."""
+        status_filter = '' if self.linked else "AND c.status IN ('accepted','needs-review')"
         rows = self.conn.execute(
-            'SELECT DISTINCT c.source_id FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id '
-            'WHERE cp.person_id = ? '
+            f'SELECT DISTINCT c.source_id FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id '
+            f'WHERE cp.person_id = ? {status_filter} '
             'UNION SELECT DISTINCT source_id FROM source_people WHERE person_id = ?',
             (pid, pid),
         ).fetchall()
@@ -889,6 +909,9 @@ class _SiteBuilder:
         for r in rows:
             sid = r[0]
             if sid not in self.source_meta:
+                continue
+            # Standalone: only list sources that actually have a public page.
+            if not self.linked and sid not in self.source_pages:
                 continue
             st = self.source_meta[sid]['source_type'] or 'other'
             by_type.setdefault(st, []).append(self._source_link(sid, page_dir))
@@ -904,6 +927,13 @@ class _SiteBuilder:
         ).fetchall()
         by_rel: dict[str, list[str]] = {}
         for r in rows:
+            # Standalone: omit the relationship entirely rather than showing a "Living
+            # Person" placeholder — the existence and type of a family link is itself
+            # personal information that should not be published.
+            if not self.linked:
+                meta = self.person_meta.get(r['other_id'])
+                if meta and self._person_is_redacted(meta):
+                    continue
             by_rel.setdefault(r['rel'], []).append(self._person_link(r['other_id'], page_dir))
         groups = []
         for rel, label in _FAMILY_GROUPS:
@@ -1030,6 +1060,10 @@ class _SiteBuilder:
             "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (lid,),
         ).fetchall()
+        # Standalone: also withhold events whose only source is restricted/living-linked.
+        if not self.linked:
+            claim_rows = [c for c in claim_rows
+                          if c['source_id'] is None or c['source_id'] in self.source_pages]
         claims = []
         person_freq: dict[str, int] = {}
         for c in claim_rows:
@@ -1131,10 +1165,13 @@ class _SiteBuilder:
         Mirrors `fha views tree`'s node vitals (TOOLING §7 D3)."""
         vitals = {'birth': None, 'death': None}
         for r in self.conn.execute(
-            "SELECT c.type, c.date_edtf FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "SELECT c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted'",
             (pid,),
         ):
+            # Standalone: skip dates whose only source is withheld (restricted/living).
+            if not self.linked and r['source_id'] is not None and r['source_id'] not in self.source_pages:
+                continue
             if vitals.get(r['type']) is None:
                 vitals[r['type']] = r['date_edtf'] or None
         return vitals
@@ -1371,12 +1408,16 @@ class _SiteBuilder:
     def _reset_output(self) -> None:
         """Clear only the subtrees this tool owns, so a rebuild drops pages for
         records that became redacted (idempotent regeneration — TOOLING §12)
-        without disturbing anything else a human keeps in the output directory."""
+        without disturbing anything else a human keeps in the output directory.
+
+        Standalone builds raise OSError if a subtree cannot be removed — leaving a
+        previously generated page for a now-redacted person would be a privacy leak.
+        Linked (dev preview) mode silently ignores removal failures."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
         for d in (self.persons_dir, self.sources_dir, self.places_dir, self.media_dir,
                   self.data_dir, self.vendor_dir):
             if d.exists():
-                shutil.rmtree(d, ignore_errors=True)
+                shutil.rmtree(d, ignore_errors=self.linked)
         for f in ('index.html', 'discoveries.html'):
             target = self.out_dir / f
             if target.exists():
@@ -1431,7 +1472,15 @@ def run_site(
                 'pages': (len(builder.source_pages) + len(builder.person_pages)
                           + len(builder.place_pages) + 2),
             }
-        pages = builder.run()
+        try:
+            pages = builder.run()
+        except OSError as exc:
+            # _reset_output raises in standalone mode if stale pages can't be removed.
+            msg = (
+                f'ERROR: could not clear the previous site output: {exc}. '
+                'Close any programs using those files and run `fha site` again.'
+            )
+            return {'status': 'reset-failed', 'messages': [msg], 'out_dir': out_dir, 'pages': 0}
         return {'status': 'ok', 'messages': builder.messages, 'out_dir': out_dir, 'pages': pages}
     finally:
         builder.close()
@@ -1528,6 +1577,8 @@ def _cmd_site(args: argparse.Namespace) -> int:
         return EXIT_FAILURE   # the config error message is already in result['messages']
     if status == 'bad-output':
         return EXIT_FAILURE   # the refusal message is already in result['messages']
+    if status == 'reset-failed':
+        return EXIT_FAILURE   # the OSError detail is already in result['messages']
 
     mode = 'linked preview' if getattr(args, 'linked', False) else 'standalone snapshot'
     where = _display_path(result['out_dir'], archive_root)
