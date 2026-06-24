@@ -243,7 +243,12 @@ COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-in
 # Disposable cache schema versions. These are deliberately small integers stored
 # in both a meta row and PRAGMA user_version so humans and SQLite tools can see
 # which cache shape a file was built with.
-INDEX_SCHEMA_VERSION = 1
+# v2: rights.publication_ok is now stored three-state (1/0/NULL) instead of
+# folding explicit false to NULL. Exporters redact on `COALESCE(publication_ok,
+# 1) = 0`, which only fires on a stored 0 — so a v1 index (false → NULL) would
+# silently under-redact publication_ok:false sources. Bumping forces `fha index`
+# to rebuild before the redaction-critical consumers (site/gedcom/wikitree) trust it.
+INDEX_SCHEMA_VERSION = 2
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
 

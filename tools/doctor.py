@@ -12,14 +12,15 @@ Checks (in order):
   1. Archive root present, fha.yaml parses              [fatal exit 2 if bad]
   2. Mapped roots (photos/, documents/, …) reachable
   3. exiftool on PATH
-  4. Python deps (PyYAML)
+  4. Python deps (PyYAML; Jinja2/Pillow for `fha site`)
   5. Index freshness    (.cache/index.sqlite vs newest record mtime)
   6. Photoindex freshness  (.cache/photos.sqlite vs photos root mtime)
   7. Lint summary       (E/W counts, import-and-call, no shell-out)
   8. Inbox aging        (items older than 14 days)
   9. Counts             (restricted sources, living/unknown persons)
  10. E018 findings      (agent-instruction drift details)
- 11. Backup reminder    (always printed)
+ 11. Tools version      (.plainfile-version + pending update backups)
+ 12. Backup reminder    (always printed)
 
 Exit codes: 0 = all pass; 1 = warnings only; 2 = errors.  TOOLING §3a.
 """
@@ -28,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import os
 import shutil
 import sqlite3
@@ -219,6 +221,63 @@ def _counts_from_scan(archive_root: Path) -> dict:
                 living_unknown += 1
 
     return {'restricted': restricted, 'living': living_true, 'unknown': living_unknown}
+
+
+# ── Tools-version check (fha install / fha update-tools, BUILD.md M9) ───────────
+
+def _check_tools_version(archive_root: Path) -> int:
+    """Report the vendored-tools version stamp and any pending update backups.
+
+    `fha install` writes `.plainfile-version` (the manifest version + per-file
+    checksums received); `fha update-tools` moves anything it can't safely
+    overwrite into `.plainfile-backup/{date}/`. Both are plain artifacts this
+    check reads directly rather than importing scaffold.py (tools never import
+    tools). The three states a human could otherwise be stuck on:
+      - absent stamp   → informational (a hand-assembled archive is fine)
+      - unreadable stamp → warning, with the exact recovery command
+      - pending backups  → reminder to reconcile + prune (informational)
+    Returns the worst exit contribution (EXIT_CLEAN or EXIT_WARNINGS).
+    """
+    worst = EXIT_CLEAN
+    stamp_path = archive_root / '.plainfile-version'
+    if not stamp_path.is_file():
+        print(
+            'tools version: not stamped (no .plainfile-version)  '
+            'next: no action needed if you copied the tools by hand; '
+            'or run `fha install` from a tools clone to stamp it'
+        )
+    else:
+        try:
+            stamp = json.loads(stamp_path.read_text(encoding='utf-8'))
+            if not isinstance(stamp, dict):
+                raise ValueError(f'expected a JSON object, got {type(stamp).__name__}')
+            ver = stamp.get('manifest_version', '?')
+            spec = stamp.get('spec_version', '?')
+            installed = stamp.get('installed', '?')
+            print(
+                f'tools version: {_OK} manifest {ver}, spec {spec} '
+                f'(installed {installed})  next: `fha update-tools --repo PATH` '
+                f'to pull improvements'
+            )
+        except (ValueError, OSError) as exc:
+            print(
+                f'tools version: {_WARN} .plainfile-version is unreadable ({exc})  '
+                f'next: delete {stamp_path} and run '
+                f'`fha update-tools --repo PATH` to rewrite it (your tool files '
+                f'are not affected)'
+            )
+            worst = max(worst, EXIT_WARNINGS)
+
+    backup_dir = archive_root / '.plainfile-backup'
+    if backup_dir.is_dir():
+        pending = sum(1 for p in backup_dir.rglob('*') if p.is_file())
+        if pending:
+            print(
+                f'update backups: {pending} file(s) saved under {backup_dir}  '
+                f'next: compare them to the current tools, fold in any edits you '
+                f'want to keep, then delete the backup folder'
+            )
+    return worst
 
 
 # ── Main report ───────────────────────────────────────────────────────────────
@@ -421,6 +480,27 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
         )
         worst = max(worst, EXIT_WARNINGS)
     print(f'python deps (PyYAML): {_OK}  next: no action needed')
+
+    # Publication deps (fha site). Jinja2 is required for `fha site`, like
+    # exiftool is for photos — its absence is a warning, not a hard error,
+    # because the rest of the suite runs without it. Pillow is purely optional
+    # (standalone-site image derivatives) so its absence is informational only.
+    import importlib.util as _ilu
+    if _ilu.find_spec('jinja2') is not None:
+        print(f'jinja2 (fha site): {_OK}  next: no action needed')
+    else:
+        print(
+            f'jinja2 (fha site): {_WARN} not installed  '
+            'next: `python -m pip install jinja2` to build the family website'
+        )
+        worst = max(worst, EXIT_WARNINGS)
+    if _ilu.find_spec('PIL') is not None:
+        print(f'pillow (fha site images): {_OK}  next: no action needed')
+    else:
+        print(
+            'pillow (fha site images): not installed (optional)  '
+            'next: `python -m pip install pillow` for photos in the standalone site'
+        )
     print()
 
     idx_status, idx_delta = _index_freshness(archive_root)
@@ -531,6 +611,13 @@ def run_doctor(archive_root: Path, fha_config: dict) -> int:
         print(f'  next: run `{lint_cmd}` and repair the listed instruction files')
     else:
         print('E018 findings: none  next: no action needed')
+    print()
+
+    # ── 11. Tools version (fha install / fha update-tools footprints) ────────
+    # Self-contained reads (tools never import tools): .plainfile-version and
+    # .plainfile-backup/ are plain JSON / a folder. Surfaces the two new states
+    # the scaffolding tools can leave behind so a human is never stuck wondering.
+    worst = max(worst, _check_tools_version(archive_root))
     print()
 
     print('-' * 60)

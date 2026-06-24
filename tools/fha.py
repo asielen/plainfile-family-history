@@ -25,7 +25,7 @@ import argparse
 COMMANDS = (
     'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'photoindex',
     'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
-    'process', 'capture', 'convert-mining',
+    'process', 'capture', 'convert-mining', 'site', 'install', 'update-tools',
 )
 
 
@@ -81,6 +81,30 @@ def _first_command_token(argv: list[str]) -> str | None:
             return None
         return tok
     return None
+
+
+def _load_site_module():
+    """Import tools/site.py under a private module name.
+
+    The tool's command is `fha site`, so its file must be `tools/site.py`
+    (BUILD.md M8.1) — but the stem `site` collides with Python's stdlib `site`
+    module, which is already in sys.modules from interpreter startup. A plain
+    `import site` therefore returns the stdlib module, not ours. Loading the
+    file by path under the alias `fha_site` sidesteps the collision without
+    disturbing the cached stdlib module the way replacing sys.modules['site']
+    would.
+    """
+    import importlib.util
+
+    mod = sys.modules.get('fha_site')
+    if mod is not None:
+        return mod
+    path = Path(__file__).parent / 'site.py'
+    spec = importlib.util.spec_from_file_location('fha_site', path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules['fha_site'] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _unknown_command_exit(command: str) -> int:
@@ -224,6 +248,55 @@ def _intercept_doctor(argv: list[str]) -> int | None:
     return doctor_main(rest)
 
 
+def _intercept_scaffold(argv: list[str]) -> int | None:
+    """
+    Early interception for `fha install …` and `fha update-tools …`.
+
+    scaffold.py only needs stdlib (json, shutil, pathlib) and never imports
+    PyYAML.  Without this intercept a user on a fresh machine (PyYAML not yet
+    installed) hits the ModuleNotFoundError at the bulk-import block below
+    before `fha install` gets a chance to run — which is the very command they
+    need to run in order to satisfy that dependency.
+
+    Returns an exit code when the command is install or update-tools, or None
+    to let normal argparse handling proceed.
+    """
+    global_root: str | None = None
+    command_idx: int | None = None
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == '--debug':
+            i += 1
+            continue
+        if tok in ('--root', '--spec-root'):
+            if tok == '--root' and i + 1 < len(argv):
+                global_root = argv[i + 1]
+            i += 2
+            continue
+        if tok.startswith('--root='):
+            global_root = tok[7:]
+            i += 1
+            continue
+        if tok.startswith('--spec-root='):
+            i += 1
+            continue
+        command_idx = i
+        break
+
+    if command_idx is None or argv[command_idx] not in ('install', 'update-tools'):
+        return None
+
+    from scaffold import _standalone_main as scaffold_main
+    subargv = list(argv[command_idx:])
+    # `update-tools` accepts --root as a subcommand flag; inject the global
+    # --root (supplied before the command name) when not already present.
+    # `install` uses a positional ARCHIVE-PATH, so no injection needed.
+    if global_root and subargv[0] == 'update-tools' and '--root' not in subargv:
+        subargv = [subargv[0], '--root', global_root] + subargv[1:]
+    return scaffold_main(subargv)
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Entry point for `fha` (or `python tools/fha.py`).
@@ -257,6 +330,14 @@ def main(argv: list[str] | None = None) -> int:
         if result is not None:
             return result
 
+        # Intercept 'install' and 'update-tools' before the bulk imports below.
+        # scaffold.py uses only stdlib (json, shutil, pathlib) — it does not need
+        # PyYAML.  Without this intercept a user on a fresh machine (PyYAML not yet
+        # installed) hits a ModuleNotFoundError before `fha install` can run.
+        result = _intercept_scaffold(argv_list)
+        if result is not None:
+            return result
+
         # Lazy imports: keep them inside main() for the reason above.
         from id import register as id_register
         from index import register as index_register
@@ -276,6 +357,11 @@ def main(argv: list[str] | None = None) -> int:
         from process import register as process_register
         from capture import register as capture_register
         from convert_mining import register as convert_mining_register
+        from scaffold import register as scaffold_register
+        # 'site' shadows Python's stdlib site module (already cached in
+        # sys.modules at interpreter startup), so `from site import …` would
+        # find the wrong module. Load tools/site.py by path under a private name.
+        site_register = _load_site_module().register
 
         parser = build_parser()
         subs = parser.add_subparsers(dest='command', metavar='COMMAND')
@@ -298,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
         process_register(subs)
         capture_register(subs)
         convert_mining_register(subs)
+        site_register(subs)
+        scaffold_register(subs)  # adds both 'install' and 'update-tools'
 
         args = parser.parse_args(argv_list)
         debug = bool(getattr(args, 'debug', False))
