@@ -279,6 +279,9 @@ def _cmd_on(args: argparse.Namespace) -> int:
         print('Asset files (photos, documents) are now treated as assumed-present on the')
         print('main machine. Lint will not report them as missing. Asset-mutating commands')
         print('(process, photoindex scan, packet) are paused on this machine.')
+        print()
+        print('The query index has been cleared and will rebuild automatically on the')
+        print('next read-only command (fha find, fha index, etc.).')
 
     for msg in result.messages:
         print(f'note: {_format_message(msg)}')
@@ -333,7 +336,8 @@ def _cmd_off(args: argparse.Namespace) -> int:
     print(f'Marker removed: {result.data["marker"]}')
     print()
     print('Asset features are re-enabled. Lint will now report any missing asset files')
-    print('as errors. Run "fha doctor" to check the archive health.')
+    print('as errors. The query index has been cleared; run `fha index` to rebuild it,')
+    print('then `fha doctor` to check overall archive health.')
     return result.exit_code
 
 

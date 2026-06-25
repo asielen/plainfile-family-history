@@ -53,6 +53,7 @@ from _lib import (
     id_type_of,
     is_valid_edtf,
     is_valid_id,
+    is_working_copy,
     load_fha_yaml,
     newest_record_mtime,
     normalize_date,
@@ -340,6 +341,9 @@ def _find_source(
                 status_sym = 'missing-fixture'
             elif f['exists_on_disk'] is None:
                 status_sym = '~'  # NULL = assumed present on main machine (working-copy mode)
+            elif f['exists_on_disk'] == 0 and is_working_copy(archive_root):
+                # Stale index built before the WORKING_COPY marker existed — WC mode overrides
+                status_sym = '~'
             elif resolved is not None and resolved.exists():
                 status_sym = _OK
             else:

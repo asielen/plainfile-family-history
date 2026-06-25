@@ -61,7 +61,7 @@
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "e2ac767ab9f8f5e6dd20f11c7fb86692d0e3475d147588a45ff76281d5b4bfaa",
+      "sha256": "fa871c1564b1f5db85c3db1be2fe0cfae1bb5eacbbbf28d14d98799bd0bcf2c0",
       "spec_version": "1.2"
     },
     {
@@ -274,7 +274,7 @@
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "0ee494e0bd781bf25e3ec41b30477051d1d42418192a14f08f8d0af2c218cadb",
+      "sha256": "c51227c8d446b0aed4d0d1cae14e23e00cb36ab152e387a927e753c705ddef06",
       "spec_version": "1.2"
     },
     {
@@ -430,7 +430,7 @@
     {
       "path": "tools/working_copy.py",
       "category": "operating",
-      "sha256": "fa97b616292860841f62293a7722ea8b69d07861c3641b9a4693d8b083a54614",
+      "sha256": "f53f2e34874de9807882c9712285a261aca27f71ac520565933c1a71eb227542",
       "spec_version": "1.2"
     },
     {

@@ -46,7 +46,7 @@ HTML arrives on **stdin** (`… | fha capture`) or from an `--asset` that is its
 2. **Extracts citation fields** - title, `source_type`, `citation`, `repository`, `source_date`, `external_links`, and the **person names the page lists**. Explicit `--title`/`--type`/`--date` always override the scrape (the human's word wins); `--type` is validated against the controlled `source_type` vocabulary so a typo surfaces now, not as an unprocessable stub later.
 3. **Renders the stub** - a `{slug}.notes.md` whose *light, optional* frontmatter carries the recovered citation fields and whose body is the visible text or the human's notes. `people:` here is a list of **names** (a hint the processing pass reconciles against the index), never resolved `P-id`s - a stub has none yet.
 4. **Stages the asset** beside the stub, sharing the stub's basename so they pair (SPEC §12.1 lone-sidecar rule). Collisions are detected before any overwrite.
-5. **Writes a research-log entry** - capture is itself a logged search (SPEC §16), so `fha report`'s "already searched here" annotation sees it immediately: a `search_log` row when the index exists, always also appended to `.cache/capture_log.jsonl` (the durable record a reindex re-ingests).
+5. **Writes a research-log entry** - capture is itself a logged search (SPEC §16), so `fha report`'s "already searched here" annotation sees it immediately: a `search_log` row when the index exists, also appended to `.cache/capture_log.jsonl` as an ephemeral write-behind supplement (the `search_log` row is the durable record; the cache file is disposable).
 
 ### 2.2 Recipes are data, not code
 
@@ -77,10 +77,10 @@ Capture reads the **open DOM/HTML only**. It does not log in, paginate, query AP
 | `--type TYPE` | override the inferred `source_type` (controlled vocabulary) |
 | `--date DATE` | override the source's own date (EDTF or loose natural language) |
 | `--asset FILE` | an image/document to stage, or the saved page HTML to read |
-| `--ingest [DIR]` | **(new, §6)** sweep staged companion bundles into the inbox |
+| `--ingest [DIR]` | **(planned, §6 — not yet implemented)** sweep staged companion bundles into the inbox |
 | `--dry-run` | preview every write without touching disk |
 
-Exit: `0` clean · `1` user error (bad `--type`/`--date`, asset destination clash) · `3` filesystem failure while staging. Tracebacks never reach the user; every error names a cause and the next command.
+Exit: `0` clean · `2` user error (bad `--type`/`--date`, asset destination clash) · `3` filesystem failure while staging. Tracebacks never reach the user; every error names a cause and the next command.
 
 ---
 
