@@ -228,7 +228,7 @@ This is a deliberate architecture choice, not laziness:
 | (a) fetch | `fetch(url, {credentials:'include'})` in the content-script context | cross-origin / tiled viewer / DRM images may refuse → fall to (c) |
 | (b) singlefile | walk the DOM; `fetch` each referenced image/CSS/font and rewrite its URL to a `data:` URI; serialize to one `.html` | **doable in pure MV3** (the SingleFile approach); cost is fetch volume + base64 bloat on image-heavy pages, and same-origin/CORS limits on a few sub-resources. Capture *after* load so dynamic content has settled. The default for case (b). |
 | (b) pdf | print-to-PDF of the rendered page | **not reliably one-click in MV3**: extensions have no print API; programmatic PDF needs the `chrome.debugger` `Page.printToPDF` protocol (heavyweight, shows a warning banner) or the §5.7 native host. The dependable path is the human's own *Save as PDF* handed in via (c). Offer it, but don't promise a silent one-click. |
-| (a/b) page images | also pull the page's primary `<img>`(s) as their own asset file(s) | a cheap add-on to (a)/(b): when the record centers on a photo, save that image even if the page itself is the asset, so the evidence isn't trapped inside a snapshot |
+| (a/b) page images | also pull the page's primary `<img>` as its own asset file | a cheap add-on to (a)/(b): when the record centers on a photo, save that image even if the page itself is the asset, so the evidence isn't trapped inside a snapshot. The current ingest contract handles one primary asset file; multi-asset bundles are a deferred extension (§6) |
 | (c) manual | drag-drop the human's own download (a saved image, a *Save-as-PDF*, a screenshot) into the panel | screenshots are flagged `provisional-image` - a better scan may exist |
 | none | citation + `external_links` only | `asset_elsewhere: true`; lands in the research-to-do |
 
@@ -251,7 +251,7 @@ fha capture --ingest [DIR] [--dry-run]
 `DIR` defaults to the known capture folder (`~/Downloads/fha-inbox/`, overridable by an optional `fha.yaml` `capture_staging:` key). For each `<slug>-<timestamp>/` bundle it finds:
 
 1. **Read** `capture.json`, `page.html`, and the optional asset.
-2. **Run the engine** - feed `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as the explicit overrides (`title`/`type`/`date`/`url`), exactly as if a human had typed them. The recipe re-detects on `page.html` (overruling a wrong `recipe_hint`), the human's `notes` become the stub body, and `people` names carry through as hints. This **reuses `run_capture` wholesale** - the ingest path produces a byte-identical stub to what the paste-fallback would have, which is the whole point of the staged-bundle seam.
+2. **Run the engine** - feed `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as the explicit overrides (`title`/`type`/`date`/`url`/`accessed`/`notes`/`people`), exactly as if a human had typed them. The recipe re-detects on `page.html` (overruling a wrong `recipe_hint`), the human's `notes` become the stub body, and `people` names carry through as hints. This **reuses `run_capture` wholesale** - the ingest path produces a byte-identical stub to what the paste-fallback would have, which is the whole point of the staged-bundle seam.
 3. **File** the resulting `{slug}.notes.md` + asset into the archive `inbox/` (the one sanctioned move).
 4. **Clear** the staged bundle (move it to a `fha-inbox/.ingested/` holding folder, never hard-delete - the same never-lose-the-human's-work bias as everywhere else).
 

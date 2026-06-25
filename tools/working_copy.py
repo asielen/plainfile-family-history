@@ -88,7 +88,7 @@ def _ensure_gitignore_entry(archive_root: Path) -> None:
         # "# remember WORKING_COPY" or "!WORKING_COPY" don't suppress the append.
         for line in text.splitlines():
             stripped = line.strip()
-            if stripped and not stripped.startswith('#') and not stripped.startswith('!') and _MARKER_NAME in stripped:
+            if stripped and not stripped.startswith('#') and not stripped.startswith('!') and stripped == _MARKER_NAME:
                 return
         gi.write_text(text.rstrip('\n') + '\n\n' + _GITIGNORE_ENTRY, encoding='utf-8')
     else:
@@ -280,8 +280,8 @@ def _cmd_on(args: argparse.Namespace) -> int:
         print('main machine. Lint will not report them as missing. Asset-mutating commands')
         print('(process, photoindex scan, packet) are paused on this machine.')
         print()
-        print('The query index has been cleared and will rebuild automatically on the')
-        print('next read-only command (fha find, fha index, etc.).')
+        print('The query index has been cleared; run `fha index` to rebuild it before')
+        print('using index-backed commands (fha find --related, fha views, etc.).')
 
     for msg in result.messages:
         print(f'note: {_format_message(msg)}')
@@ -346,6 +346,10 @@ def _cmd_status(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         print('error: cannot find archive root — pass --root or run from inside the archive.',
+              file=sys.stderr)
+        return EXIT_ERRORS
+    if not (archive_root / 'fha.yaml').exists():
+        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
               file=sys.stderr)
         return EXIT_ERRORS
 

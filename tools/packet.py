@@ -967,16 +967,17 @@ def run_packet(
     --dry-run (status 'dry-run') writes nothing and leaves `changed` empty.
     """
     if is_working_copy(archive_root):
+        _wc_msg = (
+            'fha packet is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.'
+        )
         return Result(
             ok=False,
             exit_code=EXIT_CLEAN,
-            data={'status': 'working-copy', 'packet_dir': None, 'zip_path': None, 'messages': []},
-        ).add(
-            'warning',
-            'fha packet is not available in working-copy mode — '
-            'the photo and document files are on the main machine. '
-            'Run this command there.',
-        )
+            data={'status': 'working-copy', 'packet_dir': None, 'zip_path': None,
+                  'messages': [_wc_msg]},
+        ).add('warning', _wc_msg)
 
     payload = _packet_payload(
         archive_root, pid, out_dir,

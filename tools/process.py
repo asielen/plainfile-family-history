@@ -2230,6 +2230,18 @@ def run_process(args: argparse.Namespace) -> Result:
     Result (Result == int, so callers/tests comparing against EXIT_* keep
     working); the per-file rename/undo detail is reported inline by the flow.
     """
+    archive_root = resolve_root_arg(args)
+    if archive_root is not None and is_working_copy(archive_root):
+        return Result(
+            ok=False,
+            exit_code=EXIT_CLEAN,
+            data={'status': 'working-copy'},
+        ).add(
+            'warning',
+            'fha process is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.',
+        )
     exit_code = _run_process(args)
     return Result(ok=(exit_code not in (EXIT_ERRORS, EXIT_FAILURE)), exit_code=exit_code)
 

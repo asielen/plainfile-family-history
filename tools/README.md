@@ -250,7 +250,7 @@ is machine-local and never syncs back. When active:
 - **Photoindex scan** and **reconcile** are refused so a working copy cannot
   prune or rewrite the photo cache; read-only photoindex commands (find, triage,
   report) work against any pre-existing `.cache/photos.sqlite`.
-- **process** and **packet** refuse with "do this on your main archive".
+- **process**, **packet**, and **site** refuse with "do this on your main archive".
 - **photoindex tag-person** refuses (asset-mutating).
 - **doctor** headlines the mode, shows absent asset roots as informational (not
   errors), and shows photoindex as paused.
