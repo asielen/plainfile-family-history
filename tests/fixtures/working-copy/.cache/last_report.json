@@ -30,7 +30,7 @@
   "question_status_by_heading": {},
   "relationships": [],
   "source_fingerprints": {
-    "s-wc00000001": "1880 US Census \u2014 Working Copy Fixture|census||sources\\census\\1880-census_S-wc00000001.md"
+    "s-wc00000001": "1880 US Census \u2014 Working Copy Fixture|census||sources/census/1880-census_S-wc00000001.md"
   },
   "source_ids": [
     "s-wc00000001"

@@ -2104,7 +2104,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
             'Run this command there.',
             file=sys.stderr,
         )
-        return EXIT_WARNINGS
+        return EXIT_CLEAN
 
     try:
         summary = run_scan(archive_root, fha_config, full=getattr(args, 'full', False))
@@ -2253,7 +2253,8 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     if result.get('working_copy'):
         print(
             'photoindex reconcile is not available in working-copy mode — '
-            'the photo files are on the main machine. Run this command there.'
+            'the photo files are on the main machine. Run this command there.',
+            file=sys.stderr,
         )
         return EXIT_CLEAN
 

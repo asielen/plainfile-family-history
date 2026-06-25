@@ -339,18 +339,3 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     status_p.set_defaults(func=_cmd_status)
 
     p.set_defaults(func=_cmd_status)
-
-
-def _cmd_working_copy_default(args: argparse.Namespace) -> int:
-    """Show help when no sub-command is given."""
-    configure_utf8_stdout()
-    if not getattr(args, 'wc_command', None):
-        # Print usage by re-parsing with --help would loop; just print a hint.
-        print('usage: fha working-copy {on,off,status} [--root PATH] [--yes]')
-        print()
-        print('Sub-commands:')
-        print('  on      Activate working-copy mode (write WORKING_COPY marker).')
-        print('  off     Deactivate working-copy mode (prompts unless --yes).')
-        print('  status  Report whether working-copy mode is active.')
-        return EXIT_ERRORS
-    return EXIT_CLEAN
