@@ -904,18 +904,23 @@ def _query_photoindex(
     code from the status, so this read helper leaves exit_code at its clean default.
     """
     status, _lag = photoindex_status(archive_root, fha_config)
+    # An absent/unreadable index is a failure the CLI maps to EXIT_FAILURE; set
+    # the same code here so headless callers returning Result.exit_code don't
+    # read a missing/corrupt photos.sqlite as success.
     if status in ('absent', 'unreadable'):
-        return Result(ok=False, data={'status': status, **empty_payload})
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': status, **empty_payload})
 
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return Result(ok=False, data={'status': 'unreadable', **empty_payload})
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': 'unreadable', **empty_payload})
         try:
             return Result(data={'status': status, **query(conn)})
         except sqlite3.Error:
-            return Result(ok=False, data={'status': 'unreadable', **empty_payload})
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': 'unreadable', **empty_payload})
     finally:
         conn.close()
 

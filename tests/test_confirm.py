@@ -213,6 +213,30 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertEqual(result.changed, [])
         self.assertEqual(src.read_text(encoding='utf-8'), before)
 
+    def test_xref_rolls_back_on_second_write_failure(self) -> None:
+        # The reciprocal pair lands in two source files; if the second write
+        # fails, the first must be rolled back so no one-sided link survives.
+        import unittest.mock as mock
+        srcs = sorted((self.root / 'sources').rglob('*.md'))
+        before = {p: p.read_text(encoding='utf-8') for p in srcs}
+        real_write = Path.write_text
+        state = {'n': 0}
+
+        def flaky(self_path, *args, **kwargs):
+            state['n'] += 1
+            if state['n'] == 2:
+                raise OSError('simulated disk full')
+            return real_write(self_path, *args, **kwargs)
+
+        with mock.patch.object(Path, 'write_text', flaky):
+            r = confirm.run_confirm_xref(
+                self.root, claim_a=CLAIM_A, claim_b=CLAIM_B, relation='corroborates')
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r.changed, [])
+        for p in srcs:
+            self.assertEqual(p.read_text(encoding='utf-8'), before[p],
+                             f'{p.name} not rolled back after a mid-write failure')
+
     def test_xref_contradiction_spawns_question_and_no_e009(self) -> None:
         import lint
         result = confirm.run_confirm_xref(
@@ -433,6 +457,26 @@ class ConfirmArchiveTests(unittest.TestCase):
         r = confirm.run_add_discovery(self.root, text='x', refs=['not-an-id'])
         self.assertEqual(r.exit_code, EXIT_FAILURE)
         self.assertEqual(r['status'], 'invalid-id')
+
+    def test_discovery_unknown_ref_not_appended(self) -> None:
+        # A valid-shaped but nonexistent ref must abort before writing so the
+        # log never carries an E004 orphan reference.
+        before = (self.root / 'notes' / 'discoveries.md').read_text(encoding='utf-8')
+        r = confirm.run_add_discovery(self.root, text='x', refs=[SOURCE, 'S-0000000000'])
+        self.assertEqual(r.exit_code, EXIT_WARNINGS)
+        self.assertEqual(r['status'], 'not-found')
+        self.assertEqual(r.changed, [])
+        self.assertEqual((self.root / 'notes' / 'discoveries.md').read_text(encoding='utf-8'), before)
+
+    def test_discovery_setup_failure_is_reported(self) -> None:
+        # notes/ blocked by a file of the same name → a clean failure Result,
+        # not a traceback out of run_add_discovery.
+        import shutil as _shutil
+        _shutil.rmtree(self.root / 'notes')
+        (self.root / 'notes').write_text('not a dir', encoding='utf-8')
+        r = confirm.run_add_discovery(self.root, text='x')
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r['status'], 'failed')
 
     # draft --------------------------------------------------------------------
 

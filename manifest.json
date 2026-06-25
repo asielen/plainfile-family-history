@@ -178,7 +178,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "61cac9817b10d2ffa09e74d1092240b10f23a1155f53db00699b68be3677fca0",
+      "sha256": "828c3cfdde24dcc9e547e8e65a7bc60a82a77457f4002756d3b723e20e904d85",
       "spec_version": "1.2"
     },
     {
@@ -238,7 +238,7 @@
     {
       "path": "tools/confirm.py",
       "category": "operating",
-      "sha256": "f786b0613e568cfe6fcbb64404a5d4fa385485c4e4abbbac8b50f48b51a86e1b",
+      "sha256": "02661cec7162c3b5e248be161634834a2fedfc62894e02d63e16c4d10e2eefb3",
       "spec_version": "1.2"
     },
     {
@@ -274,7 +274,7 @@
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "fb184b2cf09fa042215bc2b37ccc4f18b1c5c01fc4c140fd244a3996542a641e",
+      "sha256": "33299e6ec0c346cdb684865d6fac9b1e3f787a9825e6d8f506958ba6bb65ef8d",
       "spec_version": "1.2"
     },
     {
@@ -304,7 +304,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "5de41e21ee02671a80f35b8a1b9e1c2f86fef09f1ce6e7bbe2add423d17a323f",
+      "sha256": "b15c012aa09048e30cb74cf54f4a8e7c8b6f4971d412fedec9a23cecca5f2081",
       "spec_version": "1.2"
     },
     {

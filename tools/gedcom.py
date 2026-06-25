@@ -700,7 +700,16 @@ def run_gedcom(
         archive_root, pid, mode=mode, generations=generations,
         all_persons=all_persons, include_living=include_living,
     )
-    return Result(ok=(payload['status'] == 'ok'), data=payload)
+    status = payload['status']
+    # Mirror _cmd_gedcom's per-status exit codes so headless callers returning
+    # Result.exit_code see a failed export as a failure, not a clean 0.
+    if status == 'ok':
+        exit_code = EXIT_CLEAN
+    elif status in ('not-found', 'no-persons'):
+        exit_code = EXIT_WARNINGS
+    else:  # bad-args, no-index
+        exit_code = EXIT_FAILURE
+    return Result(ok=(status == 'ok'), exit_code=exit_code, data=payload)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────

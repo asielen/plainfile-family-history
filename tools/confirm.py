@@ -110,6 +110,7 @@ from _lib import (
     parse_filename,
     read_record,
     resolve_root_arg,
+    scan_ids_in_tree,
     scan_person_record_ids,
 )
 
@@ -492,11 +493,26 @@ def run_confirm_xref(
         return result
 
     written: list[tuple[Path, str]] = []   # (path, pristine text) for rollback
+
+    def _rollback_xref() -> None:
+        # Restore every file written so far to its pristine text, so a failure
+        # part-way through the reciprocal pair never leaves a one-sided link.
+        for p, original in reversed(written):
+            try:
+                p.write_text(original, encoding='utf-8')
+            except OSError:
+                pass
+        result.changed.clear()
+        result.messages.clear()
+
     for path, before, after in previews:
         try:
             path.write_text(after, encoding='utf-8')
         except OSError as e:
-            return _fail(result, 'failed', f'cannot write {path}: {e}')
+            _rollback_xref()
+            return _fail(result, 'failed',
+                         f'cannot write {path}: {e}; rolled earlier link writes back. '
+                         'Nothing was changed.')
         written.append((path, before))
         result.note_changed(path)
         result.add('info', f'Wrote {relation} link in {path.name}', path=path)
@@ -509,12 +525,7 @@ def run_confirm_xref(
         try:
             q_path = _spawn_contradiction_question(archive_root, ca, cb)
         except OSError as e:
-            for path, before in reversed(written):
-                try:
-                    path.write_text(before, encoding='utf-8')
-                except OSError:
-                    pass
-            result.changed.clear()
+            _rollback_xref()
             return _fail(result, 'failed',
                          'linked the sources but could not spawn the required '
                          f'contradiction question ({e}); rolled the link writes back. '
@@ -863,7 +874,10 @@ def run_confirm_place(
     for cid, path in claim_paths.items():
         before = file_edits.get(path)
         if before is None:
-            before = path.read_text(encoding='utf-8')
+            try:
+                before = path.read_text(encoding='utf-8')
+            except OSError as e:
+                return _fail(result, 'failed', f'cannot read {path}: {e}')
             file_originals[path] = before
         after, changed = _set_scalar_on_claim(before, cid, 'place', place_disp)
         if not changed:
@@ -992,12 +1006,27 @@ def run_add_discovery(
         return _fail(result, 'failed', 'Pass the discovery text (what was found).')
 
     ref_tokens: list[str] = []
+    norm_refs: list[str] = []
     for ref in (refs or []):
         if not is_valid_id(ref):
             return _fail(result, 'invalid-id',
                          f'{ref!r} is not a valid archive ID. Refs are S-/P-/C-/L-/H- ids, '
                          'e.g. S-fa1234567b or P-de957bcda1.')
+        norm_refs.append(normalize_id(ref))
         ref_tokens.append(f'[{fmt_id_display(normalize_id(ref))}]')
+
+    # A syntactically valid but mistyped ref (e.g. S-0000000000) would land an
+    # E004 orphan reference in the log, so verify each ref names something that
+    # actually exists in the archive before appending. scan_ids_in_tree is a
+    # superset of every real record's id (each record carries its own id), so an
+    # id missing from it appears nowhere and is certainly an orphan.
+    known_ids = scan_ids_in_tree(archive_root) if norm_refs else set()
+    missing_refs = [fmt_id_display(r) for r in norm_refs if r.lower() not in known_ids]
+    if missing_refs:
+        return _notfound(result,
+                         'These refs name nothing in the archive: '
+                         + ', '.join(missing_refs)
+                         + '. Fix the IDs and retry (nothing written).')
 
     suffix = (' ' + ' '.join(ref_tokens)) if ref_tokens else ''
     entry = f'- {_today()}: {text}{suffix}'
@@ -1011,13 +1040,10 @@ def run_add_discovery(
         result.add('info', '[dry-run] No file written.')
         return result
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        existing = path.read_text(encoding='utf-8')
-    else:
-        existing = '# Discoveries Log\n'
-    sep = '' if existing.endswith('\n') else '\n'
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_text(encoding='utf-8') if path.exists() else '# Discoveries Log\n'
+        sep = '' if existing.endswith('\n') else '\n'
         path.write_text(existing + sep + entry + '\n', encoding='utf-8')
     except OSError as e:
         return _fail(result, 'failed', f'cannot write {path}: {e}')
