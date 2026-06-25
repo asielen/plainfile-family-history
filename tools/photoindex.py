@@ -1810,7 +1810,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     returns a working-copy status so callers can detect the mode.
     """
     if is_working_copy(archive_root):
-        return Result(ok=False, exit_code=EXIT_WARNINGS, data={
+        return Result(ok=False, exit_code=EXIT_CLEAN, data={
             'working_copy': True,
             'photos_root': str(resolve_path('photos', fha_config, archive_root)),
             'root_found': False,
