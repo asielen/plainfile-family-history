@@ -61,12 +61,15 @@ from _lib import (
     EXIT_WARNINGS,
     FRONT_RE,
     ID_RE,
+    LEVEL_TO_SEVERITY,
     SIGNIFICANCE,
     SOURCE_TYPES,
     TOKEN_RE,
     VITAL_TYPES,
     Finding,
+    Result,
     edtf_bounds,
+    finding_to_message,
     extract_token_ids,
     fmt_id_display,
     format_edtf_error,
@@ -137,9 +140,10 @@ import yaml
 #    _fix_spawn_questions        — append question entries for E009 set (--spawn-questions)
 #
 #  Main entry / CLI
-#    run_lint                    — orchestrates both passes and emits findings
+#    run_lint                    — orchestrates both passes; returns a Result
+#    _cmd_lint                   — render a lint Result (human text or --json) → exit code
 #    register                    — attach 'lint' to the main fha parser
-#    _run_lint                   — argparse → run_lint bridge
+#    _run_lint                   — argparse → run_lint → _cmd_lint bridge
 #    _standalone_main            — for `python tools/lint.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -218,14 +222,26 @@ _SOURCE_FILENAME_RE = re.compile(
     r'^[a-z0-9][a-z0-9\-]*_S-[0-9a-hjkmnp-tv-z]{10}$', re.I
 )
 _PERSON_FILENAME_RE = re.compile(
-    r'^[a-z][a-z_]*__[a-z][a-z_]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
+    # Optional MERGED-INTO-P-<survivor>__ tombstone prefix (SPEC §9): a merged
+    # person's file persists forever under this rename, so the grammar must
+    # accept it rather than flag the spec-mandated form as a bad filename.
+    r'^(MERGED-INTO-P-[0-9a-hjkmnp-tv-z]{10}__)?'
+    r'[a-z][a-z_]*__[a-z][a-z_]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
 )
 
 # ── Required-field sets ───────────────────────────────────────────────────────
 
 REQUIRED_PERSON_FIELDS = {'id', 'name', 'living'}
 REQUIRED_SOURCE_FIELDS = {'id', 'title', 'source_type'}
-REQUIRED_CLAIM_FIELDS  = {'id', 'type', 'persons', 'value', 'status'}
+REQUIRED_CLAIM_FIELDS  = {'id', 'type', 'persons', 'value', 'status', 'confidence'}
+
+# Controlled vocabularies validated by E019 (SPEC §8.1 status lifecycle, §8.5
+# confidence). Values outside these sets are typos that would silently corrupt
+# accepted-claim rollups (e.g. `status: acccepted` is never counted as accepted).
+VALID_CLAIM_STATUS = frozenset({
+    'suggested', 'needs-review', 'accepted', 'disputed', 'rejected', 'superseded',
+})
+VALID_CONFIDENCE = frozenset({'high', 'medium', 'low'})
 
 # ── Summary block parsing (E013) ──────────────────────────────────────────────
 
@@ -566,7 +582,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         ppid = normalize_id(str(p_raw))
         if ppid and not registry.has_person(ppid):
             findings.append(Finding('E', 'E005', path,
-                f'Source people: references person {ppid} but no person record exists'))
+                f'Source people: references person {ppid} but no person record exists — '
+                'create a stub with `fha stubs`, or fix the P-id.'))
 
     # E007 / E017 / source_type check
     source_type = str(meta.get('source_type', ''))
@@ -631,7 +648,9 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         claim_type = str(claim.get('type', ''))
         if claim_type and claim_type not in CLAIM_TYPES:
             findings.append(Finding('E', 'E007', path,
-                f'Claim {cid} type {claim_type!r} not in vocabulary'))
+                f'Claim {cid} type {claim_type!r} is not a known claim type. '
+                f'Use one of: {", ".join(sorted(CLAIM_TYPES))} '
+                '(for anything else, use type: event or note with a free-text subtype:).'))
 
         # E006: accepted claim must have reviewed
         status = str(claim.get('status', ''))
@@ -639,6 +658,18 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         if status == 'accepted' and not reviewed:
             findings.append(Finding('E', 'E006', path,
                 f'Accepted claim {cid} missing reviewed date'))
+
+        # E019: status / confidence must come from their controlled vocabularies
+        # (SPEC §8.1, §8.5). A typo'd value lints clean today but silently drops
+        # the claim from accepted-claim rollups, so catch it.
+        if status and status not in VALID_CLAIM_STATUS:
+            findings.append(Finding('E', 'E019', path,
+                f'Claim {cid} status {status!r} is not a valid review status. '
+                f'Use one of: {", ".join(sorted(VALID_CLAIM_STATUS))}.'))
+        conf_value = str(claim.get('confidence', ''))
+        if conf_value and conf_value not in VALID_CONFIDENCE:
+            findings.append(Finding('E', 'E019', path,
+                f'Claim {cid} confidence {conf_value!r} is not valid — use high, medium, or low.'))
 
         # E014: Claim date EDTF check (forgiving: loose-but-clear → W109 suggestion)
         _check_date_value(claim.get('date', ''), 'date', f'Claim {cid}: ', path, findings)
@@ -651,7 +682,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         # E015: relationship claim must have roles
         if claim_type == 'relationship' and not claim.get('roles'):
             findings.append(Finding('E', 'E015', path,
-                f'Claim {cid} (type: relationship) missing roles:'))
+                f'Claim {cid} (type: relationship) is missing its roles: field — add roles: '
+                'naming each person\'s part (e.g. roles: [parent, child] or [spouse, spouse]).'))
 
         # W109: accepted claim missing notes when it's substantive OR a low-confidence vital
         sig = SIGNIFICANCE.get(claim_type, 'incidental')
@@ -661,7 +693,8 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             is_low_confidence_vital = sig == 'vital' and confidence == 'low'
             if is_substantive or is_low_confidence_vital:
                 findings.append(Finding('W', 'W109', path,
-                    f'Claim {cid} ({claim_type}) missing notes context (W109)'))
+                    f'Claim {cid} ({claim_type}) is accepted but has no notes: context — '
+                    'add a short notes: line explaining the evidence behind it.'))
 
     # E011: file inventory checks
     inventory_paths: set[str] = set()
@@ -952,13 +985,15 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # E004: orphan reference
             for ref_path, ref_line in refs[:3]:   # report first 3 sites
                 findings.append(Finding('E', 'E004', ref_path,
-                    f'Orphan reference [{token_id}] (line {ref_line}) — no matching record'))
+                    f'Orphan reference [{token_id}] (line {ref_line}) — no matching record. '
+                    'Create the missing record (for a person, run `fha stubs`) or fix the ID.'))
 
         if tid_type == 'P' and not registry.has_person(token_id):
             # E005: referenced person has no record at all
             for ref_path, ref_line in refs[:1]:
                 findings.append(Finding('E', 'E005', ref_path,
-                    f'P-id {token_id} referenced at line {ref_line} but no person record exists'))
+                    f'P-id {token_id} referenced at line {ref_line} but no person record exists — '
+                    'create a stub with `fha stubs`, or fix the ID.'))
 
     # E004: check persons referenced in claim `persons:` fields
     for sid, claims in registry.source_claims.items():
@@ -967,7 +1002,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             for ppid in _claim_person_ids(claim):
                 if not registry.has_person(ppid):
                     findings.append(Finding('E', 'E005', src_path,
-                        f'Claim {claim.get("id","?")} references person {ppid} but no person record exists'))
+                        f'Claim {claim.get("id","?")} references person {ppid} but no person record exists — '
+                        'create a stub with `fha stubs`, or fix the P-id.'))
 
             # place reference — forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id that doesn't resolve is a broken link
@@ -1010,7 +1046,8 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     # Check if an open question references both C-ids
                     if not _has_question_for(cid, tid, registry):
                         findings.append(Finding('E', 'E009', src_path,
-                            f'Claim {cid} contradicts {tid} but no open question references both'))
+                            f'Claim {cid} contradicts {tid} but no open question records the conflict — '
+                            'run `fha lint --spawn-questions` to open one, or add a `## Q:` block to notes/questions.md.'))
 
     # E013: summary block drift for curated profiles
     children_of = _build_children_of(registry)   # parent_pid → {child_pids}
@@ -1418,8 +1455,19 @@ def _check_format(path: Path, findings: list[Finding]) -> None:
         findings.append(Finding('W', 'W109', path, 'File uses CRLF line endings'))
 
 
-def _fix_format(path: Path, dry_run: bool = False) -> None:
-    """Apply conservative formatting fixes: CRLF→LF and ensure trailing newline."""
+def _fix_format(
+    path: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """Apply conservative formatting fixes: CRLF→LF and ensure trailing newline.
+
+    Per the structured-result contract (run_* does not print), the per-file
+    progress line goes into `progress` for `_cmd_lint` to render, and a real
+    write is recorded in `changed`.  The file write itself is a side effect that
+    stays here in the compute layer.
+    """
     try:
         text = path.read_text(encoding='utf-8')
     except OSError:
@@ -1429,10 +1477,11 @@ def _fix_format(path: Path, dry_run: bool = False) -> None:
         fixed += '\n'
     if fixed != text:
         if dry_run:
-            print(f'Would fix formatting: {path.name}')
+            progress.append(f'Would fix formatting: {path.name}')
         else:
             path.write_text(fixed, encoding='utf-8')
-            print(f'Fixed formatting: {path.name}')
+            progress.append(f'Fixed formatting: {path.name}')
+            changed.append(str(path))
 
 
 # ── Main lint entry point ─────────────────────────────────────────────────────
@@ -1461,7 +1510,6 @@ def run_lint(
     archive_root: Path,
     fha_config: dict,
     with_exif: bool = False,
-    use_json: bool = False,
     format_check: bool = False,
     format_write: bool = False,
     dry_run: bool = False,
@@ -1469,24 +1517,42 @@ def run_lint(
     spawn_questions: bool = False,
     fix_inventory: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
-) -> int:
+) -> Result:
     """
-    Run all lint checks against archive_root and return an exit code.
-    Report-only by default; mutating fix modes require explicit flags and
-    respect --dry-run. Never modifies original source files or photos.
+    Run all lint checks against archive_root and return a structured `Result`.
+
+    The reference implementation of the structured-result contract (_lib.py): this
+    function computes findings and performs the mutating fix modes (their file
+    writes are side effects that belong in the compute layer), but it does NOT
+    print the human report — `_cmd_lint` renders that from the returned Result.
+    Report-only by default; mutating fix modes require explicit flags and respect
+    --dry-run. Never modifies original source files or photos.
+
+    The Result carries:
+      - messages: every finding, folded into Message form (severity → level).
+      - data.n_errors / data.n_warnings: the counts the summary line needs.
+      - data.progress: the per-operation lines fix modes emit, in order, for
+        `_cmd_lint` to print ahead of the findings report.
+      - data.config_missing: set when there is no fha.yaml (a special early case
+        whose output `_cmd_lint` renders differently — compact JSON, absolute path).
+      - changed: files actually created/written by the fix modes (empty on dry-run).
     """
     # Check that archive root looks right
     if not (archive_root / 'fha.yaml').exists():
         msg = f'No fha.yaml found at {archive_root} — is this an archive root?'
-        if use_json:
-            print(json.dumps([{'severity': 'E', 'code': 'E010',
-                               'path': str(archive_root), 'message': msg}]))
-        else:
-            print(f'E E010 {archive_root}: {msg}')
-            print('Summary: 1 error(s)')
-        return EXIT_ERRORS
+        result = Result(
+            ok=False,
+            exit_code=EXIT_ERRORS,
+            data={'config_missing': True, 'message': msg,
+                  'n_errors': 1, 'n_warnings': 0, 'progress': []},
+        )
+        result.add('error', msg, code='E010', path=archive_root)
+        return result
 
     findings, registry = _run_lint_core(archive_root, fha_config, with_exif=with_exif)
+
+    progress: list[str] = []
+    changed: list[str] = []
 
     # Format checks / fixes
     if format_check or format_write:
@@ -1494,61 +1560,116 @@ def run_lint(
             if '.cache' not in path.parts:
                 _check_format(path, findings)
                 if format_write:
-                    _fix_format(path, dry_run=dry_run)
+                    _fix_format(path, progress, changed, dry_run=dry_run)
 
     # Fix modes (each respects --dry-run via its own parameter)
     if mint_stubs:
-        _fix_mint_stubs(registry, findings, archive_root, dry_run=dry_run)
+        _fix_mint_stubs(registry, archive_root, progress, changed, dry_run=dry_run)
     if spawn_questions:
-        _fix_spawn_questions(registry, findings, archive_root, dry_run=dry_run)
+        _fix_spawn_questions(registry, findings, archive_root, progress, changed, dry_run=dry_run)
     if fix_inventory:
         if dry_run:
-            print('--fix-inventory dry-run: would scan documents root and update files: blocks for E011 set')
+            progress.append('--fix-inventory dry-run: would scan documents root and update files: blocks for E011 set')
         else:
-            print('WARNING: --fix-inventory is not yet implemented.')
-            print('         Run `fha process` on each document to update its source record.')
+            progress.append('WARNING: --fix-inventory is not yet implemented.')
+            progress.append('         Run `fha process` on each document to update its source record.')
 
     # Sort findings by severity then path
     findings.sort(key=lambda f: (f.code, f.path))
 
-    # Report
-    if use_json:
-        print(json.dumps([f.as_dict() for f in findings], indent=2))
+    n_errors = sum(1 for f in findings if f.severity == 'E')
+    n_warnings = sum(1 for f in findings if f.severity == 'W')
+    if n_errors:
+        exit_code = EXIT_ERRORS
+    elif n_warnings:
+        exit_code = EXIT_WARNINGS
     else:
-        for f in findings:
+        exit_code = EXIT_CLEAN
+
+    return Result(
+        ok=(n_errors == 0),
+        exit_code=exit_code,
+        data={'n_errors': n_errors, 'n_warnings': n_warnings, 'progress': progress},
+        messages=[finding_to_message(f) for f in findings],
+        changed=changed,
+    )
+
+
+def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int:
+    """Render a lint Result to stdout and return the process exit code.
+
+    The only layer that prints lint's report.  Reproduces the historical output
+    byte-for-byte: progress lines first (fix-mode operations, both modes), then
+    either the indented `--json` payload or the relative-path findings list plus
+    the summary line.  The no-fha.yaml case keeps its distinct format (compact
+    JSON, absolute path, "Summary: 1 error(s)").
+    """
+    data = result.data
+
+    if data.get('config_missing'):
+        msg = data['message']
+        if use_json:
+            print(json.dumps([{'severity': 'E', 'code': 'E010',
+                               'path': str(archive_root), 'message': msg}]))
+        else:
+            print(f'E E010 {archive_root}: {msg}')
+            print('Summary: 1 error(s)')
+        return result.exit_code
+
+    # Fix-mode progress prints ahead of the report, regardless of --json.
+    for line in data.get('progress', []):
+        print(line)
+
+    messages = result.messages
+
+    if use_json:
+        payload = [
+            {
+                'severity': LEVEL_TO_SEVERITY.get(m.level, m.level),
+                'code': m.code,
+                'path': m.path,
+                'message': m.text,
+            }
+            for m in messages
+        ]
+        print(json.dumps(payload, indent=2))
+    else:
+        for m in messages:
+            severity = LEVEL_TO_SEVERITY.get(m.level, m.level)
             # Make paths relative for readability
             try:
-                rel = Path(f.path).relative_to(archive_root)
-                line = f'{f.severity} {f.code} {rel}: {f.message}'
+                rel = Path(m.path).relative_to(archive_root)
+                line = f'{severity} {m.code} {rel}: {m.text}'
             except ValueError:
-                line = str(f)
+                line = f'{severity} {m.code} {m.path}: {m.text}'
             print(line)
 
-        n_errors = sum(1 for f in findings if f.severity == 'E')
-        n_warnings = sum(1 for f in findings if f.severity == 'W')
+        if not messages:
+            print('✓ No issues found.')
+        else:
+            parts = []
+            if data.get('n_errors'):
+                parts.append(f'{data["n_errors"]} error(s)')
+            if data.get('n_warnings'):
+                parts.append(f'{data["n_warnings"]} warning(s)')
+            print(f'Summary: {", ".join(parts)}')
 
-        if not use_json:
-            if not findings:
-                print('✓ No issues found.')
-            else:
-                parts = []
-                if n_errors:
-                    parts.append(f'{n_errors} error(s)')
-                if n_warnings:
-                    parts.append(f'{n_warnings} warning(s)')
-                print(f'Summary: {", ".join(parts)}')
-
-    if any(f.severity == 'E' for f in findings):
-        return EXIT_ERRORS
-    if any(f.severity == 'W' for f in findings):
-        return EXIT_WARNINGS
-    return EXIT_CLEAN
+    return result.exit_code
 
 
 def _fix_mint_stubs(
-    registry: Registry, findings: list[Finding], archive_root: Path, dry_run: bool = False
+    registry: Registry,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
 ) -> None:
-    """Create missing person stubs (E005 set) in people/stubs/. Respects dry_run."""
+    """Create missing person stubs (E005 set) in people/stubs/. Respects dry_run.
+
+    Per the structured-result contract, the "Created stub:" / "Would create stub:"
+    lines accumulate in `progress` (rendered later by `_cmd_lint`) rather than
+    printing here, and each real write is recorded in `changed`.
+    """
     stubs_dir = archive_root / 'people' / 'stubs'
 
     # Collect pids that appear in claims but have no record
@@ -1564,7 +1685,7 @@ def _fix_mint_stubs(
         if stub_path.exists():
             continue
         if dry_run:
-            print(f'Would create stub: people/stubs/unknown__unknown_{ppid}.md')
+            progress.append(f'Would create stub: people/stubs/unknown__unknown_{ppid}.md')
         else:
             stubs_dir.mkdir(parents=True, exist_ok=True)
             stub_content = (
@@ -1575,19 +1696,30 @@ def _fix_mint_stubs(
                 f'tier: stub\n---\n'
             )
             stub_path.write_text(stub_content, encoding='utf-8')
-            print(f'Created stub: {stub_path.relative_to(archive_root)}')
+            progress.append(f'Created stub: {stub_path.relative_to(archive_root)}')
+            changed.append(str(stub_path))
 
 
 def _fix_spawn_questions(
-    registry: Registry, findings: list[Finding], archive_root: Path, dry_run: bool = False
+    registry: Registry,
+    findings: list[Finding],
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
 ) -> None:
-    """Append templated questions for E009 contradictions. Respects dry_run."""
+    """Append templated questions for E009 contradictions. Respects dry_run.
+
+    Like the other fix modes, progress text accumulates in `progress` and the
+    written questions.md is recorded in `changed`, leaving `_cmd_lint` the only
+    layer that prints.
+    """
     questions_path = archive_root / 'notes' / 'questions.md'
     to_spawn = [f for f in findings if f.code == 'E009']
     if not to_spawn:
         return
     if dry_run:
-        print(f'Would append {len(to_spawn)} question(s) to notes/questions.md')
+        progress.append(f'Would append {len(to_spawn)} question(s) to notes/questions.md')
         return
     (archive_root / 'notes').mkdir(parents=True, exist_ok=True)
     existing = questions_path.read_text(encoding='utf-8') if questions_path.exists() else ''
@@ -1600,7 +1732,8 @@ def _fix_spawn_questions(
         )
     if appended:
         questions_path.write_text(existing + '\n'.join(appended), encoding='utf-8')
-        print(f'Appended {len(appended)} question(s) to {questions_path.relative_to(archive_root)}')
+        progress.append(f'Appended {len(appended)} question(s) to {questions_path.relative_to(archive_root)}')
+        changed.append(str(questions_path))
 
 
 def _today() -> str:
@@ -1669,11 +1802,10 @@ def _run_lint(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     spec_root = getattr(args, 'spec_root', None)
 
-    return run_lint(
+    result = run_lint(
         archive_root=archive_root,
         fha_config=fha_config,
         with_exif=getattr(args, 'with_exif', False),
-        use_json=getattr(args, 'use_json', False),
         format_check=getattr(args, 'format_check', False),
         format_write=getattr(args, 'format_write', False),
         dry_run=getattr(args, 'dry_run', False),
@@ -1682,6 +1814,7 @@ def _run_lint(args: argparse.Namespace) -> int:
         fix_inventory=getattr(args, 'fix_inventory', False),
         spec_root=Path(spec_root) if spec_root else None,
     )
+    return _cmd_lint(result, archive_root, use_json=getattr(args, 'use_json', False))
 
 
 # ── Standalone ────────────────────────────────────────────────────────────────

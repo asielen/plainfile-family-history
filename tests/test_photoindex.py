@@ -14,7 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import photoindex
-from _lib import newest_person_record_mtime, parse_media_filename, photoindex_status
+from _lib import (
+    EXIT_CLEAN,
+    EXIT_FAILURE,
+    EXIT_WARNINGS,
+    newest_person_record_mtime,
+    parse_media_filename,
+    photoindex_status,
+)
 
 
 def _copy_fixture(tmp: Path) -> Path:
@@ -31,6 +38,37 @@ class PhotoindexTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         photoindex._run_exiftool = self._orig_run_exiftool
+
+    def test_absent_index_read_helpers_return_failure_exit_code(self) -> None:
+        # Headless callers return Result.exit_code directly, so the read helpers
+        # must report an absent photos.sqlite as EXIT_FAILURE, not a clean 0.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))   # no scan → photos.sqlite absent
+            cfg = {'roots': {'photos': 'photos'}}
+            self.assertEqual(photoindex.run_find(archive, cfg, person='P-de957bcda1').exit_code,
+                             EXIT_FAILURE)
+            self.assertEqual(photoindex.run_reconcile(archive, cfg).exit_code, EXIT_FAILURE)
+
+    def test_missing_photos_root_returns_warning_exit_code(self) -> None:
+        # A missing photos root is a warning (mirrors _cmd_scan/_cmd_reconcile),
+        # not a hard failure.
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            cfg = {'roots': {'photos': 'nonexistent-dir'}}
+            scan = photoindex.run_scan(archive, cfg)
+            self.assertFalse(scan['root_found'])
+            self.assertEqual(scan.exit_code, EXIT_WARNINGS)
+
+    def test_keyword_to_edtf_preserves_component_approximation(self) -> None:
+        # SPEC §20 date-mapping table — a per-component best-guess marker must
+        # land on the right component (1960!-05~ -> 1960-~05), not collapse to a
+        # trailing '~' or get dropped when a confident component follows.
+        self.assertEqual(photoindex._keyword_to_edtf('1942!-11!-25!'), '1942-11-25')
+        self.assertEqual(photoindex._keyword_to_edtf('1960!-05!'), '1960-05')
+        self.assertEqual(photoindex._keyword_to_edtf('1960!-05~'), '1960-~05')
+        self.assertEqual(photoindex._keyword_to_edtf('1960!'), '1960')
+        self.assertEqual(photoindex._keyword_to_edtf('1960~'), '1960~')
+        self.assertEqual(photoindex._keyword_to_edtf('1960!-05!-12~'), '1960-05-~12')
 
     def test_scan_groups_variants_flags_date_conflict_and_indexes_pid_keyword(self) -> None:
         with tempfile.TemporaryDirectory() as d:

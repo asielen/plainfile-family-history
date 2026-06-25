@@ -133,6 +133,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    Result,
     configure_utf8_stdout,
     db_mtime,
     find_source_record,
@@ -318,16 +319,24 @@ def _keyword_to_edtf(pattern: str) -> str | None:
     if year_c == '?':
         return None
 
-    parts = [year]
-    suffix = '~' if year_c == '~' else ''
+    # Collect the present, non-'?' components with their per-component markers.
+    comps: list[tuple[str, str | None]] = [(year, year_c)]
     if month and month_c != '?':
-        parts.append(month)
-        suffix = '~' if month_c == '~' else ''
+        comps.append((month, month_c))
         if day and day_c != '?':
-            parts.append(day)
-            suffix = '~' if day_c == '~' else ''
+            comps.append((day, day_c))
 
-    edtf = '-'.join(parts) + suffix
+    if len(comps) == 1:
+        # Year only: an approximate year trails its qualifier (EDTF `1960~`).
+        edtf = year + ('~' if year_c == '~' else '')
+    else:
+        # Multi-component: EDTF qualifies a component with a '~' written
+        # immediately *before* it (SPEC §20: `Y!M~` -> `1960-~05`), so a
+        # per-component best-guess marker is preserved on the right component
+        # instead of being collapsed into one trailing '~' (or dropped when a
+        # confident component follows the approximate one).
+        edtf = '-'.join(('~' + comp if mark == '~' else comp) for comp, mark in comps)
+
     return edtf if is_valid_edtf(edtf) else None
 
 
@@ -887,7 +896,7 @@ def _query_photoindex(
     fha_config: dict,
     empty_payload: dict,
     query,
-) -> dict:
+) -> Result:
     """
     Run a read-only query against an existing photos.sqlite with shared cache handling.
 
@@ -896,20 +905,30 @@ def _query_photoindex(
     missing columns a specific command needs. The callback may still raise
     ValueError/RuntimeError for user-facing validation failures; only sqlite
     errors are folded into the standard unreadable-cache result.
+
+    Returns a `Result` whose `data` is {'status': ..., **payload}; Result exposes
+    dict-style access (_lib.py), so callers keep reading `result['status']` /
+    `result['candidates']` unchanged.  The `_cmd_*` layer derives the process exit
+    code from the status, so this read helper leaves exit_code at its clean default.
     """
     status, _lag = photoindex_status(archive_root, fha_config)
+    # An absent/unreadable index is a failure the CLI maps to EXIT_FAILURE; set
+    # the same code here so headless callers returning Result.exit_code don't
+    # read a missing/corrupt photos.sqlite as success.
     if status in ('absent', 'unreadable'):
-        return {'status': status, **empty_payload}
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': status, **empty_payload})
 
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return {'status': 'unreadable', **empty_payload}
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': 'unreadable', **empty_payload})
         try:
-            return {'status': status, **query(conn)}
+            return Result(data={'status': status, **query(conn)})
         except sqlite3.Error:
-            return {'status': 'unreadable', **empty_payload}
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': 'unreadable', **empty_payload})
     finally:
         conn.close()
 
@@ -922,10 +941,10 @@ def run_find(
     edtf: str | None = None,
     text: str | None = None,
     files: bool = False,
-) -> dict:
+) -> Result:
     """
     Apply the requested filters (AND'd together when more than one is given)
-    and return {'status': photoindex_status, 'rows': [...]}.
+    and return a Result whose data is {'status': photoindex_status, 'rows': [...]}.
 
     Filters are AND'd at the GROUP level, not the raw-path level: two filters may
     each match a different variant of one physical photo (e.g. --edtf hits the
@@ -949,13 +968,13 @@ def run_find(
     """
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
-        return {'status': status, 'rows': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': status, 'rows': []})
 
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return {'status': 'unreadable', 'rows': []}
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
         try:
             filters: list[set[str]] = []
             if person:
@@ -977,7 +996,7 @@ def run_find(
             for gs in group_sets[1:]:
                 matched_groups &= gs
             if not matched_groups:
-                return {'status': status, 'rows': []}
+                return Result(data={'status': status, 'rows': []})
 
             if files:
                 # --files lists every raw row of each matched group, including
@@ -1013,9 +1032,9 @@ def run_find(
                 ).fetchone()
                 if row:
                     rows.append(dict(row))
-            return {'status': status, 'rows': rows}
+            return Result(data={'status': status, 'rows': rows})
         except sqlite3.Error:
-            return {'status': 'unreadable', 'rows': []}
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={'status': 'unreadable', 'rows': []})
     finally:
         conn.close()
 
@@ -1126,10 +1145,10 @@ def _score_group(
     return score, signals
 
 
-def run_triage(archive_root: Path, fha_config: dict, top: int = 10) -> dict:
+def run_triage(archive_root: Path, fha_config: dict, top: int = 10) -> Result:
     """
     Rank unprocessed photo groups (no `source_id`) by evidence signals
-    (TOOLING §15b) and return {'status': ..., 'candidates': [...]}.
+    (TOOLING §15b) and return a Result whose data is {'status': ..., 'candidates': [...]}.
 
     Each candidate is {'path': primary_path, 'score': int, 'signals': [...]}.
     Consumed almost entirely through the report's triage section (BUILD.md
@@ -1159,14 +1178,14 @@ def run_triage(archive_root: Path, fha_config: dict, top: int = 10) -> dict:
 
 # ── Report (fha photoindex report — BUILD.md M3.3) ────────────────────────
 
-def run_report(archive_root: Path, fha_config: dict) -> dict:
+def run_report(archive_root: Path, fha_config: dict) -> Result:
     """
     List every photo_groups row with `date_conflict=1` — a date disagreement
     between variants of one physical photo (e.g. front vs. back) is a research
     finding worth a question, not a value to silently average (TOOLING §9).
 
-    Returns {'status': ..., 'conflicts': [{'group_id', 'primary_path',
-    'photos': [{'path', 'edtf', 'caption'}, ...]}, ...]}.
+    Returns a Result whose data is {'status': ..., 'conflicts': [{'group_id',
+    'primary_path', 'photos': [{'path', 'edtf', 'caption'}, ...]}, ...]}.
     """
     def query(conn: sqlite3.Connection) -> dict:
         # One join, not one photos query per conflicted group.
@@ -1262,7 +1281,7 @@ def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
 
 def run_reconcile(
     archive_root: Path, fha_config: dict, with_exif: bool = False, dry_run: bool = False,
-) -> dict:
+) -> Result:
     """
     Heal drift between the catalog's stored paths and what is actually on disk
     (TOOLING §9 reconciliation). A photo's stored path is a refreshable cache,
@@ -1327,11 +1346,14 @@ def run_reconcile(
     }
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
-        return {'status': status, 'root_found': True, **empty}
+        return Result(ok=False, exit_code=EXIT_FAILURE,
+                      data={'status': status, 'root_found': True, **empty})
 
     photos_root = resolve_path('photos', fha_config, archive_root)
     if not photos_root.is_dir():
-        return {'status': status, 'root_found': False, 'photos_root': str(photos_root), **empty}
+        # A missing photos root is a warning, not a failure (mirrors _cmd_reconcile).
+        return Result(ok=False, exit_code=EXIT_WARNINGS, data={
+            'status': status, 'root_found': False, 'photos_root': str(photos_root), **empty})
     on_disk = _on_disk_aliases(photos_root, fha_config, archive_root)
 
     db_path = archive_root / '.cache' / 'photos.sqlite'
@@ -1339,7 +1361,8 @@ def run_reconcile(
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return {'status': 'unreadable', 'root_found': True, **empty}
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': 'unreadable', 'root_found': True, **empty})
         try:
             cached = {
                 row['path']: row['source_id']
@@ -1410,7 +1433,8 @@ def run_reconcile(
                 'new_unsourced': new_unsourced,
             }
         except sqlite3.Error:
-            return {'status': 'unreadable', 'root_found': True, **empty}
+            return Result(ok=False, exit_code=EXIT_FAILURE,
+                          data={'status': 'unreadable', 'root_found': True, **empty})
     finally:
         conn.close()
 
@@ -1430,7 +1454,10 @@ def run_reconcile(
             os.utime(db_path, (time.time(), oldest - 1))
         except OSError:
             pass
-    return result
+    # photos.sqlite is a disposable cache (AGENTS.md), so reconcile's row moves
+    # are not archive-content changes; `changed` stays empty. Unresolved missing
+    # files are a warning (mirrors _cmd_reconcile).
+    return Result(exit_code=(EXIT_WARNINGS if result['missing'] else EXIT_CLEAN), data=result)
 
 
 # ── Tag-person (fha photoindex tag-person — BUILD.md M3.4) ───────────────
@@ -1441,13 +1468,15 @@ def run_tag_person_plan(
     person_id: str,
     from_face_tag: str | None = None,
     paths: list[str] | None = None,
-) -> dict:
+) -> Result:
     """
     Resolve the candidate photo paths for `fha photoindex tag-person` without
     writing anything (TOOLING §9: tag-person settles an ambiguous face-tag
     match or explicitly tags --paths by hand). Raises ValueError for a bad
-    selector combination or an invalid P-id; otherwise returns {'status',
-    'person_id', 'candidates': [path, ...], 'already_tagged': [path, ...]}.
+    selector combination or an invalid P-id; otherwise returns a Result whose
+    data is {'status', 'person_id', 'candidates': [path, ...], 'already_tagged':
+    [path, ...]}.  Result exposes dict-style access (_lib.py), so callers keep
+    reading `result['candidates']` unchanged.
 
     Splitting the plan from the write (apply_tag_person) lets the CLI preview
     and prompt before any original file is touched, and lets tests exercise
@@ -1463,13 +1492,15 @@ def run_tag_person_plan(
 
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
-        return {'status': status, 'person_id': person_id, 'candidates': [], 'already_tagged': []}
+        return Result(ok=False, exit_code=EXIT_FAILURE, data={
+            'status': status, 'person_id': person_id, 'candidates': [], 'already_tagged': []})
 
     conn = sqlite3.connect(str(archive_root / '.cache' / 'photos.sqlite'))
     conn.row_factory = sqlite3.Row
     try:
         if not _schema_is_usable(conn):
-            return {'status': 'unreadable', 'person_id': person_id, 'candidates': [], 'already_tagged': []}
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={
+                'status': 'unreadable', 'person_id': person_id, 'candidates': [], 'already_tagged': []})
         try:
             if from_face_tag:
                 rows = conn.execute(
@@ -1494,13 +1525,14 @@ def run_tag_person_plan(
                     (person_id.lower(),),
                 )
             }
-            return {
+            return Result(data={
                 'status': status, 'person_id': person_id,
                 'candidates': [p for p in candidate_paths if p not in already],
                 'already_tagged': [p for p in candidate_paths if p in already],
-            }
+            })
         except sqlite3.Error:
-            return {'status': 'unreadable', 'person_id': person_id, 'candidates': [], 'already_tagged': []}
+            return Result(ok=False, exit_code=EXIT_FAILURE, data={
+                'status': 'unreadable', 'person_id': person_id, 'candidates': [], 'already_tagged': []})
     finally:
         conn.close()
 
@@ -1581,7 +1613,7 @@ def _refresh_photo_fts_keywords(conn: sqlite3.Connection, paths: list[str]) -> N
         conn.execute('UPDATE photo_fts SET keywords=? WHERE path=?', (keywords, path))
 
 
-def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candidates: list[str]) -> dict:
+def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candidates: list[str]) -> Result:
     """
     Write the bare P-id keyword into each candidate photo's embedded metadata,
     then update the cache so `photo_people` and `photo_fts` reflect the new
@@ -1595,7 +1627,10 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
 
     Each candidate is written and cached independently: a failed write on one
     photo never discards the cache update for photos that did succeed.
-    Returns {'tagged': [path, ...], 'failed': [(path, error), ...]}.
+    Returns a Result whose data is {'tagged': [path, ...], 'failed': [(path,
+    error), ...]} with the embedded-keyword writes listed in `changed`.  Result
+    exposes dict-style access (_lib.py), so callers keep reading
+    `result['tagged']` unchanged.
 
     Raises RuntimeError (wrapping a `sqlite3.Error`) if the cache update
     itself fails after one or more original files were already written —
@@ -1607,7 +1642,7 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     succeeded would drop it from the recovery list this error reports.
     """
     if not candidates:
-        return {'tagged': [], 'failed': []}
+        return Result(data={'tagged': [], 'failed': []})
     keyword = 'P-' + person_id.split('-', 1)[1]
     abs_paths = [resolve_path(p, fha_config, archive_root) for p in candidates]
     write_results = _run_exiftool_write(abs_paths, keyword)
@@ -1643,7 +1678,12 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
             ) from e
     finally:
         conn.close()
-    return {'tagged': tagged, 'failed': failed}
+    return Result(
+        ok=(not failed),
+        exit_code=(EXIT_FAILURE if failed else EXIT_CLEAN),
+        data={'tagged': tagged, 'failed': failed},
+        changed=list(tagged),
+    )
 
 
 # ── Scan orchestration ───────────────────────────────────────────────────
@@ -1731,10 +1771,13 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool, str | None]:
         raise RuntimeError(f'photos.sqlite is corrupt or unreadable: {e}') from e
 
 
-def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
+def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result:
     """
     Scan the photos root, scrape new/changed files via exiftool, regroup, and
-    rebuild the FTS index. Returns a summary dict for the CLI to print.
+    rebuild the FTS index. Returns a Result whose data is the summary dict for the
+    CLI to print; Result exposes dict-style access (_lib.py), so callers keep
+    reading `summary['scraped']` unchanged.  The only writes are to the disposable
+    photos.sqlite cache, so `changed` stays empty.
 
     Incremental by (path, mtime, size): a file already in `photos` with a
     matching mtime+size is assumed unchanged and is not re-sent to exiftool
@@ -1745,11 +1788,12 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
     """
     photos_root = resolve_path('photos', fha_config, archive_root)
     if not photos_root.is_dir():
-        return {
+        # A missing photos root is a warning, not a failure (mirrors _cmd_scan).
+        return Result(ok=False, exit_code=EXIT_WARNINGS, data={
             'photos_root': str(photos_root), 'root_found': False,
             'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
             'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
-        }
+        })
 
     on_disk: dict[Path, tuple[float, int]] = {}
     alias_by_path: dict[Path, str] = {}
@@ -1877,13 +1921,13 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> dict:
     finally:
         conn.close()
 
-    return {
+    return Result(data={
         'photos_root': str(photos_root), 'root_found': True,
         'total': len(on_disk), 'scraped': scraped,
         'unchanged': len(on_disk) - scraped, 'removed': removed,
         'groups': groups, 'conflicts': conflicts,
         'rebuilt_reason': rebuilt_reason,
-    }
+    })
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────

@@ -72,6 +72,7 @@ from _lib import (
     EXIT_CLEAN,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    Result,
     TOKEN_RE,
     configure_utf8_stdout,
     edtf_bounds,
@@ -504,7 +505,7 @@ def _render_templates(conn: sqlite3.Connection, pid: str, templates: dict) -> li
     return out
 
 
-def run_wikitree(archive_root: Path, pid: str) -> dict:
+def _wikitree_payload(archive_root: Path, pid: str) -> dict:
     """
     Render the WikiTree-dialect markup for one curated person. Returns:
       {'status': 'ok'|'not-found'|'not-curated'|'living-subject'|'restricted-sources'|'no-index'|'bad-args',
@@ -624,6 +625,27 @@ def run_wikitree(archive_root: Path, pid: str) -> dict:
         return {'status': 'ok', 'text': text, 'messages': messages}
     finally:
         conn.close()
+
+
+def run_wikitree(archive_root: Path, pid: str) -> Result:
+    """Render the WikiTree markup for one curated person; return a Result.
+
+    `data` is the {'status', 'text', 'messages'} payload `_wikitree_payload`
+    computes; Result exposes dict-style access (_lib.py), so callers keep reading
+    `result['text']` / `result['status']` unchanged.  Producing the markup is
+    pure (the `_cmd` layer prints/writes it), so `changed` stays empty.
+    """
+    payload = _wikitree_payload(archive_root, pid)
+    status = payload['status']
+    # Mirror _cmd_wikitree's per-status exit codes so headless callers returning
+    # Result.exit_code see a refused export as a failure, not a clean 0.
+    if status == 'ok':
+        exit_code = EXIT_WARNINGS if payload.get('messages') else EXIT_CLEAN
+    elif status in ('not-found', 'not-curated'):
+        exit_code = EXIT_WARNINGS
+    else:  # bad-args, no-index, merged, living-subject, restricted-sources
+        exit_code = EXIT_FAILURE
+    return Result(ok=(status == 'ok'), exit_code=exit_code, data=payload)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────

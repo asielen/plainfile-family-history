@@ -106,6 +106,7 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     FhaConfigError,
+    Result,
     configure_utf8_stdout,
     fmt_id_display,
     load_fha_yaml,
@@ -145,7 +146,7 @@ def _resolve_merged_person(
     conn: sqlite3.Connection, person: sqlite3.Row
 ) -> tuple[sqlite3.Row, list[str]]:
     """
-    Follow `merged_into` to the survivor (SPEC §8.8: "tools resolve
+    Follow `merged_into` to the survivor (SPEC §9: "tools resolve
     references through merged_into"). A merged tombstone's own `tier`/
     `living` are irrelevant once redirected — the survivor's gate checks
     apply instead. Guards against a corrupt merge cycle by capping the
@@ -177,7 +178,7 @@ def _resolve_merged_person(
 def _merged_alias_ids(conn: sqlite3.Connection, survivor_id: str) -> list[str]:
     """
     Every person id whose merged_into chain resolves to survivor_id (SPEC
-    §8.8), found by walking merged_into outward from the survivor rather
+    §9), found by walking merged_into outward from the survivor rather
     than assuming a single hop. Once `_resolve_merged_person` redirects pid
     to the survivor, sources/claims still citing one of these old ids must
     still be gathered, not dropped.
@@ -203,7 +204,7 @@ def _source_ids_for_person(conn: sqlite3.Connection, pids: list[str]) -> list[st
     extracted claims). Duplicated here rather than imported: tools never
     import tools (TOOLING §15).
 
-    pids carries the survivor plus any merged-away aliases (SPEC §8.8) so a
+    pids carries the survivor plus any merged-away aliases (SPEC §9) so a
     source that still cites an old id isn't dropped from the packet.
     """
     placeholders = ','.join('?' * len(pids))
@@ -430,7 +431,7 @@ def _build_timeline_text(
     grouping (no GENERATED header, no decade headers) — this is a one-shot
     export artifact, not a tracked, regenerable archive view.
 
-    pids carries the survivor plus any merged-away aliases (SPEC §8.8) so
+    pids carries the survivor plus any merged-away aliases (SPEC §9) so
     claims still attached to an old id still surface here.
     """
     if not included_source_ids:
@@ -603,7 +604,7 @@ def _display_path(path: Path, archive_root: Path) -> str:
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
-def run_packet(
+def _packet_payload(
     archive_root: Path,
     pid: str,
     out_dir: Path,
@@ -942,6 +943,58 @@ def run_packet(
         return {'status': 'ok', 'packet_dir': packet_dir, 'zip_path': zip_path, 'messages': messages}
     finally:
         conn.close()
+
+
+def run_packet(
+    archive_root: Path,
+    pid: str,
+    out_dir: Path,
+    *,
+    include_research: bool = False,
+    include_restricted: bool = False,
+    include_dna: bool = False,
+    no_photos: bool = False,
+    dry_run: bool = False,
+    overwrite: bool = False,
+) -> Result:
+    """Build a person packet and return a Result.
+
+    `data` is the `_packet_payload` dict ({'status', 'packet_dir', 'zip_path',
+    'messages'}); Result exposes dict-style access (_lib.py), so callers keep
+    reading `result['status']` / `result['packet_dir']` unchanged.  On a real
+    build the written packet directory and zip are listed in `changed`; a
+    --dry-run (status 'dry-run') writes nothing and leaves `changed` empty.
+    """
+    payload = _packet_payload(
+        archive_root, pid, out_dir,
+        include_research=include_research, include_restricted=include_restricted,
+        include_dna=include_dna, no_photos=no_photos, dry_run=dry_run,
+        overwrite=overwrite,
+    )
+    changed: list[str] = []
+    if payload['status'] == 'ok':
+        for key in ('packet_dir', 'zip_path'):
+            value = payload.get(key)
+            if value:
+                changed.append(str(value))
+    status = payload['status']
+    # Map the payload status to the process exit code headless callers should
+    # return.  `_cmd_packet` keeps its own per-status printing, but both paths
+    # agree on the code: a clean/dry-run build that still emitted notes warns,
+    # the soft "nothing built" statuses warn, and structural failures fail.
+    if status in ('ok', 'dry-run'):
+        exit_code = EXIT_WARNINGS if payload.get('messages') else EXIT_CLEAN
+    elif status in ('not-found', 'not-curated'):
+        exit_code = EXIT_WARNINGS
+    else:  # no-index, bad-output-path, bad-config, living-subject,
+           # no-photoindex, output-exists, write-failed
+        exit_code = EXIT_FAILURE
+    return Result(
+        ok=(status in ('ok', 'dry-run')),
+        exit_code=exit_code,
+        data=payload,
+        changed=changed,
+    )
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────

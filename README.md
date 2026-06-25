@@ -2,7 +2,7 @@
 
 **An operating spec for a durable, file-first family-history archive with an AI research assistant layered on top.**
 
-![status](https://img.shields.io/badge/status-milestones_1--7_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
+![status](https://img.shields.io/badge/status-milestones_1--9_complete-green) ![type](https://img.shields.io/badge/type-operating_spec-orange) ![works with](https://img.shields.io/badge/works_with-Claude_Code-8A2BE2) ![format](https://img.shields.io/badge/format-plain_text-green) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 This project stemmed from one idea: **for a hundred years, genealogy lived in a filing cabinet, and anyone could open the drawer.** No login, no subscription, no schema migration. A century later a curious descendant could still pull the folder or open the book and read it. Modern genealogy software and workflows have lost that virtue.
 
@@ -132,7 +132,7 @@ plainfile-family-history/
 
 1. **Clone this repo** and read `SPEC.md` end to end. It is the contract; everything else serves it.
 2. **Open the folder in your agent.** It will read `CLAUDE.md` → `AGENTS.md` and know the rules before you say anything.
-3. **Use or extend the tools.** Milestones 1-7 are implemented; run them from `tools/` or declare *tool-building mode* to continue with the build order in `BUILD.md`.
+3. **Use or extend the tools.** Milestones 1-9 are implemented; run them from `tools/` or declare *tool-building mode* to continue with the build order in `BUILD.md`.
 4. **Start your own archive.** Copy the structure, drop your first scan or note into `inbox/`, and ask the agent to process it.
 
 See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthrough.
@@ -160,20 +160,25 @@ See [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) for the full walkthroug
 
 ## Status & roadmap
 
-**Current: `spec v1.2` - milestones 1-7 complete.**
+**Current: `spec v1.2` - milestones 1-9 complete.**
 
-Everything through the intake pipeline, plus the person export packet and place
-registry hygiene/candidate detection, is
+Everything through the intake pipeline, the static-site generator, and the
+installer/update tooling is
 implemented and runs cleanly on the example archive: the linting/indexing
 substrate, the view generators and universal locator, the photo catalog, the
 candidate-finding tools (contradiction/corroboration detection, person and
 place co-occurrence, and `fha find --related`'s neighborhood queries), the
-`fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export, and
-the milestone 7 intake tools. See `BUILD.md` for the detailed
+deterministic review write-backs (`fha claim` for claim status, `fha confirm`
+for the detectors' confirm/dismiss), the
+`fha report` session feed, `fha packet`, `fha places`, GEDCOM/WikiTree export,
+the milestone 7 intake tools (`fha process`, `fha capture`, `fha convert-mining`),
+the milestone 8 static-site generator (`fha site`), and the milestone 9
+scaffolding tools (`fha install`/`fha update-tools`). See `BUILD.md` for the detailed
 milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15):
 
 - [x] Shared foundations (`_lib`: parsing, dates, ID grammar, path resolution)
 - [x] `fha id`, `fha index`, `fha lint`, `fha stubs` - the substrate (milestone 1: lint clean on the example archive)
+- [x] `fha claim` - the claim-review write-back: move a claim's status and stamp `reviewed:` (the human gate, as a deterministic command) (milestone 1)
 - [x] `fha views timeline`, `fha views sources-index`, `fha views draft-queue` - view generators (milestone 2)
 - [x] `fha views brackets` - folder maintenance: W103 bracket refresh, W110 Ahnentafel placement (milestone 2)
 - [x] `fha views tree` - relationship tree traversal, neutral JSON + DOT output (milestone 2)
@@ -182,6 +187,7 @@ milestone breakdown. The intended build sequence (detailed in `TOOLING.md` §15)
 - [x] `fha doctor` - archive health report: index freshness, file integrity, privacy flags (milestone 2)
 - [x] `fha photoindex` - photo catalog: scan/grouping, find, triage/report, reconcile/tag-person (milestone 3)
 - [x] `fha xref`, `fha cooccur` - corroboration/contradiction and co-occurrence candidate detection (milestone 4)
+- [x] `fha confirm` - the write-back floor under the read-only detectors and report prompts: confirm/dismiss a candidate, register a place cluster, log a discovery, accept a draft (milestone 4)
 - [x] `fha find --related` - the neighborhood query: people, places, sources, and time slices (milestone 4)
 - [x] `fha report` - the session research feed: discoveries, review queue, vitals gaps, contradictions, search-log awareness, answerable questions, photo triage, hypotheses, possible connections (milestone 5)
 - [x] `fha packet` - person data-export packet: profile, fresh timeline, sources, files, photos, zipped (milestone 6.1)
