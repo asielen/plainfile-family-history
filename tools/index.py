@@ -57,6 +57,7 @@ from _lib import (
     find_archive_root,
     id_type_of,
     is_valid_id,
+    is_working_copy,
     load_fha_yaml,
     normalize_id,
     parse_filename,
@@ -707,7 +708,9 @@ def _index_source(
         file_status = str(f.get('status', ''))
 
         resolved = resolve_path(file_path, fha_config, archive_root)
-        exists = 1 if resolved.exists() else 0
+        # In working-copy mode assets are assumed present on the main machine;
+        # store NULL rather than 0 so callers know "unknown" vs "absent".
+        exists = None if is_working_copy(archive_root) else (1 if resolved.exists() else 0)
 
         conn.execute(
             '''INSERT INTO source_files

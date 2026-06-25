@@ -133,6 +133,7 @@ _ROOT_OPERATING_DOCS = (
     'README.md',
     'SPEC.md',
     'TOOLING.md',
+    'TOOLING_INGESTION.md',
     'AGENTS.md',
     'AGENTS_TOOLING.md',
     'CLAUDE.md',

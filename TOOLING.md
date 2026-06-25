@@ -572,63 +572,17 @@ Output is a `.ged` file; round-tripping back in is explicitly unsupported - GEDC
 
 ## 13b. `fha capture` - web record capture (the intake on-ramp)
 
+> **Full design: [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md).** The intake on-ramp - the engine, every delivery form (paste, bookmarklet, browser extension, native host, Claude-in-Chrome), the browser→inbox transport, the staged-bundle contract, and the `fha capture --ingest` sweep - is specified there in full. This section is the summary that the rest of TOOLING/SPEC cross-references.
+
 The primary way starter sources enter the archive.
 Most existing research lives behind logins (Ancestry especially), so capture is designed to run **on the page the human already has open** - it never logs in, never scrapes credentialed endpoints on its own, and sees only what the browser is already showing.
-Two delivery forms, one backend:
+The companion's output is a **source stub** in the inbox (SPEC §12.1), never a finished record: a `{slug}.notes.md` whose light, optional frontmatter holds the citation fields a recipe recovered (`source_type`, `citation`, `repository`, `external_links`, `source_date`, and `people:` *names* the page listed) and whose body is the page's visible text or the human's notes. Processing later mints the S-id and drafts `suggested` claims; capture only stages.
 
-**Delivery (interface layer, replaceable):**
-- *Browser companion* - a extension/bookmarklet or a Claude-in-Chrome action invoked on an open record page. The preferred form.
-- *Paste fallback* - the human copies the page (or saves the HTML) into the workbench and says "capture this." Always available; needs no extension. This is the v1 path, since it requires nothing new to build.
+**Backend `fha capture`** (built - [`tools/capture.py`](tools/capture.py)): chooses a **site recipe** (Ancestry, FamilySearch, Newspapers.com, FindAGrave - each knowing where that site keeps title/date/collection/repository/image-URL/persons) or falls to the **generic recipe** (title, URL, accessed-date, visible text); extracts citation fields (explicit `--title`/`--type`/`--date` override the scrape); writes the stub + asset; and logs the search (SPEC §16). The recipe set is data (`tools/capture_recipes/`), extensible without touching the engine.
 
-The companion's output is a **source stub** in the inbox (SPEC §12.1), never a finished record. **Backend (`fha capture`, deterministic + skill):**
-1. **Extract citation fields** from the page HTML. **Site recipes** for the heavy sources - Ancestry, FamilySearch, Newspapers.com, FindAGrave - know where title, date, collection, repository, image URL, and the persons/relationships listed on the page live. An unknown site falls to a **generic recipe**: capture page title, URL, accessed-date, and visible text as the citation basis.
-2. **Asset handling, three cases:** (a) a downloadable image/document is present → the human saves it (or drops it into the companion) and it becomes the source's asset; (b) the record *is* the page → store a cleaned **HTML snapshot** as the asset (`documents/web/…`, an acceptable second-tier format per SPEC §2), so the evidence is preserved even if the page rots; (c) the page only points elsewhere ("record available at…") → no asset, citation + `external_links` only, flagged for later retrieval.
-3. **Pre-fill the source record:** map recipe output into §14 frontmatter - `source_type` (recipe-inferred: census/vital-record/newspaper/…), `citation`, `repository`, `external_links`, `source_date`, and `people:` from the names the page lists (resolved against the index, unresolved → stub candidates).
-4. **Write a research-log entry** automatically (date, repository, collection, terms if visible, `result: found [S-id]`) - capture is itself a logged search, closing the loop §16 opened.
-5. **Hand off to `fha process` + the draft pass:** the page's structured data (a census page's household table, a marriage index's fields) seeds `suggested` claims with the page as anchor, ready for review.
+**Asset handling, three cases (cited elsewhere as (a)/(b)/(c)):** **(a)** a downloadable image/document → it becomes the source's asset (with an interactive *capture-what's-shown* `provisional-image` fallback for an on-screen-but-not-downloadable viewer image); **(b)** the record *is* the page → store a cleaned **HTML snapshot** (`documents/web/…`, an acceptable second-tier format per SPEC §2); **(c)** the page only points elsewhere → no asset, citation + `external_links` only, written with `asset_elsewhere: true` so `fha process` knows the missing companion is deliberate.
 
-**Boundaries:** capture reads the open DOM/HTML only - it does not paginate, query APIs, or fetch behind auth; bulk or automated retrieval against a site's terms is out of scope by design.
-The recipe set is data (`tools/capture_recipes/`), extensible without touching code.
-Everything it produces enters at `suggested`/needs-review like any intake.
-
-### 13b.1 The companion workflow (the ideal experience)
-
-Capture happens **mid-research** - the human is in flow on a record page and must not be forced into a full review session to save what they're looking at.
-The governing principle: **fast, forgiving capture now; structured review later.** The companion grabs everything while the page is open and defers every judgment call to the workbench.
-It never blocks on a decision that can't be answered in two seconds.
-
-**Phase 1 - Invoke (one gesture).** On any record page the human clicks the companion (bookmarklet, extension button, or Claude-in-Chrome action).
-A small panel opens over the page; nothing has been written yet.
-If the site matches a recipe, the panel says so ("Ancestry census recognized"); otherwise it announces generic capture.
-
-**Phase 2 - Confirm (glance, don't fill).** The panel shows what the recipe *already pulled* - title, date, collection/repository, the persons the page lists, the image it found - as pre-filled, editable fields, plus a **free-text notes box** for anything the human wants to say in the moment ("this is Bob's neighbor who babysat him").
-The human's job is a glance and a nudge, not data entry: fix a mangled title, untick an irrelevant person, type a sentence of context.
-Everything is optional; a human in a hurry clicks straight through.
-The panel's only insistence is on **asset capture** (Phase 3), because that's the thing that can't be redone later once the page is closed.
-
-**Phase 3 - Capture the evidence (the part that can't wait).** The companion resolves the asset by the three §13b cases, but interactively, because this is where pages fight back:
-- *Downloadable* → one click saves it into the inbox bundle.
-- *On-screen but not downloadable* (the common Ancestry case - a viewer image you can't right-click) → the companion offers a **capture-what's-shown** path: screenshot/snapshot of the displayed image as the working asset, flagged `provisional-image` so review knows a cleaner original may exist behind the paywall. Honest about quality, but never lets the human leave empty-handed.
-- *Page-is-the-record* (an obituary, a wiki bio) → **HTML snapshot** to `documents/web/`, preserving the evidence against link rot.
-- *Pointer-only* ("record held at the county courthouse") → no asset; citation + `external_links`, flagged `asset-elsewhere` for a later retrieval pass.
-
-**Phase 4 - Stage, don't process (the hand-off).** Clicking *Capture* writes a **source stub into `inbox/`** (SPEC §12.1) - a lone `*.notes.md` sidecar beside a single asset, or a bundle folder when there are several files or none.
-The notes file carries optional frontmatter (the recipe's citation fields, parsed person list, source-type guess) and the human's free-text notes as its body; the asset(s) sit alongside.
-Capture also **auto-writes the research-log entry** (date, repository, collection, terms if visible).
-That's the end of the browser's job. **No source record is minted, no claims are drafted, no S-id is assigned** - the stub is pre-source.
-The human goes back to researching, capturing five more the same way.
-
-**Later, in the workbench:** a `process-source` session works the inbox bundles. *Now* the deferred judgment happens, with full context and the index at hand: the sidecar pre-fills the §14 frontmatter, the person list is reconciled against existing records ("the page named Margaret Cole - match P-cd795c61e0, or new?"), `suggested` claims are drafted from the page's structured data with the page as anchor, and review proceeds as normal.
-A `provisional-image` asset surfaces a reminder that a better scan may be obtainable; an `asset-elsewhere` flag lands in the research-to-do.
-
-**Why staged, not immediate:** the split mirrors the operating loop's capture→file→process spine (§4).
-Capture is the *file* step - get it safely into the inbox while you're looking at it.
-Processing is a deliberate, index-aware act that benefits from not being rushed mid-browse.
-It also makes batch capture natural (a research sitting yields a dozen bundles; one later session processes them all) and keeps the companion dumb and replaceable - it stages, the durable tooling decides.
-The paste-fallback path produces the *same* staged bundle from copied page content, so the two delivery forms converge the moment they hit the inbox.
-
-**Recipe coverage, in priority order:** Ancestry (record + image viewer, census household tables), Newspapers.com (clipping + citation), FamilySearch (record + tree person), FindAGrave (memorial + cemetery place).
-Each recipe knows that site's DOM well enough to fill the panel; the generic recipe (title, URL, visible text, accessed-date) ensures *any* page is capturable, just with more to fix in review.
+**Boundaries:** capture reads the open DOM/HTML only - it does not paginate, query APIs, or fetch behind auth; bulk or automated retrieval against a site's terms is out of scope by design. Everything it produces enters at `suggested`/needs-review like any intake. The governing principle - **fast, forgiving capture now; structured review later** - and the four-phase companion workflow (invoke → confirm → capture the evidence → stage, don't process) are detailed in [`TOOLING_INGESTION.md`](TOOLING_INGESTION.md) §5.
 
 ## 13c. `fha install` / `fha update-tools` - scaffolding & updating a private archive
 
@@ -671,7 +625,7 @@ You may edit any operating-layer file freely (a tool, `AGENTS.md`, the spec); th
 
 ## 13d. Working-copy mode (the `WORKING_COPY` marker) - asset-less plain-text copies
 
-**Status: ratified (SPEC §12.4); not yet built - `BUILD.md` M10.** Recorded here as the tool-level design.
+**Status: shipped (`BUILD.md` M10).** Recorded here as the tool-level design.
 
 **The scenario.** The main archive lives on one machine with its photo/document libraries (often external roots). The plain-text core is synced to a second machine via git - `sources/`, `people/`, `places.yaml`, `notes/` travel; the binary assets do not. The genealogist wants to do real work there that needs no originals (write narratives from existing accepted claims, build inference against existing records, drop new material into `inbox/` to carry back). The hazard is that asset-aware tools, run where the files are absent, *misbehave*: `fha photoindex`'s incremental scan **prunes cache rows for files it cannot find** (it would empty the photo cache), `fha lint` floods E011 for every asset, and `fha index` records every `source_files.exists_on_disk = 0`.
 

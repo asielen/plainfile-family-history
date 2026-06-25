@@ -108,6 +108,7 @@ from _lib import (
     normalize_id,
     open_index_db,
     read_record,
+    is_working_copy,
     resolve_root_arg,
 )
 
@@ -730,6 +731,12 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
 def _section_photo_triage(
     archive_root: Path, fha_config: dict, scan_error: str | None = None
 ) -> list[str]:
+    if is_working_copy(archive_root):
+        return [
+            'Photo triage is paused in working-copy mode because the photo files '
+            'are on the main machine. Run `fha photoindex` on the main archive, '
+            'or copy an existing .cache/photos.sqlite here for read-only photo queries.'
+        ]
     if scan_error:
         return [
             f'Photo scan failed this session ({scan_error}) — triage results below may be '

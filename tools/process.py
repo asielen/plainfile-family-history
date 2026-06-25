@@ -144,6 +144,7 @@ from _lib import (
     resolve_root_arg,
     scan_person_record_ids,
     select_variation_primary,
+    is_working_copy,
     variant_role,
 )
 
@@ -2242,6 +2243,15 @@ def _run_process(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
+
+    if is_working_copy(archive_root):
+        print(
+            'fha process is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
 
     # Resolve to an absolute path before any alias derivation: a relative path
     # run from inside an asset subdirectory (`cd documents/census && fha

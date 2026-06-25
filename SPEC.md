@@ -365,7 +365,7 @@ Subdividing asset trees (by type, then decade) is free - folders are projection.
 The "originals never move" rule applies from the moment a file is filed.
 
 **Source stubs (the half-formed middle state).** Between "raw file in the inbox" and "fully processed Source" sits a deliberate intermediate: a **source stub** - an asset (or no asset at all) paired with rough, unprocessed notes capturing *why this matters and what it is*.
-A stub has two equally first-class origins: **created by hand** - you drop a scan in the inbox and write a plain notes file beside it ("Grandma's photo, that's her brother on the left, probably 1925, from Aunt Mary's album"), or jot a note with no asset yet at all - or **pre-filled by capture** (the browser companion, § tooling 13b).
+A stub has two equally first-class origins: **created by hand** - you drop a scan in the inbox and write a plain notes file beside it ("Grandma's photo, that's her brother on the left, probably 1925, from Aunt Mary's album"), or jot a note with no asset yet at all - or **pre-filled by capture** (the browser companion; TOOLING.md §13b, designed in full in TOOLING_INGESTION.md).
 The format is identical; the only difference is who typed the notes.
 
 A stub is a plain Markdown notes file:
@@ -733,5 +733,5 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | **WikiTree exporter** | Render a curated profile to WikiTree markup; `[S-]` tokens → `<ref>` citations. |
 | **Doctor** | One health command: root + `fha.yaml` + mapped roots reachable; exiftool/Python present; index & photoindex freshness; lint summary; inbox aging; restricted/living/unknown counts; agent-instruction drift (stale command or skill names in AGENTS/skills). |
 | **Formatter** | Conservative normalization as a lint feature (`--format-check/--format-write`): key order, ID casing, blank lines, final newline - never rewrites prose. |
-| **Web capture** *(backlog - design-light)* | Browser-side capture companion (extension or Claude-in-Chrome): from an open record page, scrape citation info from the HTML, accept a dropped asset (or store the page itself as an HTML asset when the page *is* the record), write a research-log entry, and hand off to the processing pipeline. Site recipes for common sources; generic scrape as default. Sits on the open page - no credentialed scraping. |
+| **Web capture** | Turn an open record page into an inbox source stub: scrape citation info from the HTML, accept a dropped/fetched asset (or store the page itself as an HTML asset when the page *is* the record), write a research-log entry, and stage for the processing pipeline. Site recipes for common sources; generic scrape as default. Sits on the open page - no credentialed scraping. *Engine `fha capture` (paste fallback) is built; the browser companion (extension/bookmarklet/native host/Claude-in-Chrome) is fully designed in TOOLING_INGESTION.md, build pending.* |
 | **Citation assistant** *(backlog)* | Suggest missing `[S-]` citations by matching uncited prose against accepted claims. |

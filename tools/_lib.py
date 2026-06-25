@@ -113,6 +113,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    scan_ids_in_tree          — full-tree scan used by id mint for collision checking
 #
 #  Filename / path helpers
+#    is_working_copy           — WORKING_COPY marker present at archive root?
 #    is_fixture_path           — path under example-archive/ or tests/fixtures/?
 #    extract_token_ids         — all [ID] tokens from a text block
 #    extract_bare_ids          — all bare IDs from a text block
@@ -1447,6 +1448,17 @@ def scan_ids_in_tree(archive_root: str | Path) -> set[str]:
 
 # ── Filename grammar helpers ──────────────────────────────────────────────────
 
+def is_working_copy(archive_root: str | Path) -> bool:
+    """Return True if the archive is in working-copy mode.
+
+    Working-copy mode is flagged by the presence of a WORKING_COPY marker file
+    at the archive root.  The marker is git-ignored (machine-local) so it never
+    syncs back to the main archive.  When active, absent asset files are treated
+    as assumed-present-elsewhere, not missing.
+    """
+    return (Path(archive_root) / 'WORKING_COPY').exists()
+
+
 def is_fixture_path(path: str | Path) -> bool:
     """
     Return True if the path is under example-archive/ or tests/fixtures/.
@@ -1824,15 +1836,16 @@ class Result:
 def _jsonify(value: Any) -> Any:
     """Recursively coerce a value into a JSON-serializable form for `as_dict`.
 
-    `Path`s become strings, objects exposing `as_dict()` (e.g. `Finding`) are
-    expanded, and mappings/sequences are coerced element-wise. Anything else
-    unrecognized falls back to `str()` so serialization never raises — a
-    best-effort machine-readable view beats a `TypeError` for headless callers.
+    `Path`s become slash-normalized strings, objects exposing `as_dict()` (e.g.
+    `Finding`) are expanded, and mappings/sequences are coerced element-wise.
+    Anything else unrecognized falls back to `str()` so serialization never
+    raises — a best-effort machine-readable view beats a `TypeError` for
+    headless callers.
     """
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, Path):
-        return str(value)
+        return value.as_posix()
     if isinstance(value, dict):
         return {str(k): _jsonify(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):

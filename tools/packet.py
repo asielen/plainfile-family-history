@@ -109,6 +109,7 @@ from _lib import (
     Result,
     configure_utf8_stdout,
     fmt_id_display,
+    is_working_copy,
     load_fha_yaml,
     normalize_id,
     open_index_db,
@@ -1003,6 +1004,15 @@ def _cmd_packet(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
+
+    if is_working_copy(archive_root):
+        print(
+            'fha packet is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
 
     pid = normalize_id(getattr(args, 'person_id', ''))
     if not pid:

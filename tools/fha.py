@@ -26,7 +26,7 @@ COMMANDS = (
     'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'photoindex',
     'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
     'process', 'capture', 'convert-mining', 'claim', 'confirm', 'site', 'install',
-    'update-tools',
+    'update-tools', 'working-copy',
 )
 
 
@@ -361,6 +361,7 @@ def main(argv: list[str] | None = None) -> int:
         from claim import register as claim_register
         from confirm import register as confirm_register
         from scaffold import register as scaffold_register
+        from working_copy import register as working_copy_register
         # 'site' shadows Python's stdlib site module (already cached in
         # sys.modules at interpreter startup), so `from site import …` would
         # find the wrong module. Load tools/site.py by path under a private name.
@@ -391,6 +392,7 @@ def main(argv: list[str] | None = None) -> int:
         confirm_register(subs)
         site_register(subs)
         scaffold_register(subs)  # adds both 'install' and 'update-tools'
+        working_copy_register(subs)
 
         args = parser.parse_args(argv_list)
         debug = bool(getattr(args, 'debug', False))
@@ -409,6 +411,21 @@ def main(argv: list[str] | None = None) -> int:
         if not args.command:
             parser.print_help()
             return 0
+
+        # Working-copy mode banner: one informational line before any command
+        # output so the user knows why asset features are paused.
+        # Skip for commands that manage the mode or print their own banner.
+        _BANNER_SKIP = {'doctor', 'working-copy', 'install', 'update-tools'}
+        if args.command not in _BANNER_SKIP:
+            from _lib import find_archive_root, is_working_copy
+            _root = getattr(args, 'root', None)
+            _ar = Path(_root).resolve() if _root else find_archive_root()
+            if _ar and is_working_copy(_ar):
+                print(
+                    '[working copy] photos and documents live on the main machine'
+                    ' — asset features are paused here',
+                    flush=True,
+                )
 
         return args.func(args) or 0
     except SystemExit:

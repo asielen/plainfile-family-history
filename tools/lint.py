@@ -77,6 +77,7 @@ from _lib import (
     format_source_type_error,
     id_type_of,
     is_fixture_path,
+    is_working_copy,
     is_valid_edtf,
     is_valid_id,
     FhaConfigError,
@@ -167,6 +168,7 @@ class Registry:
         self.archive_root = archive_root
         self.fha_config = fha_config
         self.is_fixture = is_fixture_path(archive_root)
+        self.is_working_copy = is_working_copy(archive_root)
 
         # id → list of paths where that id appears as THE record id (frontmatter)
         self.person_profile_paths: dict[str, list[Path]] = {}   # P-id → [profile paths]
@@ -697,6 +699,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
                     'add a short notes: line explaining the evidence behind it.'))
 
     # E011: file inventory checks
+    # In working-copy mode absent assets are assumed-present-elsewhere; skip.
     inventory_paths: set[str] = set()
     for f in (meta.get('files') or []):
         if not isinstance(f, dict):
@@ -708,6 +711,9 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             continue
 
         inventory_paths.add(_normalize_alias_path(file_path_str))
+        if registry.is_working_copy:
+            continue  # assets assumed-present on main machine; never flag as missing
+
         resolved = resolve_path(file_path_str, registry.fha_config, registry.archive_root)
 
         if not resolved.exists():
@@ -1152,7 +1158,10 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     _check_readme_age(registry.archive_root, findings)
 
     # E011/E012: reverse asset inventory and optional embedded metadata checks
-    _check_reverse_inventory(registry, findings, with_exif)
+    # In working-copy mode the asset files live on the main machine; skip.
+    # The run_lint caller emits a single informational note in data['wc_note'].
+    if not registry.is_working_copy:
+        _check_reverse_inventory(registry, findings, with_exif)
 
 
 def _check_reverse_inventory(
@@ -1553,6 +1562,13 @@ def run_lint(
 
     progress: list[str] = []
     changed: list[str] = []
+    wc_note: str | None = None
+    if registry.is_working_copy:
+        n_inventoried = sum(len(v) for v in registry.source_inventory.values())
+        wc_note = (
+            f'[working copy] {n_inventoried} asset file(s) assumed present on the main'
+            ' machine — E011/E012 asset-on-disk checks skipped'
+        )
 
     # Format checks / fixes
     if format_check or format_write:
@@ -1589,7 +1605,8 @@ def run_lint(
     return Result(
         ok=(n_errors == 0),
         exit_code=exit_code,
-        data={'n_errors': n_errors, 'n_warnings': n_warnings, 'progress': progress},
+        data={'n_errors': n_errors, 'n_warnings': n_warnings, 'progress': progress,
+              'wc_note': wc_note},
         messages=[finding_to_message(f) for f in findings],
         changed=changed,
     )
@@ -1620,6 +1637,10 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
     for line in data.get('progress', []):
         print(line)
 
+    # Working-copy mode note prints before findings (not a finding itself).
+    if data.get('wc_note'):
+        print(data['wc_note'])
+
     messages = result.messages
 
     if use_json:
@@ -1645,7 +1666,8 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
             print(line)
 
         if not messages:
-            print('✓ No issues found.')
+            if not data.get('wc_note'):
+                print('✓ No issues found.')
         else:
             parts = []
             if data.get('n_errors'):

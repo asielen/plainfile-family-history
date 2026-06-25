@@ -51,7 +51,7 @@ the insertion point in the same edit.
 | 7 | Layer 7 - Intake pipeline | M7.1-M7.8 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`) |
 | 8 | Layer 8 - Publication | M8.1-M8.5 | ✓ shipped - M8.1 (`fha site` foundations: query layer, Jinja2, source page), M8.2 (person page), M8.3 (place + discoveries pages), M8.4 (home page + standalone redaction audit), M8.5 (interactive trees via a vendored, dependency-free renderer + adapter seam) |
 | 9 | Layer 9 - Scaffolding | M9.1-M9.2 | ✓ shipped - M9.1 (`fha install` + `manifest.json`: bootstrap an archive's operating layer + skeleton, stamp `.plainfile-version`, zip/git-free), M9.2 (`fha update-tools`: refresh the operating layer, back up customized/retired files, never delete, never touch skeleton seeds) |
-| 10 | Layer 10 - Working-copy mode | M10.1 | ratified, **not yet built** (SPEC §12.4 + TOOLING §13d formalize it; design + done-criteria at the end of this file) |
+| 10 | Layer 10 - Working-copy mode | M10.1 | ✓ shipped - `fha working-copy on|off|status`, marker plumbing, asset-check suppression, asset-command refusals |
 
 ---
 
@@ -1553,14 +1553,13 @@ fha update-tools --dry-run --repo .                  # reports plan in plain Eng
 
 ---
 
-## Layer 10 - Working-copy mode (Milestone 10 - RATIFIED, not yet built)
+## Layer 10 - Working-copy mode (Milestone 10 - shipped)
 
-**Status: spec ratified, implementation pending.** The working-copy mode is now formalized in
+**Status: shipped.** The working-copy mode is formalized in
 **SPEC §12.4** (the law) and **TOOLING §13d** (the per-tool design): it is flagged by a visible,
 git-ignored **`WORKING_COPY`** marker file at the archive root - *not* an `fha.yaml` key, because
-the mode is machine-local and an `fha.yaml` key would sync back and flip the main archive too. No
-code is written yet. This section is the build plan; SPEC §12.4 and TOOLING §13d are the contract
-it must satisfy.
+the mode is machine-local and an `fha.yaml` key would sync back and flip the main archive too.
+This section records the shipped contract.
 
 **The problem.** A genealogist keeps the *main* archive on one computer, with the photo and
 document libraries living in (often external) asset roots. They want to sync a **plain-text
@@ -1623,8 +1622,8 @@ asset caches, refuse asset-mutating operations) and must announce the mode. The 
 with `fha working-copy on|off` (the friendly front door) or by hand; `fha install`/`update-tools`
 neither create nor remove the marker. The per-tool behaviour is specified in TOOLING §13d.
 
-**Phasing (when ratified):**
-- **M10.1** - new `tools/working_copy.py` providing `fha working-copy on|off|status` (creates /
+**Phasing:**
+- **M10.1** - `tools/working_copy.py` provides `fha working-copy on|off|status` (creates /
   removes the marker + keeps it git-ignored / reports the mode - so the human never has to know
   the filename). `on` needs no confirm (it only withholds); `off` is the risky direction and
   **prompts** (`y/N`, default No, `--yes` to bypass) with a warning - sharpened when the asset

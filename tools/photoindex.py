@@ -157,6 +157,7 @@ from _lib import (
     PHOTO_EXTENSIONS,
     PHOTOINDEX_SCHEMA_VERSION,
     photoindex_status,
+    is_working_copy,
     probe_sqlite,
     resolve_path,
     resolve_root_arg,
@@ -1344,6 +1345,13 @@ def run_reconcile(
         'rematched': [], 'missing': [], 'new_count': 0,
         'new_sourced': {}, 'new_unsourced': [],
     }
+    if is_working_copy(archive_root):
+        return Result(exit_code=EXIT_CLEAN, data={
+            'status': 'working-copy', 'working_copy': True, 'root_found': True,
+            'photos_root': str(resolve_path('photos', fha_config, archive_root)),
+            **empty,
+        })
+
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
         return Result(ok=False, exit_code=EXIT_FAILURE,
@@ -1785,7 +1793,20 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     everything. Files that have disappeared from disk since the last scan are
     deleted from the cache so stale entries never linger as phantom search
     hits.
+
+    In working-copy mode this function refuses: the photo files aren't here.
+    Use _cmd_scan to surface a friendly refusal message; run_scan itself
+    returns a working-copy status so callers can detect the mode.
     """
+    if is_working_copy(archive_root):
+        return Result(ok=False, exit_code=EXIT_WARNINGS, data={
+            'working_copy': True,
+            'photos_root': str(resolve_path('photos', fha_config, archive_root)),
+            'root_found': False,
+            'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
+            'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+
     photos_root = resolve_path('photos', fha_config, archive_root)
     if not photos_root.is_dir():
         # A missing photos root is a warning, not a failure (mirrors _cmd_scan).
@@ -2076,6 +2097,15 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         return resolved
     archive_root, fha_config = resolved
 
+    if is_working_copy(archive_root):
+        print(
+            'photoindex scan is not available in working-copy mode — '
+            'the photo files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_WARNINGS
+
     try:
         summary = run_scan(archive_root, fha_config, full=getattr(args, 'full', False))
     except (RuntimeError, sqlite3.Error) as e:
@@ -2220,6 +2250,13 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    if result.get('working_copy'):
+        print(
+            'photoindex reconcile is not available in working-copy mode — '
+            'the photo files are on the main machine. Run this command there.'
+        )
+        return EXIT_CLEAN
+
     if not result['root_found']:
         print(f"WARNING: photos root not found: {result['photos_root']}", file=sys.stderr)
         return EXIT_WARNINGS
@@ -2257,6 +2294,15 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
     if isinstance(resolved, int):
         return resolved
     archive_root, fha_config = resolved
+
+    if is_working_copy(archive_root):
+        print(
+            'photoindex tag-person is not available in working-copy mode — '
+            'the photo files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
 
     try:
         plan = run_tag_person_plan(

@@ -61,6 +61,7 @@ from _lib import (
     db_mtime,
     get_roots,
     is_fixture_path,
+    is_working_copy,
     load_fha_yaml,
     newest_record_mtime,
     parse_filename,
@@ -469,11 +470,21 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     root_arg = str(archive_root)
     roots = get_roots(fha_config)
     is_fixture = is_fixture_path(archive_root)
+    wc_mode = is_working_copy(archive_root)
     index_cmd = f'fha index --root "{root_arg}"'
     photoindex_cmd = f'fha photoindex --root "{root_arg}"'
     lint_cmd = f'fha lint --root "{root_arg}"'
     doctor_cmd = f'fha doctor --root "{root_arg}"'
     troubleshooting = archive_root / 'docs' / 'TROUBLESHOOTING.md'
+
+    if wc_mode:
+        lines.append(
+            '[working copy] photos and documents live on the main machine — '
+            'asset features are paused here'
+        )
+        lines.append('')
+        checks.append({'id': 'working_copy', 'status': 'info',
+                       'detail': 'working-copy mode active', 'next_step': None})
 
     lines.append(f'archive root: {_OK} {archive_root}  next: no action needed')
     lines.append(f'fha.yaml:     {_OK} {archive_root / "fha.yaml"} loaded  next: no action needed')
@@ -488,6 +499,12 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
             if os.path.isdir(resolved):
                 lines.append(f'  {alias} -> {resolved}  {_OK}  next: no action needed')
                 checks.append({'id': f'root:{alias}', 'status': 'ok', 'detail': str(resolved), 'next_step': None})
+            elif wc_mode:
+                lines.append(
+                    f'  {alias} -> {resolved}  (not present — assumed on main machine)'
+                )
+                checks.append({'id': f'root:{alias}', 'status': 'info',
+                               'detail': f'{resolved} absent — working-copy mode', 'next_step': None})
             elif is_fixture:
                 lines.append(
                     f'  {alias} -> {resolved}  {_WARN} fixture path is missing  '
@@ -574,7 +591,13 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
 
     photo_status, photo_delta = _photoindex_freshness(archive_root, fha_config)
     photo_path = archive_root / '.cache' / 'photos.sqlite'
-    if photo_status == 'fresh':
+    if wc_mode:
+        lines.append(
+            f'photoindex: (paused in working-copy mode — run `{photoindex_cmd}` on the main machine)'
+        )
+        checks.append({'id': 'photoindex', 'status': 'info',
+                       'detail': 'paused — working-copy mode', 'next_step': None})
+    elif photo_status == 'fresh':
         lines.append(f'photoindex: {_OK} fresh at {photo_path}  next: no action needed')
         checks.append({'id': 'photoindex', 'status': 'ok', 'detail': 'fresh', 'next_step': None})
     elif photo_status == 'stale':
@@ -616,7 +639,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     lines.append('')
 
     inbox_dir = archive_root / 'inbox'
-    if inbox_dir.is_dir():
+    if not wc_mode and inbox_dir.is_dir():
         now = datetime.datetime.now().timestamp()
         cutoff = now - 14 * 86400
         aged: list[tuple[int, Path]] = []
