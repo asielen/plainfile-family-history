@@ -1589,8 +1589,16 @@ def run_site(
     writes nothing and leaves `changed` empty.
     """
     payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run)
-    changed = [str(payload['out_dir'])] if payload['status'] == 'ok' else []
-    return Result(ok=(payload['status'] in ('ok', 'dry-run')), data=payload, changed=changed)
+    status = payload['status']
+    changed = [str(payload['out_dir'])] if status == 'ok' else []
+    # Mirror _cmd_site's per-status exit codes so headless callers returning
+    # Result.exit_code see a failed build as a failure, not a clean 0.
+    if status in ('ok', 'dry-run'):
+        exit_code = EXIT_WARNINGS if payload.get('messages') else EXIT_CLEAN
+    else:  # no-jinja, no-index, bad-config, bad-output, reset-failed
+        exit_code = EXIT_FAILURE
+    return Result(ok=(status in ('ok', 'dry-run')), exit_code=exit_code,
+                  data=payload, changed=changed)
 
 
 def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -> str | None:

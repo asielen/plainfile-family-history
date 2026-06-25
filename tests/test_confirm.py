@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import confirm
 import cooccur
-from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, load_fha_yaml, read_record
+from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, Result, load_fha_yaml, read_record
 
 EXAMPLE = ROOT / 'example-archive'
 
@@ -84,11 +84,43 @@ class EditHelperTests(unittest.TestCase):
         self.assertTrue(already)
         self.assertEqual(new, text)
 
+    def test_result_as_dict_is_json_serializable(self) -> None:
+        # Result.data routinely holds non-JSON objects (Paths, etc.); as_dict
+        # must coerce them so headless callers can json.dumps the contract.
+        r = Result(data={'path': Path('/tmp/x'), 'nested': [Path('a'), {'p': Path('b')}], 's': 'ok'})
+        dumped = json.loads(json.dumps(r.as_dict()))
+        self.assertEqual(dumped['data']['path'], '/tmp/x')
+        self.assertEqual(dumped['data']['nested'], ['a', {'p': 'b'}])
+        self.assertEqual(dumped['data']['s'], 'ok')
+
     def test_add_link_unknown_claim_no_change(self) -> None:
         new, changed, already = confirm._add_link_to_claim(
             _CLAIMS, 'C-9999999999', 'corroborates', 'C-bb22cc33dd')
         self.assertFalse(changed)
         self.assertFalse(already)
+
+    def test_add_link_preserves_inline_comment(self) -> None:
+        # A hand-written trailing comment on a link line must survive the rewrite
+        # rather than be folded into the (now malformed) list.
+        text = _CLAIMS.replace(
+            '  status: accepted\n  reviewed: 2026-01-01',
+            '  status: accepted\n  corroborates: [C-1111111111] # human-checked\n  reviewed: 2026-01-01')
+        new, changed, already = confirm._add_link_to_claim(
+            text, 'C-aa11bb22cc', 'corroborates', 'C-bb22cc33dd')
+        self.assertTrue(changed)
+        self.assertIn('corroborates: [C-1111111111, C-bb22cc33dd]  # human-checked', new)
+        # …and the rewritten block still parses, with the link list intact.
+        rec = _parse(new)['C-aa11bb22cc']
+        self.assertEqual(rec['corroborates'], ['C-1111111111', 'C-bb22cc33dd'])
+
+    def test_place_block_quotes_yaml_significant_values(self) -> None:
+        # A name/hierarchy with YAML-significant text must be quoted so
+        # places.yaml stays parseable and the value is not truncated as a comment.
+        import yaml
+        lines = confirm._place_block_lines('L-7c1a9f4e22', 'A: B', 'St. John #2')
+        rec = yaml.safe_load('\n'.join(lines))[0]
+        self.assertEqual(rec['name'], 'A: B')
+        self.assertEqual(rec['hierarchy'], 'St. John #2')
 
     def test_set_scalar_inserts_place(self) -> None:
         new, changed = confirm._set_scalar_on_claim(_CLAIMS, 'C-bb22cc33dd', 'place', 'L-7c1a9f4e22')
@@ -267,6 +299,27 @@ class ConfirmArchiveTests(unittest.TestCase):
             self.root, person_a=PERSON_1, person_b=PERSON_2, source_id=SOURCE, subtype='cousin')
         self.assertEqual(r.exit_code, EXIT_FAILURE)
         self.assertEqual(r['status'], 'invalid-subtype')
+
+    def test_cooccur_unknown_person_not_minted(self) -> None:
+        # A syntactically valid but nonexistent P-id must abort before minting,
+        # so the write never leaves an E005 missing-person reference behind.
+        src_before = (self.root / 'sources' / 'other'
+                      / 'bradford-family-genealogy-notes_S-fc3456789d.md').read_text(encoding='utf-8')
+        r = confirm.run_confirm_cooccur(
+            self.root, person_a=PERSON_1, person_b='P-0000000000', source_id=SOURCE, subtype='friend')
+        self.assertEqual(r.exit_code, EXIT_WARNINGS)
+        self.assertEqual(r['status'], 'not-found')
+        self.assertEqual(r.changed, [])
+        self.assertEqual(
+            (self.root / 'sources' / 'other'
+             / 'bradford-family-genealogy-notes_S-fc3456789d.md').read_text(encoding='utf-8'),
+            src_before)
+
+    def test_place_rejects_name_and_into_together(self) -> None:
+        r = confirm.run_confirm_place(
+            self.root, claim_ids=[CLAIM_B], name='Marsh Creek', into='L-7c1a9f4e22')
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(r['status'], 'failed')
 
     # dismiss ------------------------------------------------------------------
 

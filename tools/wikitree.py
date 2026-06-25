@@ -636,7 +636,16 @@ def run_wikitree(archive_root: Path, pid: str) -> Result:
     pure (the `_cmd` layer prints/writes it), so `changed` stays empty.
     """
     payload = _wikitree_payload(archive_root, pid)
-    return Result(ok=(payload['status'] == 'ok'), data=payload)
+    status = payload['status']
+    # Mirror _cmd_wikitree's per-status exit codes so headless callers returning
+    # Result.exit_code see a refused export as a failure, not a clean 0.
+    if status == 'ok':
+        exit_code = EXIT_WARNINGS if payload.get('messages') else EXIT_CLEAN
+    elif status in ('not-found', 'not-curated'):
+        exit_code = EXIT_WARNINGS
+    else:  # bad-args, no-index, merged, living-subject, restricted-sources
+        exit_code = EXIT_FAILURE
+    return Result(ok=(status == 'ok'), exit_code=exit_code, data=payload)
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────────

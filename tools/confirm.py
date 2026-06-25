@@ -92,6 +92,8 @@ import re
 import sys
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
@@ -108,6 +110,7 @@ from _lib import (
     parse_filename,
     read_record,
     resolve_root_arg,
+    scan_person_record_ids,
 )
 
 configure_utf8_stdout()
@@ -233,6 +236,37 @@ def _item_span_for(lines: list[str], spans: list[tuple[int, int]], claim_id: str
     return None
 
 
+def _yaml_inline(value: str) -> str:
+    """Render a string as a single-line YAML scalar, quoting only when needed.
+
+    `places.yaml` and the claims block are edited as text (not round-tripped
+    through the YAML emitter) to preserve key order and comments, so a free-form
+    place name/hierarchy that carries YAML-significant characters (`: `, a leading
+    `-`, ` #`) must be quoted exactly when the parser needs it — the same
+    discipline `fha claim`/`fha process` use for scaffold scalars.
+    """
+    rendered = yaml.safe_dump(
+        value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
+    ).strip()
+    if rendered.endswith('...'):          # safe_dump tags a bare scalar document
+        rendered = rendered[:-3].strip()
+    return rendered
+
+
+def _split_inline_comment(raw: str) -> tuple[str, str]:
+    """Split `value  # comment` into (value, '# comment').
+
+    Per YAML, a comment begins at a `#` preceded by whitespace (a `#` flush
+    against a token is part of the scalar). Returns an empty comment when there
+    is none. Used to carry a hand-written trailing comment through a rewrite of
+    an inline link list instead of folding it into the list.
+    """
+    m = re.search(r'\s#', raw)
+    if not m:
+        return raw, ''
+    return raw[:m.start()], raw[m.start():].strip()
+
+
 def _parse_inline_list(raw: str) -> list[str]:
     """Parse a `key: [a, b]` inline YAML list (or a bare scalar) into a list.
 
@@ -286,12 +320,14 @@ def _add_link_to_claim(
         m_key = m_dash or key_re.match(ln)
         if not m_key:
             continue
-        items = _parse_inline_list(m_key.group(1))
+        value_part, comment = _split_inline_comment(m_key.group(1))
+        items = _parse_inline_list(value_part)
         if target in [normalize_id(x) for x in items]:
             return text, False, True
         items.append(target_disp)
         prefix = f'{base_indent}- ' if m_dash else key_indent
-        lines[idx] = f'{prefix}{rel}: [{", ".join(items)}]'
+        suffix = f'  {comment}' if comment else ''
+        lines[idx] = f'{prefix}{rel}: [{", ".join(items)}]{suffix}'
         trailing = '\n' if text.endswith('\n') else ''
         return '\n'.join(lines) + trailing, True, False
 
@@ -415,7 +451,10 @@ def run_confirm_xref(
     already_all = True
     try:
         for path, pairs in edits.items():
-            before = path.read_text(encoding='utf-8')
+            try:
+                before = path.read_text(encoding='utf-8')
+            except OSError as e:
+                return _fail(result, 'failed', f'cannot read {path}: {e}')
             text = before
             for owner, target in pairs:
                 text, changed, already = _add_link_to_claim(text, owner, relation, target)
@@ -542,6 +581,15 @@ def run_confirm_cooccur(
     if pa == pb:
         return _fail(result, 'same-person',
                      'A relationship needs two different people — pass two distinct P-ids.')
+    # Both people must have an actual profile record before we mint a claim that
+    # names them, else the write leaves an E005 missing-person reference behind.
+    known_people = {normalize_id(x) for x in scan_person_record_ids(archive_root)}
+    missing_people = [fmt_id_display(p) for p in (pa, pb) if p not in known_people]
+    if missing_people:
+        return _notfound(result,
+                         'No person profile record for: ' + ', '.join(missing_people)
+                         + '. Mint the person first (no claim written).',
+                         next_step='fha find ' + missing_people[0])
     if subtype not in SOCIAL_SUBTYPES:
         return _fail(result, 'invalid-subtype',
                      f'{subtype!r} is not a social relationship subtype. '
@@ -761,6 +809,14 @@ def run_confirm_place(
                          f'{cid!r} is not a valid claim ID. C-ids look like C-fd0000001a.')
         norm_claims.append(normalize_id(cid))
 
+    # --into (relink to an existing place) and --name/--hierarchy (mint a new
+    # one) are mutually exclusive; accepting both silently took the --into branch
+    # and dropped the requested name, relinking to the wrong place.
+    if into is not None and (name or hierarchy):
+        return _fail(result, 'failed',
+                     'Pass either --into (relink to an existing place) or '
+                     '--name/--hierarchy (mint a new one), not both.')
+
     if into is not None:
         if not (is_valid_id(into) and id_type_of(into) == 'L'):
             return _fail(result, 'invalid-id',
@@ -910,10 +966,10 @@ def _place_block_lines(place_id: str, name: str, hierarchy: str | None) -> list[
     """Build a minimal new place record for places.yaml (no coords — geocode later)."""
     lines = [
         f'- id: {fmt_id_display(place_id)}',
-        f'  name: {name.strip()}',
+        f'  name: {_yaml_inline(name.strip())}',
     ]
     if hierarchy and hierarchy.strip():
-        lines.append(f'  hierarchy: {hierarchy.strip()}')
+        lines.append(f'  hierarchy: {_yaml_inline(hierarchy.strip())}')
     lines.append('  notes: registered from a place-text cluster via `fha confirm place`')
     return lines
 

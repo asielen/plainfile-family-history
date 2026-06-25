@@ -1805,14 +1805,42 @@ class Result:
         return key in self.data
 
     def as_dict(self) -> dict:
-        """Return a fully JSON-serializable view of this Result."""
+        """Return a fully JSON-serializable view of this Result.
+
+        `data` is coerced recursively: several wrappers stash non-JSON objects
+        there (packet payloads keep `Path`s, places lint keeps `Finding`s), so a
+        shallow copy would make `json.dumps(result.as_dict())` raise for exactly
+        the headless consumers this contract is meant to serve.
+        """
         return {
             'ok': self.ok,
             'exit_code': self.exit_code,
-            'data': self.data,
+            'data': _jsonify(self.data),
             'messages': [m.as_dict() for m in self.messages],
             'changed': list(self.changed),
         }
+
+
+def _jsonify(value: Any) -> Any:
+    """Recursively coerce a value into a JSON-serializable form for `as_dict`.
+
+    `Path`s become strings, objects exposing `as_dict()` (e.g. `Finding`) are
+    expanded, and mappings/sequences are coerced element-wise. Anything else
+    unrecognized falls back to `str()` so serialization never raises — a
+    best-effort machine-readable view beats a `TypeError` for headless callers.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _jsonify(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonify(v) for v in value]
+    as_dict = getattr(value, 'as_dict', None)
+    if callable(as_dict):
+        return _jsonify(as_dict())
+    return str(value)
 
 
 def finding_to_message(finding: Finding) -> Message:
