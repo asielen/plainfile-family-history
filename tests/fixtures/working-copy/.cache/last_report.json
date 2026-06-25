@@ -1,0 +1,39 @@
+{
+  "claim_fingerprints": {
+    "c-wc00000001": "s-wc00000001|birth|||||~1842|accepted|2026-06-24|medium|primary|original||||||persons=p-wc00000001:0:",
+    "c-wc00000002": "s-wc00000001|birth|||||~1845|accepted|2026-06-24|medium|primary|original||||||persons=p-wc00000002:0:"
+  },
+  "claim_ids": [
+    "c-wc00000001",
+    "c-wc00000002"
+  ],
+  "claim_links": [],
+  "claim_status_by_id": {
+    "c-wc00000001": "accepted",
+    "c-wc00000002": "accepted"
+  },
+  "claim_statuses": {
+    "accepted": 2,
+    "needs-review": 0,
+    "suggested": 0
+  },
+  "e009_messages": [],
+  "generated": "2026-06-25",
+  "person_fingerprints": {
+    "p-wc00000001": "Alice Smith|Smith|F|false|stub|active||",
+    "p-wc00000002": "Robert Jones|Jones|M|false|stub|active||"
+  },
+  "person_ids": [
+    "p-wc00000001",
+    "p-wc00000002"
+  ],
+  "question_status_by_heading": {},
+  "relationships": [],
+  "source_fingerprints": {
+    "s-wc00000001": "1880 US Census \u2014 Working Copy Fixture|census||sources/census/1880-census_S-wc00000001.md"
+  },
+  "source_ids": [
+    "s-wc00000001"
+  ],
+  "vitals_gap_person_ids": []
+}

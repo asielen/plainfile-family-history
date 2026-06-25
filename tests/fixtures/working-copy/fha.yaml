@@ -1,0 +1,6 @@
+# Fixture for fha working-copy mode (M10.1).
+# Records are present; asset roots point to directories that do not exist
+# on the working copy machine. The WORKING_COPY marker suppresses E011.
+roots:
+  photos: photos
+  documents: documents

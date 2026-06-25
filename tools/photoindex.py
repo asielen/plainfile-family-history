@@ -157,6 +157,7 @@ from _lib import (
     PHOTO_EXTENSIONS,
     PHOTOINDEX_SCHEMA_VERSION,
     photoindex_status,
+    is_working_copy,
     probe_sqlite,
     resolve_path,
     resolve_root_arg,
@@ -1344,6 +1345,13 @@ def run_reconcile(
         'rematched': [], 'missing': [], 'new_count': 0,
         'new_sourced': {}, 'new_unsourced': [],
     }
+    if is_working_copy(archive_root):
+        return Result(exit_code=EXIT_CLEAN, data={
+            'status': 'working-copy', 'working_copy': True, 'root_found': True,
+            'photos_root': str(resolve_path('photos', fha_config, archive_root)),
+            **empty,
+        })
+
     status, _lag = photoindex_status(archive_root, fha_config)
     if status in ('absent', 'unreadable'):
         return Result(ok=False, exit_code=EXIT_FAILURE,
@@ -1641,6 +1649,17 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     otherwise a cache failure on the very candidate whose file write just
     succeeded would drop it from the recovery list this error reports.
     """
+    if is_working_copy(archive_root):
+        return Result(
+            ok=False,
+            exit_code=EXIT_CLEAN,
+            data={'tagged': [], 'failed': []},
+        ).add(
+            'warning',
+            'photoindex tag-person is not available in working-copy mode — '
+            'the photo files are on the main machine. '
+            'Run this command there.',
+        )
     if not candidates:
         return Result(data={'tagged': [], 'failed': []})
     keyword = 'P-' + person_id.split('-', 1)[1]
@@ -1785,7 +1804,20 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
     everything. Files that have disappeared from disk since the last scan are
     deleted from the cache so stale entries never linger as phantom search
     hits.
+
+    In working-copy mode this function refuses: the photo files aren't here.
+    Use _cmd_scan to surface a friendly refusal message; run_scan itself
+    returns a working-copy status so callers can detect the mode.
     """
+    if is_working_copy(archive_root):
+        return Result(ok=False, exit_code=EXIT_CLEAN, data={
+            'working_copy': True,
+            'photos_root': str(resolve_path('photos', fha_config, archive_root)),
+            'root_found': False,
+            'total': 0, 'scraped': 0, 'unchanged': 0, 'removed': 0,
+            'groups': 0, 'conflicts': 0, 'rebuilt_reason': None,
+        })
+
     photos_root = resolve_path('photos', fha_config, archive_root)
     if not photos_root.is_dir():
         # A missing photos root is a warning, not a failure (mirrors _cmd_scan).
@@ -2031,7 +2063,12 @@ def _resolve_root_and_config(args: argparse.Namespace) -> tuple[Path, dict] | in
     return archive_root, fha_config
 
 
-def _print_photoindex_status(status: str, *, require_fresh: bool = False) -> int | None:
+def _print_photoindex_status(
+    status: str,
+    *,
+    require_fresh: bool = False,
+    archive_root: Path | None = None,
+) -> int | None:
     """
     Print the documented absent/unreadable/stale message for a photoindex_status
     value. Returns an EXIT_FAILURE int the caller should return immediately for
@@ -2043,30 +2080,69 @@ def _print_photoindex_status(status: str, *, require_fresh: bool = False) -> int
     replaced or changed on disk, so writing a P-id keyword from that cache
     would mutate the wrong file's metadata. Those callers must block on
     'stale' and force a rescan rather than warn-and-continue.
+
+    `archive_root` enables working-copy-aware messages: when WC mode is active,
+    the next step is "copy a fresh index from the main machine" rather than
+    "run fha photoindex" (which is refused in WC mode).
     """
+    in_wc = archive_root is not None and is_working_copy(archive_root)
     if status == 'absent':
-        print('ERROR: no photo index found. Run fha photoindex first.', file=sys.stderr)
+        if in_wc:
+            print(
+                'ERROR: no photo index found. '
+                'Copy a fresh photo index from the main machine.',
+                file=sys.stderr,
+            )
+        else:
+            print('ERROR: no photo index found. Run fha photoindex first.', file=sys.stderr)
         return EXIT_FAILURE
     if status == 'unreadable':
-        print(
-            'ERROR: your photo index is unreadable. Run `fha photoindex` to rebuild it.',
-            file=sys.stderr,
-        )
+        if in_wc:
+            print(
+                'ERROR: photo index is unreadable. '
+                'Copy a fresh photo index from the main machine.',
+                file=sys.stderr,
+            )
+        else:
+            print(
+                'ERROR: your photo index is unreadable. Run `fha photoindex` to rebuild it.',
+                file=sys.stderr,
+            )
         return EXIT_FAILURE
     if status == 'old-schema':
-        print(
-            'ERROR: your photo index is out of date. Run `fha photoindex` to rebuild it.',
-            file=sys.stderr,
-        )
+        if in_wc:
+            print(
+                'ERROR: photo index is out of date. '
+                'Copy a fresh photo index from the main machine.',
+                file=sys.stderr,
+            )
+        else:
+            print(
+                'ERROR: your photo index is out of date. Run `fha photoindex` to rebuild it.',
+                file=sys.stderr,
+            )
         return EXIT_FAILURE
     if status == 'stale':
         if require_fresh:
-            print(
-                'ERROR: photo index is stale; run fha photoindex to refresh it before tagging.',
-                file=sys.stderr,
-            )
+            if in_wc:
+                print(
+                    'ERROR: photo index is stale; '
+                    'copy a fresh index from the main machine.',
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    'ERROR: photo index is stale; run fha photoindex to refresh it before tagging.',
+                    file=sys.stderr,
+                )
             return EXIT_FAILURE
-        print('WARNING: photo index is stale; results may be out of date. Run fha photoindex to refresh.')
+        if in_wc:
+            print(
+                'WARNING: photo index is stale; results may be out of date. '
+                'Copy a fresh index from the main machine.'
+            )
+        else:
+            print('WARNING: photo index is stale; results may be out of date. Run fha photoindex to refresh.')
     return None
 
 
@@ -2075,6 +2151,15 @@ def _cmd_scan(args: argparse.Namespace) -> int:
     if isinstance(resolved, int):
         return resolved
     archive_root, fha_config = resolved
+
+    if is_working_copy(archive_root):
+        print(
+            'photoindex scan is not available in working-copy mode — '
+            'the photo files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
 
     try:
         summary = run_scan(archive_root, fha_config, full=getattr(args, 'full', False))
@@ -2129,7 +2214,7 @@ def _cmd_find(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    exit_code = _print_photoindex_status(result['status'])
+    exit_code = _print_photoindex_status(result['status'], archive_root=archive_root)
     if exit_code is not None:
         return exit_code
 
@@ -2160,7 +2245,7 @@ def _cmd_triage(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    exit_code = _print_photoindex_status(result['status'])
+    exit_code = _print_photoindex_status(result['status'], archive_root=archive_root)
     if exit_code is not None:
         return exit_code
 
@@ -2185,7 +2270,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
     result = run_report(archive_root, fha_config)
 
-    exit_code = _print_photoindex_status(result['status'])
+    exit_code = _print_photoindex_status(result['status'], archive_root=archive_root)
     if exit_code is not None:
         return exit_code
 
@@ -2220,11 +2305,19 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
+    if result.get('working_copy'):
+        print(
+            'photoindex reconcile is not available in working-copy mode — '
+            'the photo files are on the main machine. Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
+
     if not result['root_found']:
         print(f"WARNING: photos root not found: {result['photos_root']}", file=sys.stderr)
         return EXIT_WARNINGS
 
-    exit_code = _print_photoindex_status(result['status'])
+    exit_code = _print_photoindex_status(result['status'], archive_root=archive_root)
     if exit_code is not None:
         return exit_code
 
@@ -2258,6 +2351,15 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
         return resolved
     archive_root, fha_config = resolved
 
+    if is_working_copy(archive_root):
+        print(
+            'photoindex tag-person is not available in working-copy mode — '
+            'the photo files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
+
     try:
         plan = run_tag_person_plan(
             archive_root, fha_config, getattr(args, 'person_id', ''),
@@ -2268,7 +2370,7 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
 
-    exit_code = _print_photoindex_status(plan['status'], require_fresh=True)
+    exit_code = _print_photoindex_status(plan['status'], require_fresh=True, archive_root=archive_root)
     if exit_code is not None:
         return exit_code
 

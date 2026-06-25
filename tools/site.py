@@ -117,6 +117,7 @@ from _lib import (
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
+    is_working_copy,
     load_fha_yaml,
     normalize_id,
     open_index_db,
@@ -1588,6 +1589,17 @@ def run_site(
     the written output directory in `changed`; a --dry-run (status 'dry-run')
     writes nothing and leaves `changed` empty.
     """
+    if is_working_copy(archive_root):
+        return Result(
+            ok=False,
+            exit_code=EXIT_CLEAN,
+            data={'status': 'working-copy', 'out_dir': str(out_dir), 'pages': [], 'messages': []},
+        ).add(
+            'warning',
+            'fha site is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Build the site there.',
+        )
     payload = _site_payload(archive_root, out_dir, linked=linked, dry_run=dry_run)
     status = payload['status']
     changed = [str(payload['out_dir'])] if status == 'ok' else []

@@ -144,6 +144,7 @@ from _lib import (
     resolve_root_arg,
     scan_person_record_ids,
     select_variation_primary,
+    is_working_copy,
     variant_role,
 )
 
@@ -2229,6 +2230,18 @@ def run_process(args: argparse.Namespace) -> Result:
     Result (Result == int, so callers/tests comparing against EXIT_* keep
     working); the per-file rename/undo detail is reported inline by the flow.
     """
+    archive_root = resolve_root_arg(args)
+    if archive_root is not None and is_working_copy(archive_root):
+        return Result(
+            ok=False,
+            exit_code=EXIT_CLEAN,
+            data={'status': 'working-copy'},
+        ).add(
+            'warning',
+            'fha process is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.',
+        )
     exit_code = _run_process(args)
     return Result(ok=(exit_code not in (EXIT_ERRORS, EXIT_FAILURE)), exit_code=exit_code)
 
@@ -2242,6 +2255,15 @@ def _run_process(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
+
+    if is_working_copy(archive_root):
+        print(
+            'fha process is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
 
     # Resolve to an absolute path before any alias derivation: a relative path
     # run from inside an asset subdirectory (`cd documents/census && fha

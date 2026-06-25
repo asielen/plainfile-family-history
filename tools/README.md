@@ -231,6 +231,41 @@ archive. **Dependencies:** Jinja2 (required); Pillow (optional — standalone im
 derivatives use it when present; without it the standalone site omits images
 rather than copying originals, which would leak EXIF). See `tools/requirements.txt`.
 
+## Implemented tools (milestone 10)
+
+| Tool | File | Status |
+|---|---|---|
+| `fha working-copy on\|off\|status [--root PATH] [--yes]` | `working_copy.py` | ✓ M10.1 — working-copy mode management; see "fha working-copy — implementation status" below |
+
+Working-copy mode lets a genealogist git-sync their archive to a second machine
+(laptop, NAS, travel device) without carrying the binary asset files (photos and
+documents). The WORKING_COPY marker file at the archive root is git-ignored so it
+is machine-local and never syncs back. When active:
+
+- **Lint** suppresses E011 and E012 (asset-on-disk checks); emits one
+  `[working copy] N asset file(s) assumed present on the main machine` note
+  instead. All other lint rules run normally.
+- **Index** stores `exists_on_disk = NULL` (not 0) for inventory files — callers
+  can distinguish "unknown" from "missing".
+- **Photoindex scan** and **reconcile** are refused so a working copy cannot
+  prune or rewrite the photo cache; read-only photoindex commands (find, triage,
+  report) work against any pre-existing `.cache/photos.sqlite`.
+- **process**, **packet**, and **site** refuse with "do this on your main archive".
+- **photoindex tag-person** refuses (asset-mutating).
+- **doctor** headlines the mode, shows absent asset roots as informational (not
+  errors), and shows photoindex as paused.
+- **fha** (all commands) prints a one-line mode banner before running.
+
+`fha working-copy on` writes the WORKING_COPY marker and ensures it is listed in
+`.gitignore`. `fha working-copy off` prompts for confirmation (default No) before
+removing the marker; `--yes` skips the prompt.
+
+The `archive-template/.gitignore` already lists `WORKING_COPY`, so `fha install`
+gives every new archive the guarantee for free.
+
+Test fixture: `tests/fixtures/working-copy/` — records present, asset roots
+pointing to absent directories, WORKING_COPY marker present. Lints clean.
+
 ## Implemented tools (milestone 9)
 
 | Tool | File | Status |

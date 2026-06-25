@@ -31,7 +31,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "73092746ca12f22de9e533ea6debc79e6c5d9ad18e61ad069e832ce9eca663f7",
+      "sha256": "231fc1c65e07cb4235741fb18097a072b16739caa579211ae1423a80f577328f",
       "spec_version": "1.2"
     },
     {
@@ -43,19 +43,25 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "e2a621403f03ada291133dee2984b731351e63f9e57981c05714d31b62f29653",
+      "sha256": "7b1733fefdd92d3bea201854a7e6d0351de52ea9c5715f55ebf5b5a26cc7725a",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "bc1ed73216ae7beccc7fde858abe14433c018e892574b06f5f8ead7050d8a191",
+      "sha256": "5518f1ef18efcc761ce2207e9668822d43f4efaa939d8e9660f8d971dcdb99e4",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "5e94ed5294aa6acc3d09a751cd0841e4faeed3ae32adc992e6375f4645b92e62",
+      "sha256": "0d4dcb6ac9a2b134ddab9a1618e21bb135e5ee122b9d9640c698845097b7f864",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "TOOLING_INGESTION.md",
+      "category": "operating",
+      "sha256": "14e2b0efeb9e915bf5bf672e96a4fa78a983ba7cbc0ddf4256ac3c7dc2c11606",
       "spec_version": "1.2"
     },
     {
@@ -178,13 +184,13 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "d37f87a9869dadfca3f788ac3984ed12471e2ee40d76e5397624acceb36913ef",
+      "sha256": "68404780f02c23562b473d0f8fde2fbc1cc32cf9b50f3f6fb7cc998519646562",
       "spec_version": "1.2"
     },
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "35c32ce3720c69dc7bf4be062f4959751879eea40e5a345da74bfb2365065ac6",
+      "sha256": "2668088a99ae5d13d1b91adf5d8b1f3d1255eda45588167c025dacebf8a3deed",
       "spec_version": "1.2"
     },
     {
@@ -256,19 +262,19 @@
     {
       "path": "tools/doctor.py",
       "category": "operating",
-      "sha256": "1fe0dd1e70991a974cb8b4fa68bd2f0f52212c215660a3584a5f393599a817bc",
+      "sha256": "8305926a99491f9d8b79e9d76cfc93da11680c0b2a40839c93c44b42dbe76754",
       "spec_version": "1.2"
     },
     {
       "path": "tools/fha.py",
       "category": "operating",
-      "sha256": "3b25239c7a5dcfefdf82a21517790ed2153ada7bf19d422d3dd9d8bf4f30139e",
+      "sha256": "ae5a4e2920a634a114036697f20847512989a4dda6084b848e75e87bbf244883",
       "spec_version": "1.2"
     },
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "64b4adf87a4f4027ce4880bc01a7c4d9dd9ac201636270f1a4f8251a9938586a",
+      "sha256": "c51227c8d446b0aed4d0d1cae14e23e00cb36ab152e387a927e753c705ddef06",
       "spec_version": "1.2"
     },
     {
@@ -286,25 +292,25 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "115e9c3acb9725f739750533068932b36b5d31362f0540b219b4740ef486ecce",
+      "sha256": "8e6048076287bfb4452795d5c3f1fe8a3dd03fbea478f2290d0b9feff3f35950",
       "spec_version": "1.2"
     },
     {
       "path": "tools/lint.py",
       "category": "operating",
-      "sha256": "75a511581b7a6bfa6a646ddb8a0f42a622af987b1fd77c82aa04498c583a1271",
+      "sha256": "2fc2942ee4cfa4bca4350ecf91022077a978460c699e95421919842b036fd1eb",
       "spec_version": "1.2"
     },
     {
       "path": "tools/packet.py",
       "category": "operating",
-      "sha256": "c70ccaa3b9dd7862b197cfe3298374161933b6183ea7323a077b356ae03ee9d4",
+      "sha256": "786797d9b25eab565de4dfe708b248b263de59f312192631e49227bb4f10b2ae",
       "spec_version": "1.2"
     },
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "a519f55fc363e23d1f97e4cb419e8f2be10e5df2aba5eb9f8f536e4f66c582b1",
+      "sha256": "f581811608d5ad663a4593ee25c85c7b04407e15a106ef6624752f21d07df1d2",
       "spec_version": "1.2"
     },
     {
@@ -316,13 +322,13 @@
     {
       "path": "tools/process.py",
       "category": "operating",
-      "sha256": "61861579a846675dec3d44ad842a629bbe3369d5b12d2ecd0872a0ba8777aef9",
+      "sha256": "730dafc25a18ab353e583d5fef80dc0a6f590382edd3853bd8131f7d53c8bcf8",
       "spec_version": "1.2"
     },
     {
       "path": "tools/report.py",
       "category": "operating",
-      "sha256": "bd94dce956d0ab4005dd2ba102bc426d7ac3942d42f78a6650beda127b258d12",
+      "sha256": "b858a1255868a4d17c3b0bd0cd7fe84f17b9429643d21e2a5bf0ed18476d1312",
       "spec_version": "1.2"
     },
     {
@@ -334,13 +340,13 @@
     {
       "path": "tools/scaffold.py",
       "category": "operating",
-      "sha256": "44dd285ea9248bb5fcb43ab2ccfd96be5d7d7b540f8a76b51065ef411bbe6187",
+      "sha256": "c562027c48f01fcf878580ced205f0403930d8a9c6fdc4ae4284175f51b05f40",
       "spec_version": "1.2"
     },
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "d1ba1b218e244c4378e9679cdf50cf24c9498b54f621a33f96a8114c1cd797b3",
+      "sha256": "1c825a0a783632d6091d0e89a142dc84ddd2936c14a3e905535ddc96b0b02c84",
       "spec_version": "1.2"
     },
     {
@@ -419,6 +425,12 @@
       "path": "tools/wikitree_templates.yaml",
       "category": "operating",
       "sha256": "b4edd96e355b34c8c0123072738c5c05b31348b7bd2a574028f8867b2c1df583",
+      "spec_version": "1.2"
+    },
+    {
+      "path": "tools/working_copy.py",
+      "category": "operating",
+      "sha256": "bba54c83ae9e42cb82a448efd9f75ed1e1bcfb9275926fbe89dae07f3365426e",
       "spec_version": "1.2"
     },
     {

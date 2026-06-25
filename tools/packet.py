@@ -109,6 +109,7 @@ from _lib import (
     Result,
     configure_utf8_stdout,
     fmt_id_display,
+    is_working_copy,
     load_fha_yaml,
     normalize_id,
     open_index_db,
@@ -965,6 +966,19 @@ def run_packet(
     build the written packet directory and zip are listed in `changed`; a
     --dry-run (status 'dry-run') writes nothing and leaves `changed` empty.
     """
+    if is_working_copy(archive_root):
+        _wc_msg = (
+            'fha packet is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.'
+        )
+        return Result(
+            ok=False,
+            exit_code=EXIT_CLEAN,
+            data={'status': 'working-copy', 'packet_dir': None, 'zip_path': None,
+                  'messages': [_wc_msg]},
+        ).add('warning', _wc_msg)
+
     payload = _packet_payload(
         archive_root, pid, out_dir,
         include_research=include_research, include_restricted=include_restricted,
@@ -1003,6 +1017,15 @@ def _cmd_packet(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         return EXIT_FAILURE
+
+    if is_working_copy(archive_root):
+        print(
+            'fha packet is not available in working-copy mode — '
+            'the photo and document files are on the main machine. '
+            'Run this command there.',
+            file=sys.stderr,
+        )
+        return EXIT_CLEAN
 
     pid = normalize_id(getattr(args, 'person_id', ''))
     if not pid:
