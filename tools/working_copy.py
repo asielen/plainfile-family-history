@@ -84,8 +84,12 @@ def _ensure_gitignore_entry(archive_root: Path) -> None:
     gi = archive_root / '.gitignore'
     if gi.exists():
         text = gi.read_text(encoding='utf-8')
-        if _MARKER_NAME in text:
-            return
+        # Only count a real ignore rule — skip comment and negation lines so
+        # "# remember WORKING_COPY" or "!WORKING_COPY" don't suppress the append.
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith('#') and not stripped.startswith('!') and _MARKER_NAME in stripped:
+                return
         gi.write_text(text.rstrip('\n') + '\n\n' + _GITIGNORE_ENTRY, encoding='utf-8')
     else:
         gi.write_text(_GITIGNORE_ENTRY, encoding='utf-8')
@@ -120,13 +124,18 @@ def _asset_root_risk_notes(archive_root: Path) -> list[str]:
     return notes
 
 
-def _invalidate_index(archive_root: Path) -> None:
-    """Delete the query index so exists_on_disk is recomputed after a mode toggle."""
+def _invalidate_index(archive_root: Path) -> str | None:
+    """Delete the query index so exists_on_disk is recomputed after a mode toggle.
+
+    Returns None on success, or an error string if the file exists but cannot
+    be removed (permissions, read-only FS, etc.).
+    """
     index = archive_root / '.cache' / 'index.sqlite'
     try:
         index.unlink(missing_ok=True)
-    except OSError:
-        pass  # best-effort; index is a disposable cache and will be rebuilt on next use
+        return None
+    except OSError as exc:
+        return str(exc)
 
 
 def _format_message(msg: object) -> str:
@@ -175,7 +184,14 @@ def run_working_copy_on(archive_root: Path) -> Result:
         )
 
     # Invalidate the index so exists_on_disk values are recomputed in WC context.
-    _invalidate_index(archive_root)
+    index_err = _invalidate_index(archive_root)
+    if index_err:
+        result.exit_code = EXIT_WARNINGS
+        result.add(
+            'warning',
+            f'Could not remove the stale query index: {index_err}',
+            next_step='Run `fha index` manually to rebuild the asset-status index.',
+        )
 
     return result
 
@@ -208,7 +224,14 @@ def run_working_copy_off(archive_root: Path) -> Result:
         data={'status': 'turned-off', 'marker': str(marker)},
         messages=[],
     )
-    _invalidate_index(archive_root)
+    index_err = _invalidate_index(archive_root)
+    if index_err:
+        result.exit_code = EXIT_WARNINGS
+        result.add(
+            'warning',
+            f'Could not remove the stale query index: {index_err}',
+            next_step='Run `fha index` manually to rebuild the asset-status index.',
+        )
     return result
 
 
@@ -268,6 +291,10 @@ def _cmd_off(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
         print('error: cannot find archive root — pass --root or run from inside the archive.',
+              file=sys.stderr)
+        return EXIT_ERRORS
+    if not (archive_root / 'fha.yaml').exists():
+        print(f'error: {archive_root} does not look like an fha archive (no fha.yaml found).',
               file=sys.stderr)
         return EXIT_ERRORS
 

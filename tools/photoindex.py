@@ -1649,6 +1649,17 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     otherwise a cache failure on the very candidate whose file write just
     succeeded would drop it from the recovery list this error reports.
     """
+    if is_working_copy(archive_root):
+        return Result(
+            ok=False,
+            exit_code=EXIT_CLEAN,
+            data={'tagged': [], 'failed': []},
+        ).add(
+            'warning',
+            'photoindex tag-person is not available in working-copy mode — '
+            'the photo files are on the main machine. '
+            'Run this command there.',
+        )
     if not candidates:
         return Result(data={'tagged': [], 'failed': []})
     keyword = 'P-' + person_id.split('-', 1)[1]

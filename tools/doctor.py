@@ -591,8 +591,13 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
 
     photo_status, photo_delta = _photoindex_freshness(archive_root, fha_config)
     photo_path = archive_root / '.cache' / 'photos.sqlite'
-    if wc_mode and photo_status in {'unreadable', 'old-schema'}:
-        label = 'out of date' if photo_status == 'old-schema' else 'unreadable'
+    if wc_mode and photo_status in {'unreadable', 'old-schema', 'stale'}:
+        if photo_status == 'stale':
+            label = f'stale by {photo_delta}'
+        elif photo_status == 'old-schema':
+            label = 'out of date'
+        else:
+            label = 'unreadable'
         lines.append(
             f'photoindex: {_WARN} {label}: {photo_path}'
             f'  next: copy a fresh cache from the main machine'

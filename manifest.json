@@ -43,7 +43,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "e2a621403f03ada291133dee2984b731351e63f9e57981c05714d31b62f29653",
+      "sha256": "7b1733fefdd92d3bea201854a7e6d0351de52ea9c5715f55ebf5b5a26cc7725a",
       "spec_version": "1.2"
     },
     {
@@ -262,7 +262,7 @@
     {
       "path": "tools/doctor.py",
       "category": "operating",
-      "sha256": "68a2a0fec0d79c4d7cdb78ca6edf1d1213dd6082ee1f09b9c987b3830c1f4e61",
+      "sha256": "8305926a99491f9d8b79e9d76cfc93da11680c0b2a40839c93c44b42dbe76754",
       "spec_version": "1.2"
     },
     {
@@ -304,13 +304,13 @@
     {
       "path": "tools/packet.py",
       "category": "operating",
-      "sha256": "4e6800fb3f0c1156a2a4bfd8259ec7f1d290fa67b0124ec6863860ca3f908fc7",
+      "sha256": "22b55112ba677cb6d19fcbe6b449d356e60ae7b00cbadf57bf06bb5dd9e1b46b",
       "spec_version": "1.2"
     },
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "93f82041de57765ecb4b1202e3210f6013e340d8eabd5fcb1bc775e6678f5feb",
+      "sha256": "b68b7984e5bdb23b1acbc1075a44f644cac50bdaf400172721d3c72bae8edf9a",
       "spec_version": "1.2"
     },
     {
@@ -430,7 +430,7 @@
     {
       "path": "tools/working_copy.py",
       "category": "operating",
-      "sha256": "80606ec75993ae85597db7e9be772799c6e935ee01825ee36d97d8810bfe27ad",
+      "sha256": "fa97b616292860841f62293a7722ea8b69d07861c3641b9a4693d8b083a54614",
       "spec_version": "1.2"
     },
     {

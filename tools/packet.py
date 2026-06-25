@@ -970,7 +970,7 @@ def run_packet(
         return Result(
             ok=False,
             exit_code=EXIT_CLEAN,
-            data={'status': 'working-copy'},
+            data={'status': 'working-copy', 'packet_dir': None, 'zip_path': None, 'messages': []},
         ).add(
             'warning',
             'fha packet is not available in working-copy mode — '
