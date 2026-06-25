@@ -151,14 +151,17 @@ def run_working_copy_on(archive_root: Path) -> Result:
                 f'Could not write the WORKING_COPY marker at {marker}: {exc}',
                 next_step='Check folder permissions, then run `fha working-copy on` again.',
             )
-        try:
-            _ensure_gitignore_entry(archive_root)
-        except OSError as exc:
-            result.add(
-                'warning',
-                f'Could not update .gitignore: {exc}',
-                next_step='Add WORKING_COPY to .gitignore by hand before syncing this archive.',
-            )
+
+    # Always ensure .gitignore is updated — even when the marker was hand-created
+    # or a previous run wrote the marker but failed to update .gitignore.
+    try:
+        _ensure_gitignore_entry(archive_root)
+    except OSError as exc:
+        result.add(
+            'warning',
+            f'Could not update .gitignore: {exc}',
+            next_step='Add WORKING_COPY to .gitignore by hand before syncing this archive.',
+        )
 
     return result
 
@@ -339,3 +342,34 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     status_p.set_defaults(func=_cmd_status)
 
     p.set_defaults(func=_cmd_status)
+
+
+def _standalone_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog='fha working-copy',
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument('--root', metavar='PATH')
+    sub = parser.add_subparsers(dest='wc_command', metavar='COMMAND')
+
+    on_p = sub.add_parser('on', help='Activate working-copy mode.')
+    on_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS)
+    on_p.set_defaults(func=_cmd_on)
+
+    off_p = sub.add_parser('off', help='Deactivate working-copy mode.')
+    off_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS)
+    off_p.add_argument('--yes', action='store_true')
+    off_p.set_defaults(func=_cmd_off)
+
+    status_p = sub.add_parser('status', help='Report working-copy mode status.')
+    status_p.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS)
+    status_p.set_defaults(func=_cmd_status)
+
+    parser.set_defaults(func=_cmd_status)
+    args = parser.parse_args(argv)
+    return args.func(args) or 0
+
+
+if __name__ == '__main__':
+    sys.exit(_standalone_main())

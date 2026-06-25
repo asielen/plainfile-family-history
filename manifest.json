@@ -12,7 +12,7 @@
     {
       "path": ".gitignore",
       "category": "skeleton",
-      "sha256": "bf17aa9c13c8a546d0b147b676d15d0b05192b2c73e68d8cd8e2c762829b0947",
+      "sha256": "d98ed4e0715a19253a4f27c145eb0ce1fb8a7eb1dbbd23dc496a2eab9cb37301",
       "spec_version": "1.2",
       "src": "archive-template/.gitignore"
     },

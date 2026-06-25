@@ -1638,7 +1638,8 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
         print(line)
 
     # Working-copy mode note prints before findings (not a finding itself).
-    if data.get('wc_note'):
+    # Suppressed under --json so stdout stays a valid JSON document.
+    if data.get('wc_note') and not use_json:
         print(data['wc_note'])
 
     messages = result.messages

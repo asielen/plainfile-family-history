@@ -424,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     '[working copy] photos and documents live on the main machine'
                     ' — asset features are paused here',
+                    file=sys.stderr,
                     flush=True,
                 )
 

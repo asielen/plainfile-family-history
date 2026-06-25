@@ -639,7 +639,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     lines.append('')
 
     inbox_dir = archive_root / 'inbox'
-    if not wc_mode and inbox_dir.is_dir():
+    if inbox_dir.is_dir():
         now = datetime.datetime.now().timestamp()
         cutoff = now - 14 * 86400
         aged: list[tuple[int, Path]] = []

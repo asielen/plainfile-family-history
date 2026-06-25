@@ -338,6 +338,8 @@ def _find_source(
                 resolved_str = '(unresolvable)'
             if f['path'] in missing_fixture_paths:
                 status_sym = 'missing-fixture'
+            elif f['exists_on_disk'] is None:
+                status_sym = '~'  # NULL = assumed present on main machine (working-copy mode)
             elif resolved is not None and resolved.exists():
                 status_sym = _OK
             else:
