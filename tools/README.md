@@ -34,7 +34,7 @@ read the same structured result (TOOLING §1).
 | `fha views draft-queue` | `views.py` | ✓ per-person and --all-curated |
 | `fha views brackets` | `views.py` | ✓ W103 bracket refresh, W110 Ahnentafel placement; `--fix` applies, `--dry-run` previews |
 | `fha views tree` | `views.py` | ✓ ancestors/descendants/fan modes; `--format json\|dot`; `--generations N`; `--out FILE`; `--format html` deferred (D6) |
-| `fha doctor` | `doctor.py` | ✓ all 11 checks; D5 applied (absent index/photoindex = warning, not error) |
+| `fha doctor` | `doctor.py` | ✓ all 12 checks; D5 applied (absent index/photoindex = warning, not error) |
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent |
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated - transcript search deferred (D7) |
 | `fha find --related <ID> [--date EDTF]` | `find.py` | ✓ BUILD.md M4.3 (D4) - neighborhood query for all five ID types, plus a standalone `--related --date EDTF` time slice. Requires a real index (exit 3 if absent/unreadable - no tree-scan fallback, unlike find_by_id) |
@@ -89,7 +89,7 @@ start importing siblings.
 
 | Section | Status | Notes |
 |---|---|---|
-| Refresh sequence | ✓ | `photoindex.run_scan(full=False)` → `index.build_index` → `lint._run_lint_core`, every run regardless of `--full`/`--section` |
+| Refresh sequence | ✓ | `index.build_index` → `photoindex.run_scan(full=False)` → `lint._run_lint_core`, every run regardless of `--full`/`--section` (index is rebuilt first so the photo scan and lint both see this session's records) |
 | §0 Discoveries | ✓ | Claims flipping `needs-review`→`accepted`; new `claim_links` `corroborates` rows; questions newly `status: answered`; profiles newly vital-complete (left the W101 set); newly confirmed `relationships` edges. Diffed against `.cache/last_report.json`, which stores per-claim status, `claim_links`, `relationships`, the W101 person-id set, and per-question status (a superset of the minimal example in BUILD.md/TOOLING §15a - the extra fields are what a real transition diff needs) |
 | §1 Review queue (W102) | ✓ | Suggested claims grouped by source, sources ordered by oldest claim `date_min` |
 | §2 New since last session | ✓ | Source-id / claim-id + changed-claim / person-id diff vs. snapshot |
@@ -236,7 +236,7 @@ rather than copying originals, which would leak EXIF). See `tools/requirements.t
 | Tool | File | Status |
 |---|---|---|
 | `fha install ARCHIVE-PATH [--repo PATH] [--dry-run]` | `scaffold.py`, `manifest.json` | ✓ M9.1 - first-time bootstrap: copy the operating layer + skeleton into a new archive and stamp `.plainfile-version`. See "fha install / fha update-tools - implementation status" below |
-| `fha update-tools [--repo PATH] [--dry-run] [--verbose] [--root PATH]` | `scaffold.py` | ✓ M9.2 - refresh the operating layer from an updated public clone; back up customized/retired files, never delete, never touch skeleton seeds. See below |
+| `fha update-tools [--repo PATH] [--dry-run] [--verbose] [--root PATH] [--spec-root PATH]` | `scaffold.py` | ✓ M9.2 - refresh the operating layer from an updated public clone; back up customized/retired files, never delete, never touch skeleton seeds. (`--spec-root` is accepted for CLI consistency but unused by this command.) See below |
 
 `manifest.json` (repo root) is the committed packing list every install/update reads.
 It is regenerated from the repo - not hand-edited - with the maintenance command
@@ -310,14 +310,14 @@ Writes only to the output directory.
 | `--linked` | ✓ | Local developer preview: real archive paths (no copies), no redaction. Mutually exclusive with `--standalone` |
 | `--out PATH` | ✓ | Output directory (default `.cache/site/` under the archive root); absolute or archive-relative |
 | `--dry-run` | ✓ | Reports how many pages would be built; writes nothing |
-| Idempotent rebuild | ✓ | Each run clears only the subtrees it owns (`persons/`, `sources/`, `media/`, `index.html`) before regenerating, so a record that becomes redacted loses its stale page |
+| Idempotent rebuild | ✓ | Each run clears only the subtrees it owns (`persons/`, `sources/`, `places/`, `media/`, `data/`, `vendor/`, and the `index.html`/`discoveries.html` files) before regenerating, so a record that becomes redacted loses its stale page |
 | Output-path safety | ✓ | Refuses (exit 3) to build into the archive root or another archive's folder (its `sources/` clear-on-rebuild would otherwise delete real records); the default `.cache/site/` is always safe |
 | Place page (M8.3) | ✓ | Name, coords as an OpenStreetMap **URL** (no embedded map), dated `history:`, claims naming the place, contained micro-places (`within:` children, linked), and a people-frequency list. `[L-id]` tokens in prose now link here. People links redact as everywhere; the people-frequency list omits redacted persons entirely so a standalone place page never names a living person |
 | Discoveries page (M8.3) | ✓ | Renders `notes/discoveries.md` through the same prose→HTML + token swap, so `[P-id]`/`[S-id]` mentions link (and living persons redact to "Living Person") for free. Missing/empty file → a plain "nothing logged yet" page |
 | Home page (M8.4) | ✓ | Surname A-Z index (built from `person_pages`, so redacted persons are already excluded), a recent-discoveries teaser (last 5 `##`/`###` sections or top-level bullets of `discoveries.md`, redacted), plus place and source navigation so every generated page is reachable |
 | Standalone redaction audit (M8.4) | ✓ | Enforced structurally: all cross-links resolve against the authoritative `person_pages`/`source_pages`/`place_pages` sets decided once in `prepare()`, so a page is linked only if it was generated. `tests/test_site.py` crawls every emitted standalone page (and every tree JSON node `url`) and asserts no `persons/`/`sources/` link points at a missing page |
 | Interactive tree rendering (M8.5) | ✓ | A vendored, dependency-free renderer (`templates/vendor/fha-tree.js`) + a single adapter seam (`tree-adapter.js`) map the neutral tree JSON contract (TOOLING §7/§14b) to an SVG collapsible tree; no D3, no CDN, works from file://. At build time the home page gets a **descendant** tree seeded from the apex of `root_person`'s line (so the explorer fans forward across the whole family — reconciling BUILD's "root person" with TOOLING's "root ancestor"); each curated person page gets a 3-generation **ancestor** pedigree. JSON is written to `site/data/tree_{P-id}_{mode}.json` (the reusable artifact) **and** embedded inline (read from the DOM, not fetched — file:// has no network). Redaction is applied server-side in the JSON (living/unknown → "Living Person", no vitals, no link), so a published tree file never carries a living person's name or a link to a page that wasn't generated. The home descendant explorer passes a bounded `initialDepth` to the renderer (deeper generations start collapsed) so a large family doesn't paint thousands of nodes at once; the data stays complete and the reader expands forward |
-| Exit codes | ✓ | 0 clean; 1 if any page warned (missing asset, malformed record, image that couldn't be processed); 3 (`EXIT_FAILURE`, the convention `fha packet` uses for can't-run refusals) for the Jinja2-missing, index-absent, and unsafe-output paths, each with a plain install / `fha index` / pick-another-folder hint |
+| Exit codes | ✓ | 0 clean; 1 if any page warned (missing asset, malformed record, image that couldn't be processed); 3 (`EXIT_FAILURE`, the convention `fha packet` uses for can't-run refusals) for the Jinja2-missing, index-absent, unsafe-output, malformed-`fha.yaml` (bad-config), and output-reset-failure paths, each with a plain hint (install Jinja2 / run `fha index` / pick another folder / fix `fha.yaml`) |
 
 `fha site`'s file is `tools/site.py`, but the module stem `site` collides with
 Python's stdlib `site`; `fha.py` (and `tests/test_site.py`) load it by path under

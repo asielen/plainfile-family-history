@@ -146,7 +146,7 @@ def _resolve_merged_person(
     conn: sqlite3.Connection, person: sqlite3.Row
 ) -> tuple[sqlite3.Row, list[str]]:
     """
-    Follow `merged_into` to the survivor (SPEC §8.8: "tools resolve
+    Follow `merged_into` to the survivor (SPEC §9: "tools resolve
     references through merged_into"). A merged tombstone's own `tier`/
     `living` are irrelevant once redirected — the survivor's gate checks
     apply instead. Guards against a corrupt merge cycle by capping the
@@ -178,7 +178,7 @@ def _resolve_merged_person(
 def _merged_alias_ids(conn: sqlite3.Connection, survivor_id: str) -> list[str]:
     """
     Every person id whose merged_into chain resolves to survivor_id (SPEC
-    §8.8), found by walking merged_into outward from the survivor rather
+    §9), found by walking merged_into outward from the survivor rather
     than assuming a single hop. Once `_resolve_merged_person` redirects pid
     to the survivor, sources/claims still citing one of these old ids must
     still be gathered, not dropped.
@@ -204,7 +204,7 @@ def _source_ids_for_person(conn: sqlite3.Connection, pids: list[str]) -> list[st
     extracted claims). Duplicated here rather than imported: tools never
     import tools (TOOLING §15).
 
-    pids carries the survivor plus any merged-away aliases (SPEC §8.8) so a
+    pids carries the survivor plus any merged-away aliases (SPEC §9) so a
     source that still cites an old id isn't dropped from the packet.
     """
     placeholders = ','.join('?' * len(pids))
@@ -431,7 +431,7 @@ def _build_timeline_text(
     grouping (no GENERATED header, no decade headers) — this is a one-shot
     export artifact, not a tracked, regenerable archive view.
 
-    pids carries the survivor plus any merged-away aliases (SPEC §8.8) so
+    pids carries the survivor plus any merged-away aliases (SPEC §9) so
     claims still attached to an old id still surface here.
     """
     if not included_source_ids:

@@ -43,7 +43,7 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "e3663a242f92c5e468ea32e6824d75efbce203c5c86255485e5f9b0409ab1225",
+      "sha256": "e2a621403f03ada291133dee2984b731351e63f9e57981c05714d31b62f29653",
       "spec_version": "1.2"
     },
     {
@@ -55,7 +55,7 @@
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "bd863905b2ed6722fb3cfc70b79809a6e384b3df163789b07400cad0d6b78c72",
+      "sha256": "16efdb3fc48be9263432f52ca170b953d76397993dddb43e7f41b453e7837a73",
       "spec_version": "1.2"
     },
     {
@@ -178,7 +178,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "828c3cfdde24dcc9e547e8e65a7bc60a82a77457f4002756d3b723e20e904d85",
+      "sha256": "d37f87a9869dadfca3f788ac3984ed12471e2ee40d76e5397624acceb36913ef",
       "spec_version": "1.2"
     },
     {
@@ -298,7 +298,7 @@
     {
       "path": "tools/packet.py",
       "category": "operating",
-      "sha256": "2aef6605532c9929fbf1a30db7799be871d397781bbbd1f91c100e6ea97bee78",
+      "sha256": "c70ccaa3b9dd7862b197cfe3298374161933b6183ea7323a077b356ae03ee9d4",
       "spec_version": "1.2"
     },
     {

@@ -558,6 +558,7 @@ Renders a curated profile to the user's **extended WikiTree dialect** (establish
 - `{{Ancestry Image|db|id}}` emitted from source `external_links` matching Ancestry image refs.
 - **Template hooks:** optional claim-type→infobox mappings (e.g. military service → `{{US Civil War}}` with enlisted/mustered fields) in `tools/wikitree_templates.yaml`.
 - Sections map 1:1 (the profile structure and the dialect already agree); `== Sources ==` ends with `<references/>`. Output to stdout or file; never uploads.
+- **Privacy (mandatory, SPEC §21 - fail closed, no opt-in).** WikiTree is a public-publication path, so it enforces the redaction contract with no `--include-living`/`--include-restricted` escape hatch (unlike `fha gedcom`'s `--include-living`): a `living: true`/`living: unknown` **subject** is refused outright; a profile that cites any `restricted: true`, `source_type: dna`, or `rights.publication_ok: false` source is refused (the offending sources are named for cleanup, not silently dropped); and any *other* living/unknown person referenced by a `[P-id]` token in the rendered prose is redacted to `[living person]`. Restricted/DNA sources are also filtered at the SQL layer as defense in depth.
 
 ---
 
