@@ -19,7 +19,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "0835adee634c9e3927d278eaabf1a8b1b56e7200058ce54c205c670cda2ae822",
+      "sha256": "c621df81e190693c507ac747848ea5828fd6a3798fa1ea9dfa3b0cedd74732c0",
       "spec_version": "1.2"
     },
     {
@@ -31,7 +31,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "231fc1c65e07cb4235741fb18097a072b16739caa579211ae1423a80f577328f",
+      "sha256": "4de4688ec454bb5a32a70827cadbf149ce051aa45e1fea385ff9d791e25132e5",
       "spec_version": "1.2"
     },
     {
@@ -43,19 +43,19 @@
     {
       "path": "README.md",
       "category": "operating",
-      "sha256": "7b1733fefdd92d3bea201854a7e6d0351de52ea9c5715f55ebf5b5a26cc7725a",
+      "sha256": "4d5c088152b205fa5feaf653e9db9f3944dc4f1aff7952a8b5812086fa0d7ae9",
       "spec_version": "1.2"
     },
     {
       "path": "SPEC.md",
       "category": "operating",
-      "sha256": "5518f1ef18efcc761ce2207e9668822d43f4efaa939d8e9660f8d971dcdb99e4",
+      "sha256": "5f3503e3312f8c599980701d9f211f45851bb7f087a1a018bd4fbe12fe03b56b",
       "spec_version": "1.2"
     },
     {
       "path": "TOOLING.md",
       "category": "operating",
-      "sha256": "0d4dcb6ac9a2b134ddab9a1618e21bb135e5ee122b9d9640c698845097b7f864",
+      "sha256": "4a6821d84eda1f58d8a22a2e30e7a56e76af539da0e047d9b336dc4ec3ec5458",
       "spec_version": "1.2"
     },
     {
@@ -67,7 +67,7 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "768522104dec9002ada6f62ab1513330db9d74ebc2394fd591ce9abf55dd1b30",
+      "sha256": "595561832e5f5066ef4321581d412354db61c5cf9fabdcbb72a5f70fbfaa1404",
       "spec_version": "1.2"
     },
     {
@@ -79,7 +79,7 @@
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "3c60918f830a4d1c9c4eb5d042684e7bfd8447e58d7d5d53104a76ab77f0d7ca",
+      "sha256": "c89a5cff6485cb91c9a836715a7127319c368d4a5209be81420110b6c0f9967d",
       "spec_version": "1.2"
     },
     {
@@ -91,13 +91,13 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "404ffe9c4344cc42e308ac630ba17adf1f1fdf589e3edd068154db9b179540cb",
+      "sha256": "88a485cfb5aec6be5b3059ff55b6e0edd196ce96a252770b0e4262801592b61e",
       "spec_version": "1.2"
     },
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "d4ac31527443685de83adbe37e1db84bab2a2912a19882f2ca02a08b5c6a8b0c",
+      "sha256": "be791ac11aa7b07cf7748b83e898d7615edf58c76ad2262dce8543d6a5b02e27",
       "spec_version": "1.2"
     },
     {
