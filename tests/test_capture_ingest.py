@@ -199,6 +199,90 @@ class IngestTestCase(unittest.TestCase):
         self.assertTrue(bad.exists())
         self.assertTrue(bad2.exists())
 
+    def test_numeric_scalar_fields_are_coerced_not_crashed(self) -> None:
+        # A JSON number where text is expected is forgivingly str()-coerced,
+        # never a crash that aborts the sweep.
+        _make_bundle(self.staging, 'b', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/1', 'asset_mode': 'none',
+                                   'notes': 42, 'title': 1880})
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        self.assertIn('42', self._stubs()[0].read_text(encoding='utf-8'))
+
+    def test_structural_bad_field_reported_and_sweep_continues(self) -> None:
+        # A list/dict where text belongs is structurally malformed → reported,
+        # left in place, and must NOT abort a good sibling sorted after it.
+        _make_bundle(self.staging, 'a-bad', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/1', 'asset_mode': 'none',
+                                   'notes': {'oops': 1}})
+        _make_bundle(self.staging, 'z-good', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/2', 'asset_mode': 'none'})
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)   # good sibling still filed
+        self.assertEqual(res.data['failed'], 1)
+        self.assertEqual(res.exit_code, EXIT_ERRORS)
+        self.assertEqual(len(self._stubs()), 1)
+        self.assertTrue((self.staging / 'a-bad').exists())  # left in place
+
+    def test_people_with_nonstring_elements_coerced(self) -> None:
+        _make_bundle(self.staging, 'b', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/1', 'asset_mode': 'none',
+                                   'people': ['Anna', None, 5]})
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        people = read_record(self._stubs()[0])['meta']['people']
+        self.assertIn('Anna', people)
+        self.assertIn('5', people)            # 5 → "5"
+        self.assertNotIn(None, people)        # null dropped
+
+    def test_non_utf8_capture_json_reported_not_crash(self) -> None:
+        bad = self.staging / 'a-bad'
+        bad.mkdir()
+        (bad / 'page.html').write_text('<html></html>', encoding='utf-8')
+        (bad / 'capture.json').write_bytes(b'{"url": "\xff\xfe not utf-8"}')
+        _make_bundle(self.staging, 'z-good', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/2', 'asset_mode': 'none'})
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        self.assertEqual(res.data['failed'], 1)
+        self.assertEqual(len(self._stubs()), 1)
+
+    def test_park_failure_counts_as_ingested_with_warning(self) -> None:
+        _make_bundle(self.staging, 'b', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/1', 'asset_mode': 'none'})
+        err = io.StringIO()
+        with mock.patch('capture._park_ingested', side_effect=OSError('disk full')), \
+                mock.patch('sys.stderr', err):
+            res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)       # the stub DID land
+        self.assertEqual(res.data['park_failed'], 1)
+        self.assertEqual(res.data['failed'], 0)         # not a failure-to-file
+        self.assertEqual(res.exit_code, EXIT_ERRORS)    # but surfaced as non-clean
+        self.assertEqual(len(self._stubs()), 1)
+        self.assertIn('could not park', err.getvalue())
+
+    def test_float_schema_still_warns(self) -> None:
+        _make_bundle(self.staging, 'f', page_html=_sample('ancestry'),
+                     capture_json={'schema': float(capture._CAPTURE_JSON_SCHEMA + 1),
+                                   'url': 'https://x/1', 'asset_mode': 'none'})
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            self._ingest()
+        self.assertIn('newer than this tool', err.getvalue())
+
+    def test_multi_extension_asset_detected(self) -> None:
+        _make_bundle(self.staging, 'b', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/1', 'asset_mode': 'manual'},
+                     asset=('asset.tar.gz', b'fake tarball'))
+        res = self._ingest()
+        self.assertEqual(res.data['ingested'], 1)
+        gz = [p for p in (self.archive / 'inbox').iterdir() if p.suffix == '.gz']
+        self.assertEqual(len(gz), 1)
+
     def test_pointer_only_bundle_flags_asset_elsewhere(self) -> None:
         _make_bundle(self.staging, 'pointer', page_html=_sample('ancestry'),
                      capture_json={'url': 'https://x/held-at-courthouse',

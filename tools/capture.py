@@ -921,20 +921,47 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, Path | None]:
     if not cap_path.is_file():
         raise BundleError("missing capture.json")
     try:
+        # ValueError catches BOTH json.JSONDecodeError (a ValueError) and a
+        # UnicodeDecodeError from non-UTF-8 bytes — the latter is NOT an OSError,
+        # so a mis-encoded capture.json must be converted to BundleError here or
+        # it escapes uncaught and aborts the whole sweep.
         cap = json.loads(cap_path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
         raise BundleError(f"could not read capture.json: {e}") from e
     if not isinstance(cap, dict):
         raise BundleError("capture.json is not a JSON object")
 
     # Forgiving schema check (never refuse): a newer companion may add fields a
     # current tool doesn't know — read what we share, nudge the human to update.
+    # Accept int OR float (`2.0`) since JSON numbers often deserialize as float.
     schema = cap.get('schema')
-    if isinstance(schema, int) and schema > _CAPTURE_JSON_SCHEMA:
+    if isinstance(schema, (int, float)) and not isinstance(schema, bool) \
+            and schema > _CAPTURE_JSON_SCHEMA:
         print(f'WARNING: bundle {bundle.name} declares capture.json schema '
               f'{schema}, newer than this tool reads ({_CAPTURE_JSON_SCHEMA}); '
               f'filing the fields it shares. Run `fha update-tools` if anything '
               f'looks missing.', file=sys.stderr)
+
+    # Normalize the fields that flow into run_capture so a type-malformed-but-
+    # JSON-valid value (a number `title`, a `null` in `people`) can't crash the
+    # engine mid-sweep — that would abort sibling bundles, breaking the resilient
+    # contract. Scalars are str()-coerced (forgiving: `1880` → "1880"); a
+    # list/dict where text belongs is structurally wrong → reported BundleError.
+    for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes'):
+        val = cap.get(key)
+        if val is None or isinstance(val, str):
+            continue
+        if isinstance(val, (list, dict)):
+            raise BundleError(
+                f"capture.json '{key}' must be text, got {type(val).__name__}")
+        cap[key] = str(val)
+    people = cap.get('people')
+    if people is not None:
+        if not isinstance(people, list):
+            people = [people]
+        # Drop nulls/nested structures; str()-coerce the rest (numbers etc.).
+        cap['people'] = [str(x) for x in people
+                         if x is not None and not isinstance(x, (list, dict))]
 
     asset: Path | None = None
     if cap.get('asset_mode') != 'none':
@@ -944,9 +971,12 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, Path | None]:
             if cand.is_file():
                 asset = cand
         if asset is None:
-            # Fall back to any file whose stem is `asset` (asset.jpg/.pdf/.html…).
+            # Fall back to any file named `asset.<ext>` (asset.jpg/.pdf/.html, and
+            # multi-extension like asset.tar.gz — `startswith` catches what a
+            # `stem == 'asset'` test would miss; a bare extensionless `asset` is
+            # skipped since it can't be staged with a suffix).
             for p in sorted(bundle.iterdir()):
-                if p.is_file() and p.stem == 'asset':
+                if p.is_file() and p.name.startswith('asset.'):
                     asset = p
                     break
     return cap, page.read_text(encoding='utf-8', errors='replace'), asset
@@ -992,6 +1022,7 @@ def run_ingest(
     ingested = 0
     skipped = 0
     failed = 0
+    park_failed = 0
 
     for bundle in bundles:
         name = bundle.name
@@ -1009,9 +1040,7 @@ def run_ingest(
             outcomes.append({'bundle': name, 'status': 'malformed', 'error': str(e)})
             continue
 
-        people = cap.get('people')
-        if people is not None and not isinstance(people, list):
-            people = [str(people)]
+        # cap fields are already type-normalized by _read_bundle.
         prefix = '[dry-run] ' if dry_run else ''
         print(f'{prefix}Ingesting bundle {name}:')
         try:
@@ -1025,11 +1054,22 @@ def run_ingest(
                 html=html,
                 accessed=cap.get('accessed'),
                 notes=cap.get('notes'),
-                people=people,
+                people=cap.get('people'),
                 dry_run=dry_run,
             )
         except (CaptureError, CaptureWriteError) as e:
             print(f'WARNING: could not ingest {name}: {e}', file=sys.stderr)
+            print(f'         left in place at {bundle}', file=sys.stderr)
+            failed += 1
+            outcomes.append({'bundle': name, 'status': 'failed', 'error': str(e)})
+            continue
+        except Exception as e:  # noqa: BLE001
+            # Resilient-ingest contract: one bundle must never abort the batch.
+            # _read_bundle normalizes known fields, but a recipe or an unforeseen
+            # input could still raise — report this bundle and keep sweeping
+            # rather than crashing out of the loop (and past the CLI guard).
+            print(f'WARNING: could not ingest {name}: unexpected error: {e}',
+                  file=sys.stderr)
             print(f'         left in place at {bundle}', file=sys.stderr)
             failed += 1
             outcomes.append({'bundle': name, 'status': 'failed', 'error': str(e)})
@@ -1041,33 +1081,38 @@ def run_ingest(
             outcomes.append({'bundle': name, 'status': 'dry-run',
                              'stub': result.data.get('stub')})
             continue
+        # The stub is now filed. A failed park does NOT un-file it, so the bundle
+        # counts as ingested — but warn, because the un-parked bundle would be
+        # re-swept (and duplicated) on the next run until moved by hand.
+        parked_ok = True
         try:
             _park_ingested(bundle, ingested_dir)
         except OSError as e:
-            # The stub already filed; only the parking move failed. Report it so
-            # the human can move the bundle by hand and avoid a re-ingest.
-            print(f'WARNING: ingested {name} but could not park it in '
-                  f'{_INGESTED_DIRNAME}/: {e}', file=sys.stderr)
-            failed += 1
-            outcomes.append({'bundle': name, 'status': 'parked-failed',
-                             'stub': result.data.get('stub')})
-            continue
+            parked_ok = False
+            park_failed += 1
+            print(f'WARNING: filed {name} into the inbox but could not park the '
+                  f'bundle in {_INGESTED_DIRNAME}/: {e}', file=sys.stderr)
+            print(f'         the stub IS filed — move or delete {bundle} by hand '
+                  f'so a re-run does not ingest it again.', file=sys.stderr)
         ingested += 1
-        outcomes.append({'bundle': name, 'status': 'ingested',
+        outcomes.append({'bundle': name,
+                         'status': 'ingested' if parked_ok else 'ingested-not-parked',
                          'stub': result.data.get('stub')})
 
     verb = 'Would ingest' if dry_run else 'Ingested'
     summary = f'{verb} {len(bundles) - skipped - failed} bundle(s)'
     if skipped:
         summary += f', skipped {skipped} already-ingested'
+    if park_failed:
+        summary += f', {park_failed} filed but not parked (bundle left in staging)'
     if failed:
         summary += f', {failed} left in place (see warnings)'
     print(summary + '.')
 
     return Result(
-        exit_code=EXIT_ERRORS if failed else EXIT_CLEAN,
+        exit_code=EXIT_ERRORS if (failed or park_failed) else EXIT_CLEAN,
         data={'status': 'ok', 'ingested': ingested, 'skipped': skipped,
-              'failed': failed, 'bundles': outcomes},
+              'failed': failed, 'park_failed': park_failed, 'bundles': outcomes},
         changed=changed,
     )
 
