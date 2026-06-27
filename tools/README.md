@@ -213,7 +213,7 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 | Tool | File | Status |
 |---|---|---|
 | `fha process FILE|FOLDER [--type TYPE] [--title …] [--date DATE] [--slug SLUG] [--people P-IDS] [--more FILE ROLE[:copy]] [--dry-run]` | `process.py` | ✓ M7.1-M7.4 - single-file documents and photos + `--more`; `--people` records known P-ids on photos at intake; folder triage + tier-1 variation detection (M7.3); `notes.md` bundle dissolution (M7.4); see "fha process - implementation status" below |
-| `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ M7.5-M7.7 - paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; see "fha capture - implementation status" below |
+| `fha capture [--url URL] [--title …] [--type TYPE] [--date DATE] [--asset FILE] [--ingest [DIR]] [--dry-run]` | `capture.py`, `capture_recipes/` | ✓ M7.5-M7.7 - paste-fallback web capture into an inbox source stub; generic recipe + Ancestry/FamilySearch/Newspapers.com/FindAGrave site recipes; M7.9 `--ingest` sweeps browser-staged bundles into the inbox; see "fha capture - implementation status" below |
 | `fha convert-mining [--apply]` | `convert_mining.py` | ✓ M7.8 - one-time legacy transcript-mining migration into conformant sources/claims/stubs/questions; dry-run by default; see "fha convert-mining - implementation status" below |
 
 ## Implemented tools (milestone 8)
@@ -418,6 +418,7 @@ S-id. Stdlib only (HTML parsed with `html.parser` - no third-party library).
 | `--dry-run` | ✓ | Previews the recipe match, stub path, optional asset copy, and research-log write without creating `inbox/` or `.cache/` |
 | Research-log entry | ✓ | Capture is itself a logged search: the row always appends to `.cache/capture_log.jsonl` (the durable copy `fha index` re-ingests into `search_log` on every full rebuild, since that table is dropped and recreated from scratch), and *also* goes straight into `.cache/index.sqlite`'s `search_log` table when it exists (so `fha report`'s "already searched" sees it immediately; `person_id`/`source_id` null - a stub has neither yet). A logging failure warns but never fails the capture |
 | No-asset capture (pointer-only) | ✓ | When the page only points elsewhere and no asset is saved, the stub is written with `asset_elsewhere: true` alongside its `external_links` (TOOLING §13b case (c)) - the explicit flag `fha process` requires before it will mint a source record with no companion file |
+| `--ingest [DIR]` (M7.9) | ✓ | Sweeps browser-staged bundles (`page.html` + optional `asset.*` + `capture.json`) from `DIR` (default: `fha.yaml` `capture_staging:` key, else `~/Downloads/fha-inbox`) into `inbox/`. Each bundle runs through `run_capture` wholesale (the `capture.json` `accessed`/`notes`/`people` fields override the scrape), so the stub is byte-identical to the paste path's; swept bundles are parked in `.ingested/`, never deleted. Idempotent (a parked name is skipped), resilient (a malformed bundle is reported + left in place, not aborting siblings), and WORKING_COPY-safe (writes only to `inbox/`). The local bridge for the browser companion (TOOLING_INGESTION §6) |
 | stdin encoding | ✓ | stdin is read as raw bytes and decoded UTF-8 (not the locale codec), so a piped page's en-dashes/accents survive into the stub |
 | Site recipes (M7.6/M7.7) | ✓ | `tools/capture_recipes/` plug-in modules (`detect`/`extract`, discovered at runtime, tried in ascending `PRIORITY`, generic fallback last): **Ancestry** (collection title, date, household/index persons, image URL), **FamilySearch** (title, date, collection, fact-table persons), **Newspapers.com** (publication, date, page, snippet, citation; `source_type: newspaper`), **FindAGrave** (memorial name, birth/death, cemetery as a place hint, family members). Each detects its own page by host (with an `og:site_name` fallback) and rejects the others'. A broken or failing recipe is skipped with a warning - the page still captures generically |
 
@@ -428,7 +429,10 @@ flag overrides + unknown-type/unclear-date refusal, `--dry-run` no-op,
 write-failure exit status, `--asset` stem pairing, slug/asset collision, the
 UTF-8 stdin path, each recipe's extraction, mutually-exclusive recipe detection,
 and the truncation/domain helpers. Run with `python -m unittest
-tests.test_capture -v` from the repo root.
+tests.test_capture -v` from the repo root. The `--ingest` sweep is covered
+separately by `tests/test_capture_ingest.py` (clean sweep + parking, the
+byte-identical-to-paste-path guarantee, dry-run no-op, idempotency, malformed-bundle
+resilience, pointer-only `asset_elsewhere`, and config/default staging resolution).
 
 ## fha convert-mining - implementation status
 

@@ -48,7 +48,7 @@ the insertion point in the same edit.
 | 4 | Layer 4 - Cross-reference & connection | M4.1-M4.4 | ✓ shipped - M4.1 (`fha xref`), M4.2 (`fha cooccur`), M4.3 (`fha find --related`), M4.4 (`fha confirm` - the read-only detectors' write-back layer) |
 | 5 | Layer 5 - Research report | M5.1-M5.3 | ✓ shipped - M5.1 (`fha report` §0-4 + snapshot), M5.2 (§5/§5b search-log + answerable questions), M5.3 (§6-8 photo triage/place candidates/hypotheses/cooccur) |
 | 6 | Layer 6 - Data output | M6.1-M6.5 | ✓ shipped - M6.1 (`fha packet`), M6.2 (`fha places lint`/`candidates`), M6.3 (`fha places geocode`), M6.4 (`fha gedcom`), M6.5 (`fha wikitree`) |
-| 7 | Layer 7 - Intake pipeline | M7.1-M7.8 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`) |
+| 7 | Layer 7 - Intake pipeline | M7.1-M7.9 | ✓ shipped - M7.1-M7.4 (`fha process`: documents, photos + `--more`, folder triage + variation detection, bundle dissolution); M7.5 (`fha capture` paste fallback + generic recipe), M7.6-M7.7 (`fha capture` site recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave), M7.8 (`fha convert-mining`), M7.9 (`fha capture --ingest` staged-bundle sweep) |
 | 8 | Layer 8 - Publication | M8.1-M8.5 | ✓ shipped - M8.1 (`fha site` foundations: query layer, Jinja2, source page), M8.2 (person page), M8.3 (place + discoveries pages), M8.4 (home page + standalone redaction audit), M8.5 (interactive trees via a vendored, dependency-free renderer + adapter seam) |
 | 9 | Layer 9 - Scaffolding | M9.1-M9.2 | ✓ shipped - M9.1 (`fha install` + `manifest.json`: bootstrap an archive's operating layer + skeleton, stamp `.plainfile-version`, zip/git-free), M9.2 (`fha update-tools`: refresh the operating layer, back up customized/retired files, never delete, never touch skeleton seeds) |
 | 10 | Layer 10 - Working-copy mode | M10.1 | ✓ shipped - `fha working-copy on|off|status`, marker plumbing, asset-check suppression, asset-command refusals |
@@ -1347,6 +1347,39 @@ questions → `notes/questions.md`. Write `.cache/convert_mapping.csv` (legacy_i
 ```sh
 fha convert-mining --root tests/fixtures/legacy-export         # dry-run: prints plan
 fha convert-mining --root tests/fixtures/legacy-export --apply # writes; lint exits clean
+```
+
+---
+
+### M7.9 - `fha capture --ingest` - the staged-bundle sweep (✓ shipped)
+
+**One PR.** Extend `tools/capture.py` with a new mode (not a new tool): `fha capture
+--ingest [DIR] [--dry-run]` (TOOLING_INGESTION §6). This is the local bridge from a
+browser-staged bundle to a real inbox stub - the prerequisite for the browser companion
+(§5), whose only output is such a bundle and which nothing consumed before this.
+
+Algorithm: resolve `DIR` (explicit arg → `fha.yaml` `capture_staging:` → default
+`~/Downloads/fha-inbox`). For each `<slug>-<timestamp>/` bundle (`page.html` + optional
+`asset.*` + `capture.json`, §3): read + validate it, then run `run_capture` wholesale -
+`page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as explicit
+overrides (`url`/`title`/`type`/`date`/`accessed`/`notes`/`people`). `run_capture` gained
+optional `accessed`/`notes`/`people` params (inert when unset, so the paste path stays
+byte-identical), so the ingested stub equals the paste-fallback's exactly. On success the
+bundle is **parked** in `.ingested/` (moved, never hard-deleted). Idempotent (a name already
+in `.ingested/` is skipped); resilient (a malformed bundle - missing `page.html`, bad
+`capture.json` - is reported and left in place, never aborting siblings); `--dry-run` writes
+nothing. Writes only to `inbox/`, so it stays available in WORKING_COPY mode. Pointer-only
+(`asset_mode: none`) bundles flow through with no asset → the stub's existing
+`asset_elsewhere: true` path fires (case (c)).
+
+Add `tests/test_capture_ingest.py` (builds bundles in a temp staging dir from the existing
+`capture-samples/*.html`).
+
+**Done when:**
+```sh
+fha capture --ingest tests/fixtures/capture-staging/clean --dry-run  # plan only, no writes
+fha capture --ingest <staging-dir>                                   # stubs in inbox/, bundles parked
+# ingested stub is byte-identical to the paste-fallback's; re-run is a no-op
 ```
 
 ---

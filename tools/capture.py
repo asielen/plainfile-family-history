@@ -61,6 +61,8 @@ library (the project adds no dependency before Jinja2 in M8).
 #
 #  Top-level + CLI
 #    run_capture               — read HTML, choose recipe, write stub + asset + log
+#    run_ingest                — sweep staged bundles (§6) → run_capture per bundle
+#    _resolve_staging_dir / _iter_bundles / _read_bundle / _park_ingested
 #    register / _run_capture / _standalone_main
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -639,6 +641,15 @@ class CaptureWriteError(Exception):
     """
 
 
+class BundleError(Exception):
+    """A staged bundle that `--ingest` cannot read (TOOLING_INGESTION §6).
+
+    A malformed bundle (missing `page.html`, unreadable/invalid `capture.json`)
+    is reported and left in place — never half-ingested, never silently dropped
+    — and must not abort the sweep of its sibling bundles.
+    """
+
+
 def _read_html(asset: Path | None) -> str:
     """Read page HTML from stdin, falling back to an HTML `--asset` file.
 
@@ -680,6 +691,9 @@ def run_capture(
     source_date: str | None,
     asset: Path | None,
     html: str,
+    accessed: str | None = None,
+    notes: str | None = None,
+    people: list[str] | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Capture a page into an inbox source stub and log the search (TOOLING §13b).
@@ -690,6 +704,14 @@ def run_capture(
     structured-result contract — and the staged stub/asset are listed in
     `changed` (empty under --dry-run).  Raises CaptureError/CaptureWriteError for
     the `_run_capture` bridge to translate into exit codes.
+
+    `accessed`/`notes`/`people` are the staged-bundle override seam (the
+    `--ingest` sweep, TOOLING_INGESTION §6): they default to inert (`None`), so
+    the paste-fallback path is byte-identical.  When supplied they win over the
+    scrape the same way `--title`/`--type`/`--date` do — `accessed` is the date
+    the human actually viewed the page, `notes` is their free-text body, and
+    `people` are their curated name hints (unioned ahead of any recipe-found
+    names, deduplicated).
     """
     recipes = _load_site_recipes()
     recipe_name, result = choose_recipe(html, url, recipes)
@@ -723,11 +745,23 @@ def run_capture(
         else:
             result.source_date = normalized
 
+    # Staged-bundle overrides (TOOLING_INGESTION §6): the human's curated body and
+    # names win over the recipe's scrape, exactly like --title/--type/--date above.
+    if notes is not None:
+        result.body = notes
+    if people is not None:
+        # Human names first, then any recipe-found name not already present
+        # (case-insensitive dedup, preserving each name's first-seen spelling).
+        seen = {name.strip().lower() for name in people}
+        merged = list(people)
+        merged += [n for n in result.people if n.strip().lower() not in seen]
+        result.people = merged
+
     # An explicit --url that no recipe surfaced still belongs in external_links.
     if url and not any((isinstance(l, dict) and l.get('url') == url) for l in result.external_links):
         result.external_links.insert(0, {'url': url})
 
-    accessed = _today()
+    accessed = accessed or _today()
     if not result.title:
         result.title = domain_of(url) or 'captured page'
 
@@ -812,6 +846,201 @@ def _rel(path: Path, archive_root: Path) -> str:
         return path.as_posix()
 
 
+# ── Ingest: sweep staged bundles into the inbox (TOOLING_INGESTION §6) ──────────
+
+# Where the browser companion (and the bookmarklet / native host) drop staged
+# bundles when nothing reroutes the browser's downloads. `--ingest` sweeps from
+# here into the archive's real `inbox/` — the one sanctioned move at intake.
+_DEFAULT_STAGING = '~/Downloads/fha-inbox'
+# Swept bundles are *parked* here, never hard-deleted (never-lose-the-human's-work).
+_INGESTED_DIRNAME = '.ingested'
+
+
+def _resolve_staging_dir(staging_arg: str | None, fha_config: dict) -> Path:
+    """Resolve the staging folder: explicit arg → fha.yaml `capture_staging:` → default.
+
+    `capture_staging` is *not* an archive root (it lives under the browser's
+    Downloads tree, outside the archive), so it is read straight off the config
+    and `~`-expanded — never routed through `resolve_path`, which would anchor it
+    under the archive root.
+    """
+    if staging_arg:
+        return Path(staging_arg).expanduser().resolve()
+    configured = fha_config.get('capture_staging')
+    if configured:
+        return Path(str(configured)).expanduser().resolve()
+    return Path(_DEFAULT_STAGING).expanduser().resolve()
+
+
+def _iter_bundles(staging: Path) -> list[Path]:
+    """Bundle subfolders of `staging`, excluding the `.ingested/` parking lot.
+
+    Sorted by name so a sweep is deterministic (the `<slug>-<timestamp>` naming
+    makes that chronological in practice).
+    """
+    return sorted(
+        d for d in staging.iterdir()
+        if d.is_dir() and d.name != _INGESTED_DIRNAME
+    )
+
+
+def _read_bundle(bundle: Path) -> tuple[dict, str, Path | None]:
+    """Read a staged bundle (§3 contract): `capture.json` + `page.html` + optional asset.
+
+    Raises BundleError (left-in-place, reported) when the bundle is malformed:
+    missing `page.html`, or a missing/unreadable/invalid `capture.json`. The
+    asset is optional — absent for case-(c) pointer-only captures, and skipped
+    when `capture.json` declares `asset_mode: none`.
+    """
+    page = bundle / 'page.html'
+    if not page.is_file():
+        raise BundleError("missing page.html (the raw captured DOM)")
+    cap_path = bundle / 'capture.json'
+    if not cap_path.is_file():
+        raise BundleError("missing capture.json")
+    try:
+        cap = json.loads(cap_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as e:
+        raise BundleError(f"could not read capture.json: {e}") from e
+    if not isinstance(cap, dict):
+        raise BundleError("capture.json is not a JSON object")
+
+    asset: Path | None = None
+    if cap.get('asset_mode') != 'none':
+        named = cap.get('asset_file')
+        if named:
+            cand = bundle / str(named)
+            if cand.is_file():
+                asset = cand
+        if asset is None:
+            # Fall back to any file whose stem is `asset` (asset.jpg/.pdf/.html…).
+            for p in sorted(bundle.iterdir()):
+                if p.is_file() and p.stem == 'asset':
+                    asset = p
+                    break
+    return cap, page.read_text(encoding='utf-8', errors='replace'), asset
+
+
+def _park_ingested(bundle: Path, ingested_dir: Path) -> None:
+    """Move a swept bundle into `.ingested/` (never hard-delete)."""
+    ingested_dir.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(bundle), str(ingested_dir / bundle.name))
+
+
+def run_ingest(
+    archive_root: Path,
+    fha_config: dict,
+    *,
+    staging_dir: str | None,
+    dry_run: bool = False,
+) -> Result:
+    """Sweep staged capture bundles into the inbox (TOOLING_INGESTION §6).
+
+    Each `<slug>-<timestamp>/` bundle is fed through `run_capture` wholesale —
+    `page.html` as the HTML, the asset as `--asset`, the `capture.json` fields as
+    explicit overrides — so the stub is byte-identical to the paste-fallback's.
+    On success the bundle is parked in `.ingested/`. The sweep is idempotent
+    (a name already parked is skipped) and resilient (a malformed bundle is
+    reported and left in place, never aborting its siblings).
+    """
+    staging = _resolve_staging_dir(staging_dir, fha_config)
+    if not staging.is_dir():
+        print(f'No staging folder at {staging} — nothing to ingest.')
+        print('Capture bundles land there from the browser companion; '
+              'point --ingest at a folder or set capture_staging: in fha.yaml.')
+        return Result(exit_code=EXIT_CLEAN, data={'status': 'no-staging', 'ingested': 0})
+
+    ingested_dir = staging / _INGESTED_DIRNAME
+    bundles = _iter_bundles(staging)
+    if not bundles:
+        print(f'No staged bundles in {staging}.')
+        return Result(exit_code=EXIT_CLEAN, data={'status': 'empty', 'ingested': 0})
+
+    changed: list[str] = []
+    outcomes: list[dict] = []
+    ingested = 0
+    skipped = 0
+    failed = 0
+
+    for bundle in bundles:
+        name = bundle.name
+        if (ingested_dir / name).exists():
+            print(f'Skipping {name} — already ingested (in {_INGESTED_DIRNAME}/).')
+            skipped += 1
+            outcomes.append({'bundle': name, 'status': 'skipped'})
+            continue
+        try:
+            cap, html, asset = _read_bundle(bundle)
+        except BundleError as e:
+            print(f'WARNING: skipping malformed bundle {name}: {e}', file=sys.stderr)
+            print(f'         left in place at {bundle}', file=sys.stderr)
+            failed += 1
+            outcomes.append({'bundle': name, 'status': 'malformed', 'error': str(e)})
+            continue
+
+        people = cap.get('people')
+        if people is not None and not isinstance(people, list):
+            people = [str(people)]
+        prefix = '[dry-run] ' if dry_run else ''
+        print(f'{prefix}Ingesting bundle {name}:')
+        try:
+            result = run_capture(
+                archive_root, fha_config,
+                url=cap.get('url'),
+                title=cap.get('title'),
+                source_type=cap.get('source_type'),
+                source_date=cap.get('source_date'),
+                asset=asset,
+                html=html,
+                accessed=cap.get('accessed'),
+                notes=cap.get('notes'),
+                people=people,
+                dry_run=dry_run,
+            )
+        except (CaptureError, CaptureWriteError) as e:
+            print(f'WARNING: could not ingest {name}: {e}', file=sys.stderr)
+            print(f'         left in place at {bundle}', file=sys.stderr)
+            failed += 1
+            outcomes.append({'bundle': name, 'status': 'failed', 'error': str(e)})
+            continue
+
+        changed.extend(result.changed)
+        if dry_run:
+            print(f'[dry-run] Would park {name} in {_INGESTED_DIRNAME}/')
+            outcomes.append({'bundle': name, 'status': 'dry-run',
+                             'stub': result.data.get('stub')})
+            continue
+        try:
+            _park_ingested(bundle, ingested_dir)
+        except OSError as e:
+            # The stub already filed; only the parking move failed. Report it so
+            # the human can move the bundle by hand and avoid a re-ingest.
+            print(f'WARNING: ingested {name} but could not park it in '
+                  f'{_INGESTED_DIRNAME}/: {e}', file=sys.stderr)
+            failed += 1
+            outcomes.append({'bundle': name, 'status': 'parked-failed',
+                             'stub': result.data.get('stub')})
+            continue
+        ingested += 1
+        outcomes.append({'bundle': name, 'status': 'ingested',
+                         'stub': result.data.get('stub')})
+
+    verb = 'Would ingest' if dry_run else 'Ingested'
+    summary = f'{verb} {len(bundles) - skipped - failed} bundle(s)'
+    if skipped:
+        summary += f', skipped {skipped} already-ingested'
+    if failed:
+        summary += f', {failed} left in place (see warnings)'
+    print(summary + '.')
+
+    return Result(
+        exit_code=EXIT_ERRORS if failed else EXIT_CLEAN,
+        data={'status': 'ok', 'ingested': ingested, 'skipped': skipped,
+              'failed': failed, 'bundles': outcomes},
+        changed=changed,
+    )
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -835,6 +1064,9 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help="Override the source's own date, e.g. 1880 or 'about 1880'")
     p.add_argument('--asset', metavar='FILE',
                    help='Asset to stage alongside the stub (an image, or the saved page HTML)')
+    p.add_argument('--ingest', nargs='?', const=True, default=False, metavar='DIR',
+                   help='Sweep staged capture bundles from DIR (default: the '
+                        'capture_staging folder or ~/Downloads/fha-inbox) into the inbox')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
@@ -847,6 +1079,20 @@ def _run_capture(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
+
+    # The --ingest sweep is a distinct mode: it reads staged bundles, not stdin.
+    ingest = getattr(args, 'ingest', False)
+    if ingest:
+        staging_dir = ingest if isinstance(ingest, str) else None
+        try:
+            return run_ingest(
+                archive_root, fha_config,
+                staging_dir=staging_dir,
+                dry_run=bool(getattr(args, 'dry_run', False)),
+            ).exit_code
+        except CaptureWriteError as e:
+            print(f'ERROR: {e}', file=sys.stderr)
+            return EXIT_FAILURE
 
     asset: Path | None = None
     if args.asset:

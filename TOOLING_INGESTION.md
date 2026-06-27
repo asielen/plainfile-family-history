@@ -77,7 +77,7 @@ Capture reads the **open DOM/HTML only**. It does not log in, paginate, query AP
 | `--type TYPE` | override the inferred `source_type` (controlled vocabulary) |
 | `--date DATE` | override the source's own date (EDTF or loose natural language) |
 | `--asset FILE` | an image/document to stage, or the saved page HTML to read |
-| `--ingest [DIR]` | **(planned, §6 — not yet implemented)** sweep staged companion bundles into the inbox |
+| `--ingest [DIR]` | sweep staged companion bundles from `DIR` (default: `fha.yaml` `capture_staging:`, else `~/Downloads/fha-inbox`) into the inbox (§6) |
 | `--dry-run` | preview every write without touching disk |
 
 Exit: `0` clean · `2` user error (bad `--type`/`--date`, asset destination clash) · `3` filesystem failure while staging. Tracebacks never reach the user; every error names a cause and the next command.
@@ -279,7 +279,7 @@ These bind every delivery form and the engine alike:
 |---|---|
 | Engine `fha capture` (paste fallback, recipes, generic, stub render, research-log) | **built** ([`tools/capture.py`](tools/capture.py)) |
 | Recipes: Ancestry, FamilySearch, Newspapers.com, FindAGrave + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
-| `fha capture --ingest` sweep (§6) | **designed, not built** |
+| `fha capture --ingest` sweep (§6) | **built** ([`tools/capture.py`](tools/capture.py) `run_ingest`; BUILD.md M7.9) |
 | Browser extension (§5) | **designed, not built** - lives in `browser-companion/`, not the archive operating layer |
 | Native-messaging host (§5.7) | **designed, not built** - optional v2 |
 | Bookmarklet (§4.2) | **designed, not built** |
@@ -290,7 +290,7 @@ The build order that follows the spine's own logic: `--ingest` first (it makes *
 
 ## 9. Open questions (deferred, not decided)
 
-- **Capture-folder discovery.** Default `~/Downloads/fha-inbox/` vs. an `fha.yaml` `capture_staging:` key vs. asking once and remembering in extension `storage` - resolve when `--ingest` is built.
+- **Capture-folder discovery.** *Resolved when `--ingest` was built (M7.9):* the sweep resolves `DIR` in the order **explicit positional arg → `fha.yaml` `capture_staging:` key → default `~/Downloads/fha-inbox/`**. `capture_staging` is read straight off the config and `~`-expanded - it is *not* an archive root (it lives under the browser's Downloads tree), so it is never routed through `resolve_path`. The extension's own `storage` of a chosen folder is a browser-side convenience layered on top, not a backend concern.
 - **Tiled-viewer assets.** The Ancestry image viewer serves tiles, not a single file; case-(a) fetch can't reassemble them. v1 answer is the (c) screenshot `provisional-image`; a tile-stitcher is explicitly out of scope (and near the §2.4 boundary).
 - **Single-file vs. PDF as the case-(b) default.** Single-file HTML stays scrapeable and is one-click in MV3, but bloats on image-heavy pages and can miss CORS-locked sub-resources; PDF renders faithfully but isn't reliably one-click (needs `chrome.debugger` or the native host) and can't be re-parsed. v1 leans single-file, with PDF offered via the human's *Save as PDF* + drag-drop (c). Whether to bundle a vendored SingleFile-style inliner or write a minimal one is a build-time call.
 - **How much to inline.** Images and CSS are the must-haves for case (b); fonts, web-components, and lazy-loaded media are diminishing returns against snapshot size. Settle the inlining scope when the extension is built.
