@@ -61,6 +61,8 @@ library (the project adds no dependency before Jinja2 in M8).
 #
 #  Top-level + CLI
 #    run_capture               — read HTML, choose recipe, write stub + asset + log
+#    run_ingest                — sweep staged bundles (§6) → run_capture per bundle
+#    _resolve_staging_dir / _iter_bundles / _read_bundle / _park_ingested
 #    register / _run_capture / _standalone_main
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,6 +116,13 @@ _GENERIC_SOURCE_TYPE = 'website'
 # Visible-text body is a citation *basis*, not the whole page — cap it so a long
 # article doesn't bloat every stub (BUILD.md M7.5: "visible text … ~2000 chars").
 _BODY_CHAR_CAP = 2000
+
+# Staged-bundle `capture.json` schema version (TOOLING_INGESTION §3). Bump only on
+# an INCOMPATIBLE shape change. Ingest is forgiving: an absent `schema` is treated
+# as current (legacy/hand-authored bundles), and a NEWER schema is read for the
+# fields it shares with a one-line warning — never refused. So a companion can add
+# fields without breaking older tools, and newer tools read older bundles as-is.
+_CAPTURE_JSON_SCHEMA = 1
 
 
 def _today() -> str:
@@ -639,6 +648,15 @@ class CaptureWriteError(Exception):
     """
 
 
+class BundleError(Exception):
+    """A staged bundle that `--ingest` cannot read (TOOLING_INGESTION §6).
+
+    A malformed bundle (missing `page.html`, unreadable/invalid `capture.json`)
+    is reported and left in place — never half-ingested, never silently dropped
+    — and must not abort the sweep of its sibling bundles.
+    """
+
+
 def _read_html(asset: Path | None) -> str:
     """Read page HTML from stdin, falling back to an HTML `--asset` file.
 
@@ -680,6 +698,9 @@ def run_capture(
     source_date: str | None,
     asset: Path | None,
     html: str,
+    accessed: str | None = None,
+    notes: str | None = None,
+    people: list[str] | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Capture a page into an inbox source stub and log the search (TOOLING §13b).
@@ -690,6 +711,14 @@ def run_capture(
     structured-result contract — and the staged stub/asset are listed in
     `changed` (empty under --dry-run).  Raises CaptureError/CaptureWriteError for
     the `_run_capture` bridge to translate into exit codes.
+
+    `accessed`/`notes`/`people` are the staged-bundle override seam (the
+    `--ingest` sweep, TOOLING_INGESTION §6): they default to inert (`None`), so
+    the paste-fallback path is byte-identical.  When supplied they win over the
+    scrape the same way `--title`/`--type`/`--date` do — `accessed` is the date
+    the human actually viewed the page, `notes` is their free-text body, and
+    `people` are their curated name hints (unioned ahead of any recipe-found
+    names, deduplicated).
     """
     recipes = _load_site_recipes()
     recipe_name, result = choose_recipe(html, url, recipes)
@@ -723,11 +752,23 @@ def run_capture(
         else:
             result.source_date = normalized
 
+    # Staged-bundle overrides (TOOLING_INGESTION §6): the human's curated body and
+    # names win over the recipe's scrape, exactly like --title/--type/--date above.
+    if notes is not None:
+        result.body = notes
+    if people is not None:
+        # Human names first, then any recipe-found name not already present
+        # (case-insensitive dedup, preserving each name's first-seen spelling).
+        seen = {name.strip().lower() for name in people}
+        merged = list(people)
+        merged += [n for n in result.people if n.strip().lower() not in seen]
+        result.people = merged
+
     # An explicit --url that no recipe surfaced still belongs in external_links.
     if url and not any((isinstance(l, dict) and l.get('url') == url) for l in result.external_links):
         result.external_links.insert(0, {'url': url})
 
-    accessed = _today()
+    accessed = accessed or _today()
     if not result.title:
         result.title = domain_of(url) or 'captured page'
 
@@ -812,6 +853,270 @@ def _rel(path: Path, archive_root: Path) -> str:
         return path.as_posix()
 
 
+# ── Ingest: sweep staged bundles into the inbox (TOOLING_INGESTION §6) ──────────
+
+# Where the browser companion (and the bookmarklet / native host) drop staged
+# bundles when nothing reroutes the browser's downloads. `--ingest` sweeps from
+# here into the archive's real `inbox/` — the one sanctioned move at intake.
+_DEFAULT_STAGING = '~/Downloads/fha-inbox'
+# Swept bundles are *parked* here, never hard-deleted (never-lose-the-human's-work).
+_INGESTED_DIRNAME = '.ingested'
+
+
+def _resolve_staging_dir(staging_arg: str | None, fha_config: dict) -> Path:
+    """Resolve the staging folder: explicit arg → fha.yaml `capture_staging:` → default.
+
+    `capture_staging` is *not* an archive root (it lives under the browser's
+    Downloads tree, outside the archive), so it is read straight off the config
+    and `~`-expanded — never routed through `resolve_path`, which would anchor it
+    under the archive root.
+    """
+    if staging_arg:
+        return Path(staging_arg).expanduser().resolve()
+    configured = fha_config.get('capture_staging')
+    if configured:
+        return Path(str(configured)).expanduser().resolve()
+    return Path(_DEFAULT_STAGING).expanduser().resolve()
+
+
+def _iter_bundles(staging: Path) -> list[Path]:
+    """Bundle subfolders of `staging`, excluding the `.ingested/` parking lot.
+
+    Sorted by name so a sweep is deterministic (the `<slug>-<timestamp>` naming
+    makes that chronological in practice).
+    """
+    return sorted(
+        d for d in staging.iterdir()
+        if d.is_dir() and d.name != _INGESTED_DIRNAME
+    )
+
+
+def staged_bundles(fha_config: dict, staging_dir: str | None = None) -> tuple[Path, list[Path]]:
+    """Resolve the staging folder and list its un-ingested bundles.
+
+    The shared discovery used by both `run_ingest` (to sweep) and `fha doctor`
+    (to nudge "you have N captures waiting"). A bundle whose name is already
+    parked in `.ingested/` is excluded, so the count reflects real outstanding
+    work. Returns `(staging_dir, [])` when the folder doesn't exist yet.
+    """
+    staging = _resolve_staging_dir(staging_dir, fha_config)
+    if not staging.is_dir():
+        return staging, []
+    ingested = staging / _INGESTED_DIRNAME
+    return staging, [b for b in _iter_bundles(staging) if not (ingested / b.name).exists()]
+
+
+def _read_bundle(bundle: Path) -> tuple[dict, str, Path | None]:
+    """Read a staged bundle (§3 contract): `capture.json` + `page.html` + optional asset.
+
+    Raises BundleError (left-in-place, reported) when the bundle is malformed:
+    missing `page.html`, or a missing/unreadable/invalid `capture.json`. The
+    asset is optional — absent for case-(c) pointer-only captures, and skipped
+    when `capture.json` declares `asset_mode: none`.
+    """
+    page = bundle / 'page.html'
+    if not page.is_file():
+        raise BundleError("missing page.html (the raw captured DOM)")
+    cap_path = bundle / 'capture.json'
+    if not cap_path.is_file():
+        raise BundleError("missing capture.json")
+    try:
+        # ValueError catches BOTH json.JSONDecodeError (a ValueError) and a
+        # UnicodeDecodeError from non-UTF-8 bytes — the latter is NOT an OSError,
+        # so a mis-encoded capture.json must be converted to BundleError here or
+        # it escapes uncaught and aborts the whole sweep.
+        cap = json.loads(cap_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError) as e:
+        raise BundleError(f"could not read capture.json: {e}") from e
+    if not isinstance(cap, dict):
+        raise BundleError("capture.json is not a JSON object")
+
+    # Forgiving schema check (never refuse): a newer companion may add fields a
+    # current tool doesn't know — read what we share, nudge the human to update.
+    # Accept int OR float (`2.0`) since JSON numbers often deserialize as float.
+    schema = cap.get('schema')
+    if isinstance(schema, (int, float)) and not isinstance(schema, bool) \
+            and schema > _CAPTURE_JSON_SCHEMA:
+        print(f'WARNING: bundle {bundle.name} declares capture.json schema '
+              f'{schema}, newer than this tool reads ({_CAPTURE_JSON_SCHEMA}); '
+              f'filing the fields it shares. Run `fha update-tools` if anything '
+              f'looks missing.', file=sys.stderr)
+
+    # Normalize the fields that flow into run_capture so a type-malformed-but-
+    # JSON-valid value (a number `title`, a `null` in `people`) can't crash the
+    # engine mid-sweep — that would abort sibling bundles, breaking the resilient
+    # contract. Scalars are str()-coerced (forgiving: `1880` → "1880"); a
+    # list/dict where text belongs is structurally wrong → reported BundleError.
+    for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes'):
+        val = cap.get(key)
+        if val is None or isinstance(val, str):
+            continue
+        if isinstance(val, (list, dict)):
+            raise BundleError(
+                f"capture.json '{key}' must be text, got {type(val).__name__}")
+        cap[key] = str(val)
+    people = cap.get('people')
+    if people is not None:
+        if not isinstance(people, list):
+            people = [people]
+        # Drop nulls/nested structures; str()-coerce the rest (numbers etc.).
+        cap['people'] = [str(x) for x in people
+                         if x is not None and not isinstance(x, (list, dict))]
+
+    asset: Path | None = None
+    if cap.get('asset_mode') != 'none':
+        named = cap.get('asset_file')
+        if named:
+            cand = bundle / str(named)
+            if cand.is_file():
+                asset = cand
+        if asset is None:
+            # Fall back to any file named `asset.<ext>` (asset.jpg/.pdf/.html, and
+            # multi-extension like asset.tar.gz — `startswith` catches what a
+            # `stem == 'asset'` test would miss; a bare extensionless `asset` is
+            # skipped since it can't be staged with a suffix).
+            for p in sorted(bundle.iterdir()):
+                if p.is_file() and p.name.startswith('asset.'):
+                    asset = p
+                    break
+    return cap, page.read_text(encoding='utf-8', errors='replace'), asset
+
+
+def _park_ingested(bundle: Path, ingested_dir: Path) -> None:
+    """Move a swept bundle into `.ingested/` (never hard-delete)."""
+    ingested_dir.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(bundle), str(ingested_dir / bundle.name))
+
+
+def run_ingest(
+    archive_root: Path,
+    fha_config: dict,
+    *,
+    staging_dir: str | None,
+    dry_run: bool = False,
+) -> Result:
+    """Sweep staged capture bundles into the inbox (TOOLING_INGESTION §6).
+
+    Each `<slug>-<timestamp>/` bundle is fed through `run_capture` wholesale —
+    `page.html` as the HTML, the asset as `--asset`, the `capture.json` fields as
+    explicit overrides — so the stub is byte-identical to the paste-fallback's.
+    On success the bundle is parked in `.ingested/`. The sweep is idempotent
+    (a name already parked is skipped) and resilient (a malformed bundle is
+    reported and left in place, never aborting its siblings).
+    """
+    staging = _resolve_staging_dir(staging_dir, fha_config)
+    if not staging.is_dir():
+        print(f'No staging folder at {staging} — nothing to ingest.')
+        print('Capture bundles land there from the browser companion; '
+              'point --ingest at a folder or set capture_staging: in fha.yaml.')
+        return Result(exit_code=EXIT_CLEAN, data={'status': 'no-staging', 'ingested': 0})
+
+    ingested_dir = staging / _INGESTED_DIRNAME
+    bundles = _iter_bundles(staging)
+    if not bundles:
+        print(f'No staged bundles in {staging}.')
+        return Result(exit_code=EXIT_CLEAN, data={'status': 'empty', 'ingested': 0})
+
+    changed: list[str] = []
+    outcomes: list[dict] = []
+    ingested = 0
+    skipped = 0
+    failed = 0
+    park_failed = 0
+
+    for bundle in bundles:
+        name = bundle.name
+        if (ingested_dir / name).exists():
+            print(f'Skipping {name} — already ingested (in {_INGESTED_DIRNAME}/).')
+            skipped += 1
+            outcomes.append({'bundle': name, 'status': 'skipped'})
+            continue
+        try:
+            cap, html, asset = _read_bundle(bundle)
+        except BundleError as e:
+            print(f'WARNING: skipping malformed bundle {name}: {e}', file=sys.stderr)
+            print(f'         left in place at {bundle}', file=sys.stderr)
+            failed += 1
+            outcomes.append({'bundle': name, 'status': 'malformed', 'error': str(e)})
+            continue
+
+        # cap fields are already type-normalized by _read_bundle.
+        prefix = '[dry-run] ' if dry_run else ''
+        print(f'{prefix}Ingesting bundle {name}:')
+        try:
+            result = run_capture(
+                archive_root, fha_config,
+                url=cap.get('url'),
+                title=cap.get('title'),
+                source_type=cap.get('source_type'),
+                source_date=cap.get('source_date'),
+                asset=asset,
+                html=html,
+                accessed=cap.get('accessed'),
+                notes=cap.get('notes'),
+                people=cap.get('people'),
+                dry_run=dry_run,
+            )
+        except (CaptureError, CaptureWriteError) as e:
+            print(f'WARNING: could not ingest {name}: {e}', file=sys.stderr)
+            print(f'         left in place at {bundle}', file=sys.stderr)
+            failed += 1
+            outcomes.append({'bundle': name, 'status': 'failed', 'error': str(e)})
+            continue
+        except Exception as e:  # noqa: BLE001
+            # Resilient-ingest contract: one bundle must never abort the batch.
+            # _read_bundle normalizes known fields, but a recipe or an unforeseen
+            # input could still raise — report this bundle and keep sweeping
+            # rather than crashing out of the loop (and past the CLI guard).
+            print(f'WARNING: could not ingest {name}: unexpected error: {e}',
+                  file=sys.stderr)
+            print(f'         left in place at {bundle}', file=sys.stderr)
+            failed += 1
+            outcomes.append({'bundle': name, 'status': 'failed', 'error': str(e)})
+            continue
+
+        changed.extend(result.changed)
+        if dry_run:
+            print(f'[dry-run] Would park {name} in {_INGESTED_DIRNAME}/')
+            outcomes.append({'bundle': name, 'status': 'dry-run',
+                             'stub': result.data.get('stub')})
+            continue
+        # The stub is now filed. A failed park does NOT un-file it, so the bundle
+        # counts as ingested — but warn, because the un-parked bundle would be
+        # re-swept (and duplicated) on the next run until moved by hand.
+        parked_ok = True
+        try:
+            _park_ingested(bundle, ingested_dir)
+        except OSError as e:
+            parked_ok = False
+            park_failed += 1
+            print(f'WARNING: filed {name} into the inbox but could not park the '
+                  f'bundle in {_INGESTED_DIRNAME}/: {e}', file=sys.stderr)
+            print(f'         the stub IS filed — move or delete {bundle} by hand '
+                  f'so a re-run does not ingest it again.', file=sys.stderr)
+        ingested += 1
+        outcomes.append({'bundle': name,
+                         'status': 'ingested' if parked_ok else 'ingested-not-parked',
+                         'stub': result.data.get('stub')})
+
+    verb = 'Would ingest' if dry_run else 'Ingested'
+    summary = f'{verb} {len(bundles) - skipped - failed} bundle(s)'
+    if skipped:
+        summary += f', skipped {skipped} already-ingested'
+    if park_failed:
+        summary += f', {park_failed} filed but not parked (bundle left in staging)'
+    if failed:
+        summary += f', {failed} left in place (see warnings)'
+    print(summary + '.')
+
+    return Result(
+        exit_code=EXIT_ERRORS if (failed or park_failed) else EXIT_CLEAN,
+        data={'status': 'ok', 'ingested': ingested, 'skipped': skipped,
+              'failed': failed, 'park_failed': park_failed, 'bundles': outcomes},
+        changed=changed,
+    )
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -835,6 +1140,9 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help="Override the source's own date, e.g. 1880 or 'about 1880'")
     p.add_argument('--asset', metavar='FILE',
                    help='Asset to stage alongside the stub (an image, or the saved page HTML)')
+    p.add_argument('--ingest', nargs='?', const=True, default=False, metavar='DIR',
+                   help='Sweep staged capture bundles from DIR (default: the '
+                        'capture_staging folder or ~/Downloads/fha-inbox) into the inbox')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
@@ -847,6 +1155,20 @@ def _run_capture(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
+
+    # The --ingest sweep is a distinct mode: it reads staged bundles, not stdin.
+    ingest = getattr(args, 'ingest', False)
+    if ingest:
+        staging_dir = ingest if isinstance(ingest, str) else None
+        try:
+            return run_ingest(
+                archive_root, fha_config,
+                staging_dir=staging_dir,
+                dry_run=bool(getattr(args, 'dry_run', False)),
+            ).exit_code
+        except CaptureWriteError as e:
+            print(f'ERROR: {e}', file=sys.stderr)
+            return EXIT_FAILURE
 
     asset: Path | None = None
     if args.asset:
