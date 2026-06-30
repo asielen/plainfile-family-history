@@ -209,6 +209,45 @@ class IngestTestCase(unittest.TestCase):
         self.assertEqual(res.data['ingested'], 1)
         self.assertIn('42', self._stubs()[0].read_text(encoding='utf-8'))
 
+    def test_curated_people_merge_keeps_recipe_found_relatives(self) -> None:
+        # The capture.json people list is additive, not a replacement: the human's
+        # curated name comes first, but recipe-found household/family names (which
+        # the panel never showed) must NOT be dropped. The human's name leads.
+        _make_bundle(self.staging, 'b-people', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://www.ancestry.com/rec/9',
+                                   'asset_mode': 'none', 'people': ['Thomas Hartley']})
+        self._ingest()
+        people = read_record(self._stubs()[0])['meta']['people']
+        self.assertEqual(people[0], 'Thomas Hartley')          # human name leads
+        self.assertGreater(len(people), 1)                     # recipe relatives kept
+        # The ancestry sample's grid people survive the merge.
+        self.assertIn('Calvin Hartley', people)
+
+    def test_capture_json_repository_override(self) -> None:
+        # A human correction to "Where it's from" (capture.json repository) wins
+        # over the recipe/host guess.
+        _make_bundle(self.staging, 'b-repo', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://www.ancestry.com/rec/3',
+                                   'asset_mode': 'none',
+                                   'repository': 'Andrews Family Bible'})
+        self._ingest()
+        self.assertEqual(read_record(self._stubs()[0])['meta']['repository'],
+                         'Andrews Family Bible')
+
+    def test_bundle_with_missing_declared_asset_is_malformed(self) -> None:
+        # A schema-2 assets entry naming a file absent on disk is an incomplete
+        # capture: reported malformed and left in staging, never filed.
+        _make_bundle(self.staging, 'a-missing', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/1', 'schema': 2,
+                                   'assets': [{'file': 'record.jpg', 'role': 'record'}]})
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            res = self._ingest()
+        self.assertEqual(res.data['failed'], 1)
+        self.assertEqual(self._stubs(), [])                  # nothing filed
+        self.assertTrue((self.staging / 'a-missing').exists())  # left in place
+        self.assertIn('missing', err.getvalue())
+
     def test_structural_bad_field_reported_and_sweep_continues(self) -> None:
         # A list/dict where text belongs is structurally malformed → reported,
         # left in place, and must NOT abort a good sibling sorted after it.
@@ -340,7 +379,7 @@ class IngestTestCase(unittest.TestCase):
         self.assertTrue((folder / 'notes.md').is_file())
         self.assertTrue((folder / 'record.jpg').is_file())
         self.assertTrue((folder / 'page-snapshot.html').is_file())
-        # page.html is the scrape source, consumed at ingest — never filed.
+        # page.html is the scrape source, consumed at ingest - never filed.
         self.assertFalse((folder / 'page.html').exists())
 
         rec = read_record(folder / 'notes.md')
@@ -370,7 +409,7 @@ class IngestTestCase(unittest.TestCase):
         # and is the single companion of the lone-sidecar stub.
         bundle = self.staging / 'snapshot-only'
         bundle.mkdir(parents=True)
-        # No page.html — only the single-file snapshot asset.
+        # No page.html - only the single-file snapshot asset.
         (bundle / 'page-snapshot.html').write_text(_sample('ancestry'), encoding='utf-8')
         (bundle / 'capture.json').write_text(json.dumps({
             'schema': 2, 'url': 'https://www.ancestry.com/rec/1', 'accessed': '2026-06-24',

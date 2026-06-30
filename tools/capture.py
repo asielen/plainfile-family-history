@@ -70,19 +70,24 @@ library (the project adds no dependency before Jinja2 in M8).
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
 import datetime
 import functools
 import importlib
 import json
+import os
 import pkgutil
 import re
 import shutil
 import sqlite3
+import struct
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -99,6 +104,7 @@ from _lib import (
     is_valid_edtf,
     load_fha_yaml,
     normalize_date,
+    read_record,
     resolve_path,
     resolve_root_arg,
 )
@@ -112,6 +118,27 @@ configure_utf8_stdout()
 # emit the controlled-vocabulary value so the staged stub processes cleanly -
 # `fha process` refuses an out-of-vocabulary source_type hint.
 _GENERIC_SOURCE_TYPE = 'website'
+
+# A trailing " | Site Name" / " — Site Name" tail on a page <title> is site
+# chrome, not the record title (e.g. KU Libraries Digital Collections). Stripped
+# only off the page.title fallback, never off og:title. The plain hyphen is
+# deliberately NOT a separator here: a record title like "Jane Smith - 1920
+# Census" legitimately uses one, and stripping it would drop the descriptor (and
+# hide the year from the harvest below).
+_SITE_SUFFIX_RE = re.compile(r'\s+[|–—]\s+[^|–—]+$')
+
+# A four-digit year (1500s-2099) to harvest as the source_date guess when a page
+# ships no explicit published date - the same window the recipes' harvest uses.
+_GENERIC_YEAR_RE = re.compile(r'\b(1[5-9]\d{2}|20\d{2})\b')
+
+
+def _strip_site_suffix(title: str | None) -> str | None:
+    """Drop a trailing " | / - / — Site Name" tail; keep the title if that's all."""
+    if not title:
+        return title
+    stripped = _SITE_SUFFIX_RE.sub('', title).strip()
+    return stripped or title
+
 
 # Visible-text body is a citation *basis*, not the whole page - cap it so a long
 # article doesn't bloat every stub (BUILD.md M7.5: "visible text … ~2000 chars").
@@ -382,10 +409,24 @@ def generic_extract(html: str, url: str | None) -> RecipeResult:
     page = parse_html(html)
     page_url = first_nonempty(url, page.canonical, page.base_href,
                               meta_content(page, 'og:url'))
-    title = first_nonempty(page.title, meta_content(page, 'og:title'), page.h1) \
-        or (domain_of(page_url) or 'captured page')
+    # Prefer the clean og:title; fall back to page.title with its site-suffix
+    # stripped (a print-shop run-on or " | Site" tail is not the record title),
+    # then the h1.
+    title = first_nonempty(
+        meta_content(page, 'og:title'),
+        _strip_site_suffix(page.title),
+        page.h1,
+    ) or (domain_of(page_url) or 'captured page')
     repository = domain_of(page_url)
     accessed = _today()
+
+    # An explicit published date wins; otherwise harvest a year from the title
+    # or og:description (a citation guess the reviewer refines).
+    source_date = first_nonempty(meta_content(page, 'article:published_time'))
+    if not source_date:
+        ym = _GENERIC_YEAR_RE.search(
+            ' '.join(filter(None, [title, meta_content(page, 'og:description')])))
+        source_date = ym.group(1) if ym else None
 
     citation_bits = [title.rstrip('.')]
     if repository:
@@ -400,7 +441,7 @@ def generic_extract(html: str, url: str | None) -> RecipeResult:
         source_type=_GENERIC_SOURCE_TYPE,
         citation=citation,
         repository=repository or None,
-        source_date=first_nonempty(meta_content(page, 'article:published_time')),
+        source_date=source_date,
         external_links=external_links,
         people=[],
         body=visible_text(page),
@@ -715,6 +756,7 @@ def _resolve_recipe_result(
     html: str,
     notes: str | None,
     people: list[str] | None,
+    repository: str | None = None,
 ) -> tuple[str, RecipeResult]:
     """Choose a recipe and apply the explicit/override fields (the human's nudge).
 
@@ -728,6 +770,10 @@ def _resolve_recipe_result(
 
     if title:
         result.title = title
+    if repository:
+        # A human correction to "Where it's from" wins over the recipe/host
+        # guess, like --title/--type/--date.
+        result.repository = repository
     if source_type:
         st = source_type.strip().lower()
         if st not in SOURCE_TYPES:
@@ -757,8 +803,16 @@ def _resolve_recipe_result(
     if notes is not None:
         result.body = notes
     if people is not None:
-        # Human names first, then any recipe-found name not already present
-        # (case-insensitive dedup, preserving each name's first-seen spelling).
+        # The human's curated names come first, then any recipe-found name not
+        # already present (case-insensitive dedup, preserving each name's
+        # first-seen spelling). This is additive on purpose: the panel's people
+        # come from the in-browser JSON-LD/microdata harvest, while the Python
+        # recipe extracts household/family people from tables the panel never
+        # showed - replacing rather than merging would silently DROP those
+        # recipe-found relatives (e.g. a Find a Grave family list). People are
+        # review hints the reviewer reconciles, so extra noise is tolerable but
+        # lost relatives are not. (Place-shaped label noise is already kept out
+        # by the _common.py people guard.)
         seen = {name.strip().lower() for name in people}
         merged = list(people)
         merged += [n for n in result.people if n.strip().lower() not in seen]
@@ -784,6 +838,7 @@ def run_capture(
     accessed: str | None = None,
     notes: str | None = None,
     people: list[str] | None = None,
+    repository: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Capture a page into an inbox source stub and log the search (TOOLING §13b).
@@ -805,7 +860,7 @@ def run_capture(
     """
     recipe_name, result = _resolve_recipe_result(
         url=url, title=title, source_type=source_type, source_date=source_date,
-        html=html, notes=notes, people=people,
+        html=html, notes=notes, people=people, repository=repository,
     )
 
     accessed = accessed or _today()
@@ -969,6 +1024,7 @@ def _ingest_bundle_folder(
     accessed: str | None,
     notes: str | None,
     people: list[str] | None,
+    repository: str | None,
     assets: list[tuple[Path, str]],
     dry_run: bool = False,
 ) -> Result:
@@ -987,7 +1043,7 @@ def _ingest_bundle_folder(
     """
     recipe_name, result = _resolve_recipe_result(
         url=url, title=title, source_type=source_type, source_date=source_date,
-        html=html, notes=notes, people=people,
+        html=html, notes=notes, people=people, repository=repository,
     )
     accessed = accessed or _today()
     if not result.title:
@@ -1185,7 +1241,8 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
     # engine mid-sweep - that would abort sibling bundles, breaking the resilient
     # contract. Scalars are str()-coerced (forgiving: `1880` → "1880"); a
     # list/dict where text belongs is structurally wrong → reported BundleError.
-    for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes'):
+    for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes',
+                'repository'):
         val = cap.get(key)
         if val is None or isinstance(val, str):
             continue
@@ -1267,8 +1324,22 @@ def _resolve_bundle_assets(bundle: Path, cap: dict) -> list[tuple[Path, str]]:
         for item in assets:
             if not isinstance(item, dict):
                 continue
-            path = _bundle_file(bundle, item.get('file'))
-            if path is None or path.name in seen:
+            declared = item.get('file')
+            # The scaffolding files are not assets (a producer that lists one is
+            # harmlessly ignored, not treated as a missing-asset error).
+            if declared and Path(str(declared)).name in ('page.html', 'capture.json'):
+                continue
+            path = _bundle_file(bundle, declared)
+            if path is None:
+                # A file listed in capture.json is part of the completed-capture
+                # contract; if it's missing (interrupted download, renamed
+                # payload) the bundle is malformed - report it and leave it in
+                # staging rather than silently filing an incomplete capture.
+                if declared:
+                    raise BundleError(
+                        f"declared asset {str(declared)!r} is missing from the bundle")
+                continue
+            if path.name in seen:
                 continue
             role = str(item.get('role') or '').strip().lower() or _DEFAULT_ASSET_ROLE
             out.append((path, role))
@@ -1367,6 +1438,7 @@ def run_ingest(
                     accessed=cap.get('accessed'),
                     notes=cap.get('notes'),
                     people=cap.get('people'),
+                    repository=cap.get('repository'),
                     assets=assets,
                     dry_run=dry_run,
                 )
@@ -1382,6 +1454,7 @@ def run_ingest(
                     accessed=cap.get('accessed'),
                     notes=cap.get('notes'),
                     people=cap.get('people'),
+                    repository=cap.get('repository'),
                     dry_run=dry_run,
                 )
         except (CaptureError, CaptureWriteError) as e:
@@ -1444,6 +1517,335 @@ def run_ingest(
     )
 
 
+# ── Native-messaging host (TOOLING_INGESTION §5.7) ─────────────────────────────
+#
+# The browser launches `fha capture --host` on demand (no resident daemon) and
+# exchanges length-prefixed JSON over stdin/stdout. One write (file a bundle
+# straight into inbox/, reusing run_ingest) and two read-only queries (name
+# autocomplete, already-captured check) - everything against the local archive,
+# nothing published (§7). The extension's `nativeHost.sendBundle()` already
+# speaks this; only this backend was missing.
+
+_NATIVE_HOST_NAME = 'com.plaintext.fha_capture'
+_NATIVE_HOST_PROTOCOL = 1
+# Cap a frame so a garbled length prefix can't make the host allocate wildly; a
+# bundle with a base64 asset or two is a few MB, 64 MiB is comfortable headroom.
+_NATIVE_MAX_FRAME = 64 * 1024 * 1024
+
+
+def _read_native_message(stream) -> dict | None:
+    """One length-prefixed JSON message from `stream`, or `None` at clean EOF.
+
+    Native-messaging framing: a 4-byte unsigned length in native byte order,
+    then that many UTF-8 JSON bytes. A short/oversized/garbled frame raises
+    `BundleError` rather than hanging or over-allocating.
+    """
+    raw_len = stream.read(4)
+    if not raw_len:
+        return None
+    if len(raw_len) < 4:
+        raise BundleError('native message length prefix truncated')
+    (length,) = struct.unpack('@I', raw_len)
+    if length == 0:
+        return {}
+    if length > _NATIVE_MAX_FRAME:
+        raise BundleError(f'native message too large ({length} bytes)')
+    payload = stream.read(length)
+    if len(payload) < length:
+        raise BundleError('native message body truncated')
+    return json.loads(payload.decode('utf-8'))
+
+
+def _write_native_message(stream, obj: dict) -> None:
+    """Write `obj` as one length-prefixed JSON native message and flush."""
+    data = json.dumps(obj).encode('utf-8')
+    stream.write(struct.pack('@I', len(data)))
+    stream.write(data)
+    stream.flush()
+
+
+def _safe_member_name(name: str | None, default: str) -> str:
+    """A browser-supplied bundle/file name reduced to a single safe path segment."""
+    base = os.path.basename((name or '').replace('\\', '/').strip())
+    base = re.sub(r'[^A-Za-z0-9._-]', '-', base).strip('.-')
+    return base or default
+
+
+def _host_ingest(archive_root: Path, fha_config: dict, msg: dict) -> dict:
+    """Materialize the framed bundle and file it through the normal ingest path.
+
+    The transport is the only new thing: write `page.html` + `capture.json` +
+    the base64 assets into a temp staging dir and call `run_ingest` wholesale, so
+    the stub is byte-identical to the `--ingest` / paste-fallback path (§6 seam).
+    """
+    capture_json = msg.get('captureJson')
+    if capture_json in (None, ''):
+        return {'ok': False, 'error': 'missing captureJson'}
+    bundle_name = _safe_member_name(msg.get('bundleName'), f'capture-{_today()}')
+    with tempfile.TemporaryDirectory(prefix='fha-host-') as tmp:
+        bundle = Path(tmp) / bundle_name
+        bundle.mkdir(parents=True)
+        page_html = msg.get('pageHtml')
+        if page_html is not None:
+            (bundle / 'page.html').write_text(page_html, encoding='utf-8')
+        text = capture_json if isinstance(capture_json, str) else json.dumps(capture_json)
+        (bundle / 'capture.json').write_text(text, encoding='utf-8')
+        for asset in (msg.get('assets') or []):
+            if not isinstance(asset, dict):
+                return {'ok': False, 'error': 'each asset must be an object'}
+            fn = _safe_member_name(asset.get('filename'), '')
+            if not fn:
+                continue
+            b64 = asset.get('base64')
+            # Strip transport whitespace, then require real data: an absent/blank
+            # value must not silently file a zero-byte record image as success.
+            stripped = re.sub(r'\s', '', b64) if isinstance(b64, str) else ''
+            if not stripped:
+                return {'ok': False, 'error': f'asset {fn!r} has no data'}
+            try:
+                data = base64.b64decode(stripped, validate=True)
+            except (ValueError, TypeError):
+                return {'ok': False, 'error': f'asset {fn!r} is not valid base64'}
+            (bundle / fn).write_bytes(data)
+        try:
+            result = run_ingest(archive_root, fha_config, staging_dir=str(Path(tmp)))
+        except CaptureWriteError as e:
+            return {'ok': False, 'error': str(e)}
+    for outcome in result.data.get('bundles', []):
+        if outcome.get('bundle') == bundle_name:
+            if outcome.get('stub'):
+                return {'ok': True, 'stub': outcome['stub']}
+            return {'ok': False, 'error': outcome.get('error') or 'bundle could not be filed'}
+    return {'ok': False, 'error': 'capture was not filed'}
+
+
+def _host_suggest_names(archive_root: Path, fha_config: dict, q: str | None, limit: int) -> dict:
+    """Archive person names + aliases matching `q` (read-only, suggestion-only)."""
+    query = (q or '').strip().lower()
+    people_dir = resolve_path('people', fha_config, archive_root)
+    names: list[str] = []
+    seen: set[str] = set()
+    if people_dir.is_dir():
+        for md in sorted(people_dir.rglob('*.md')):
+            if md.name.startswith('_'):                  # templates
+                continue
+            try:
+                meta = (read_record(md).get('meta') or {})
+            except Exception:                            # noqa: BLE001 - skip a bad file
+                continue
+            candidates = [str(meta['name'])] if meta.get('name') else []
+            for alias in (meta.get('aliases') or []):
+                alias = str(alias)
+                if not re.match(r'^[PSLC]-[A-Za-z0-9]+$', alias):  # skip id aliases
+                    candidates.append(alias)
+            for name in candidates:
+                key = name.lower()
+                if key in seen or (query and query not in key):
+                    continue
+                seen.add(key)
+                names.append(name)
+    names.sort(key=lambda n: (not n.lower().startswith(query), n.lower()))
+    return {'ok': True, 'names': names[:max(0, limit)]}
+
+
+# Query params that carry the durable record identity (not per-visit chrome) and
+# so must survive normalization. Newspapers.com clippings share one image path
+# and differ only by `clipping_id`, so dropping the whole query would conflate
+# two distinct clips.
+_DURABLE_QUERY_KEYS = ('clipping_id',)
+
+
+def _normalize_source_url(url: str | None) -> str:
+    """`host+path(+durable id)` for dup checks: www- and trailing-slash-stripped,
+    per-visit query dropped but a durable record id kept.
+
+    Ancestry/FamilySearch URLs carry throwaway params (`_phsrc`, `pId`, …) that
+    change each visit; the stable record id usually lives in the path. But a
+    Newspapers.com clip's identity is the `clipping_id` query param, so that one
+    is preserved - otherwise two clippings off the same image page collapse to
+    one and a valid new capture is wrongly reported already-captured.
+    """
+    p = urlparse(url or '')
+    host = (p.netloc or '').lower()
+    if host.startswith('www.'):
+        host = host[4:]
+    if not host:
+        return ''
+    path = (p.path or '').rstrip('/')
+    qs = parse_qs(p.query)
+    ids = [f'{k}={qs[k][0]}' for k in _DURABLE_QUERY_KEYS if qs.get(k)]
+    return f'{host}{path}' + ('?' + '&'.join(sorted(ids)) if ids else '')
+
+
+def _host_check_url(archive_root: Path, fha_config: dict, url: str | None) -> dict:
+    """Whether a source URL is already captured (by normalized host+path).
+
+    Scans the *configured* sources/inbox roots (an archive may map either outside
+    the tree via fha.yaml), so a URL already staged in a relocated inbox is found.
+    """
+    target = _normalize_source_url(url)
+    if not target:
+        return {'ok': True, 'known': False}
+    for sub in ('sources', 'inbox'):
+        root = resolve_path(sub, fha_config, archive_root)
+        if not root.is_dir():
+            continue
+        for md in sorted(root.rglob('*.md')):
+            try:
+                meta = (read_record(md).get('meta') or {})
+            except Exception:                            # noqa: BLE001
+                continue
+            for link in (meta.get('external_links') or []):
+                href = link.get('url') if isinstance(link, dict) else link
+                if href and _normalize_source_url(href) == target:
+                    return {'ok': True, 'known': True,
+                            'source': meta.get('id'),
+                            'date': meta.get('source_date') or meta.get('created')}
+    return {'ok': True, 'known': False}
+
+
+def _host_dispatch(archive_root: Path, fha_config: dict, msg: dict) -> dict:
+    """Route one native-messaging request to its handler (unknown → clean error)."""
+    action = (msg.get('action') or msg.get('type') or '').strip()
+    if action == 'ping':
+        return {'ok': True, 'v': _NATIVE_HOST_PROTOCOL}
+    if action in ('ingest', 'file'):
+        return _host_ingest(archive_root, fha_config, msg)
+    if action == 'suggestNames':
+        try:
+            limit = int(msg.get('limit') or 8)
+        except (TypeError, ValueError):
+            limit = 8
+        return _host_suggest_names(archive_root, fha_config, msg.get('q'), limit)
+    if action == 'checkUrl':
+        return _host_check_url(archive_root, fha_config, msg.get('url'))
+    return {'ok': False, 'error': f'unsupported action: {action!r}'}
+
+
+def run_host(archive_root: Path, fha_config: dict, *, stdin=None, stdout=None) -> int:
+    """Serve native-messaging requests until EOF (one read, one query, no daemon)."""
+    stdin = stdin if stdin is not None else sys.stdin.buffer
+    stdout = stdout if stdout is not None else sys.stdout.buffer
+    while True:
+        try:
+            msg = _read_native_message(stdin)
+        except (BundleError, ValueError, json.JSONDecodeError) as e:
+            try:
+                _write_native_message(stdout, {'ok': False, 'error': str(e)})
+            except OSError:  # browser already closed the pipe
+                return EXIT_CLEAN
+            return EXIT_ERRORS
+        if msg is None:
+            return EXIT_CLEAN
+        try:
+            # Native-messaging stdout must carry ONLY framed messages, but a
+            # handler (run_ingest) prints progress lines. `stdout` above is the
+            # real binary channel, captured before this redirect, so routing any
+            # stray stdout to stderr keeps the protocol uncorrupted.
+            with contextlib.redirect_stdout(sys.stderr):
+                resp = _host_dispatch(archive_root, fha_config, msg)
+        except Exception as e:  # noqa: BLE001 - a single request must never crash the host
+            resp = {'ok': False, 'error': f'unexpected error: {e}'}
+        try:
+            _write_native_message(stdout, resp)
+        except OSError:  # browser closed stdout - exit quietly, not with a traceback
+            return EXIT_CLEAN
+
+
+def _install_host(archive_root: Path, *, extension_id: str | None,
+                  manifest_dir: str | None, dry_run: bool = False,
+                  browser: str = 'chrome') -> int:
+    """Write the native-messaging manifest (+ launcher) registering this CLI.
+
+    `manifest_dir` overrides the per-OS native-messaging location (used by tests
+    and for a non-default browser profile); `browser` ('chrome' | 'edge') picks
+    the default location and registry key otherwise. The launcher is a tiny
+    wrapper that invokes this interpreter on `tools/fha.py` with `capture --host
+    --root <archive>`. `dry_run` previews the paths without writing anything.
+    """
+    # Chrome/Edge require the manifest `path` (and so the manifest dir) to be
+    # ABSOLUTE on every OS; a relative --host-manifest-dir would otherwise write
+    # a host the browser can't launch.
+    target_dir = (Path(manifest_dir).expanduser().resolve()
+                  if manifest_dir else _native_manifest_dir(browser))
+
+    # The CLI is run as `tools/fha.py` (there is no bare `fha` executable in the
+    # repo/installed layout); point the launcher at the real entrypoint.
+    fha_entry = Path(__file__).resolve().parent / 'fha.py'
+    archive_root = Path(archive_root).expanduser().resolve()
+    ext = '.bat' if os.name == 'nt' else '.sh'
+    launcher = target_dir / f'fha-capture-host{ext}'
+    manifest_path = target_dir / f'{_NATIVE_HOST_NAME}.json'
+
+    origin = f'chrome-extension://{extension_id}/' if extension_id else \
+        'chrome-extension://REPLACE_WITH_EXTENSION_ID/'
+    manifest = {
+        'name': _NATIVE_HOST_NAME,
+        'description': 'Plaintext Family History capture host',
+        'path': str(launcher),
+        'type': 'stdio',
+        'allowed_origins': [origin],
+    }
+
+    if dry_run:
+        print(f'[dry-run] would write native-messaging manifest → {manifest_path}')
+        print(f'[dry-run] would write launcher → {launcher}')
+        return EXIT_CLEAN
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    # The browser appends args when it launches the host (the calling extension's
+    # origin on every platform, plus `--parent-window=<HWND>` on Windows). The
+    # host reads only stdin/stdout, so the launcher must NOT forward them - the
+    # CLI parses strictly and an unrecognized positional would abort host startup.
+    if os.name == 'nt':
+        launcher.write_text(
+            f'@echo off\r\n"{sys.executable}" "{fha_entry}" capture --host '
+            f'--root "{archive_root}"\r\n', encoding='utf-8')
+    else:
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{fha_entry}" capture --host '
+            f'--root "{archive_root}"\n', encoding='utf-8')
+        os.chmod(launcher, 0o755)
+
+    manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    print(f'Wrote native-messaging manifest → {manifest_path}')
+    print(f'Launcher → {launcher}')
+    if os.name == 'nt':
+        # Chrome/Edge discover Windows hosts via the registry, not a directory
+        # scan, so the manifest alone is not enough - point the user at the key
+        # for the chosen browser.
+        reg_vendor = 'Microsoft\\Edge' if browser == 'edge' else 'Google\\Chrome'
+        print('NOTE: on Windows the browser finds the host through the registry. '
+              'Register it with:\n'
+              f'  REG ADD "HKCU\\Software\\{reg_vendor}\\NativeMessagingHosts\\'
+              f'{_NATIVE_HOST_NAME}" /ve /t REG_SZ /d "{manifest_path}" /f')
+    if not extension_id:
+        print('NOTE: edit "allowed_origins" to your extension id '
+              '(chrome://extensions → the companion → ID), or re-run with '
+              '--extension-id.')
+    return EXIT_CLEAN
+
+
+def _native_manifest_dir(browser: str = 'chrome') -> Path:
+    """The per-OS native-messaging hosts directory for `browser` (chrome|edge)."""
+    home = Path.home()
+    if browser == 'edge':
+        if os.name == 'nt':
+            return Path(os.environ.get('LOCALAPPDATA', home)) / 'Microsoft' / \
+                'Edge' / 'User Data' / 'NativeMessagingHosts'
+        if sys.platform == 'darwin':
+            return home / 'Library' / 'Application Support' / 'Microsoft Edge' / \
+                'NativeMessagingHosts'
+        return home / '.config' / 'microsoft-edge' / 'NativeMessagingHosts'
+    if os.name == 'nt':
+        return Path(os.environ.get('LOCALAPPDATA', home)) / 'Google' / 'Chrome' / \
+            'User Data' / 'NativeMessagingHosts'
+    if sys.platform == 'darwin':
+        return home / 'Library' / 'Application Support' / 'Google' / 'Chrome' / \
+            'NativeMessagingHosts'
+    return home / '.config' / 'google-chrome' / 'NativeMessagingHosts'
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -1470,6 +1872,18 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--ingest', nargs='?', const=True, default=False, metavar='DIR',
                    help='Sweep staged capture bundles from DIR (default: the '
                         'capture_staging folder or ~/Downloads/fha-inbox) into the inbox')
+    p.add_argument('--host', action='store_true',
+                   help='Run as the browser native-messaging host (stdin/stdout '
+                        'framed JSON); launched by the companion, not by hand')
+    p.add_argument('--install-host', action='store_true',
+                   help='Register the native-messaging host manifest for the browser')
+    p.add_argument('--extension-id', metavar='ID',
+                   help='Companion extension id for --install-host allowed_origins')
+    p.add_argument('--host-manifest-dir', metavar='DIR',
+                   help='Override where --install-host writes the manifest (default: '
+                        "the browser's native-messaging hosts dir)")
+    p.add_argument('--browser', choices=('chrome', 'edge'), default='chrome',
+                   help='Target browser for --install-host paths/registry (default: chrome)')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
@@ -1482,6 +1896,33 @@ def _run_capture(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
+
+    # The native-messaging host and its installer are distinct modes.
+    if getattr(args, 'install_host', False):
+        try:
+            return _install_host(
+                archive_root,
+                extension_id=getattr(args, 'extension_id', None),
+                manifest_dir=getattr(args, 'host_manifest_dir', None),
+                dry_run=getattr(args, 'dry_run', False),
+                browser=getattr(args, 'browser', 'chrome'),
+            )
+        except OSError as e:
+            # The browser's native-messaging dir may be missing/protected; report
+            # the path and bail cleanly instead of dumping a traceback.
+            print(f'ERROR: could not write the native-messaging host: {e}',
+                  file=sys.stderr)
+            return EXIT_FAILURE
+    if getattr(args, 'host', False):
+        if getattr(args, 'dry_run', False):
+            # The host is a live server: its `ingest` action files real bundles
+            # into inbox/. There is nothing to preview, so honor --dry-run's
+            # no-mutation contract by refusing the combination up front.
+            print('ERROR: --dry-run is not compatible with --host (the native '
+                  'host files live capture bundles into the inbox; there is '
+                  'nothing to preview).', file=sys.stderr)
+            return EXIT_FAILURE
+        return run_host(archive_root, fha_config)
 
     # The --ingest sweep is a distinct mode: it reads staged bundles, not stdin.
     ingest = getattr(args, 'ingest', False)

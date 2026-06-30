@@ -79,6 +79,40 @@
   // recipe's job. JSON-LD Person/name and itemprop=name under a Person scope are
   // high-signal and site-neutral, so they make a good optional pre-fill the human
   // can untick (§5.3 Phase 2). Empty is a fine result; the human types the name.
+  //
+  // Non-people guard (05-A): exclude entities whose @type is a Place/Organization
+  // family type or that carry address/geo properties (these are structural markers
+  // of venues, not individuals). Skip BreadcrumbList/ListItem names entirely.
+  // This is intentionally generic — the same fix improves every site that mixes
+  // people and place/org structured data (not just Find a Grave).
+
+  // Types that must never yield a name in the people harvest, regardless of
+  // whether they also carry a `name` property.
+  const NON_PERSON_TYPES = new Set([
+    'Place', 'LocalBusiness', 'Organization', 'Cemetery',
+    'LandmarksOrHistoricalBuildings', 'TouristAttraction',
+    'BreadcrumbList', 'ListItem',
+    // Broad schema.org Place subtypes encountered in the wild:
+    'City', 'Country', 'State', 'AdministrativeArea',
+    'CivicStructure', 'PlaceOfWorship', 'Museum', 'Park',
+    'Hospital', 'School', 'CollegeOrUniversity',
+  ]);
+
+  // Returns true when a JSON-LD node's @type indicates a non-person entity.
+  function isNonPersonLdNode(node) {
+    const type = node['@type'];
+    const types = Array.isArray(type) ? type : (type ? [type] : []);
+    // An explicit Person is a person even when it carries an address/geo
+    // (schema.org Person inherits `address` from Thing, and obituary/genealogy
+    // pages routinely attach a residence) — never let the place heuristic drop it.
+    if (types.includes('Person')) return false;
+    if (types.some((t) => NON_PERSON_TYPES.has(t))) return true;
+    // Also treat nodes with address/geo sub-objects as places even when @type
+    // is absent or set to something generic like "Thing".
+    if (node.address || node.geo) return true;
+    return false;
+  }
+
   function harvestPeople() {
     const names = [];
     const seen = new Set();
@@ -97,6 +131,11 @@
         node.forEach(walkLd);
         return;
       }
+      // Skip the entire subtree if this node is a non-person entity type.
+      // BreadcrumbList/ListItem nodes and Places/Orgs are excluded; we do NOT
+      // recurse further into them so their nested `name` props don't leak out.
+      if (isNonPersonLdNode(node)) return;
+
       const type = node['@type'];
       const isPerson = type === 'Person' ||
         (Array.isArray(type) && type.includes('Person'));
@@ -119,9 +158,23 @@
         /* malformed JSON-LD is common; skip it silently */
       }
     });
+    // Microdata harvest: restrict to Person itemscopes only, exclude any
+    // itemscope that is itself inside a non-person container (BreadcrumbList,
+    // Place, Organization). A flat querySelectorAll already does the right
+    // thing when scoped to schema.org/Person — but strip any matched element
+    // that lives inside a BreadcrumbList or Place itemscope to be safe.
     document
       .querySelectorAll('[itemtype$="schema.org/Person"] [itemprop="name"]')
-      .forEach((el) => add(el.textContent));
+      .forEach((el) => {
+        // Walk ancestors: reject if any contains a non-person itemtype.
+        let ancestor = el.parentElement;
+        while (ancestor) {
+          const atype = (ancestor.getAttribute('itemtype') || '').split('/').pop();
+          if (atype && NON_PERSON_TYPES.has(atype)) return; // skip
+          ancestor = ancestor.parentElement;
+        }
+        add(el.textContent);
+      });
     return names.slice(0, 12); // a pre-fill list, not an exhaustive index
   }
 
@@ -149,6 +202,39 @@
   function detectPdf() {
     const link = document.querySelector('a[href$=".pdf"], a[href*=".pdf?"]');
     return link ? absUrl(link.href) : null;
+  }
+
+  // ── Capture-timing guard (08-A) ─────────────────────────────────────────────
+  // Canonical reference + tests in src/lib/capture-readiness.js; keep in sync.
+  const EMPTY_DETAIL_PHRASES = [
+    'no record has been selected',
+    'no record selected',
+    'no record is selected',
+    'select a record to',
+    'no results to display',
+    'no details to show',
+  ];
+
+  function detailLooksUnpopulated(text) {
+    const t = String(text || '').toLowerCase();
+    return EMPTY_DETAIL_PHRASES.some((p) => t.indexOf(p) !== -1);
+  }
+
+  // A capture taken before the record detail is open serializes an empty panel
+  // and silently yields nothing to extract (EX20). Warn so the human opens the
+  // detail first. Generic heuristic: the known "nothing selected" phrases, or a
+  // record-shaped page (image viewer / fact panel) with almost no detail cells.
+  function captureWarning() {
+    const text = (document.body && (document.body.innerText || document.body.textContent)) || '';
+    if (detailLooksUnpopulated(text)) {
+      return 'The record detail looks empty (“no record selected”). Open the record so its full data is captured.';
+    }
+    const cells = document.querySelectorAll('.grid-cell, [data-testid]').length;
+    const isRecordPage = /\/(imageviewer|search\/collections|ark:)/i.test(location.href);
+    if (isRecordPage && cells > 0 && cells < 4) {
+      return 'Only a little record detail is loaded. Open/expand the record before capturing so the full data is saved.';
+    }
+    return null;
   }
 
   // ── Ancestry image-viewer detection (asset ACQUISITION, not extraction) ──────
@@ -307,6 +393,99 @@
     }
   }
 
+  // ── IIIF full-image auto-fetch (open archives) ───────────────────────────────
+  // IIIF is an open standard, so this is GENERIC asset acquisition (it does not
+  // break the "browser stays generic" line). Canonical reference + tests live in
+  // src/lib/iiif.js; keep this copy in sync. A content script can't import, so the
+  // regex/helpers are duplicated here.
+  const IIIF_IMAGE_RE = new RegExp(
+    '^(.+?)' +
+    '/(full|square|\\d+,\\d+,\\d+,\\d+|pct:[\\d.]+,[\\d.]+,[\\d.]+,[\\d.]+)' +
+    '/([^/]+)' +
+    '/(!?[\\d.]+)' +
+    '/(default|color|colour|gray|grey|bitonal|native)' +
+    '\\.(jpe?g|tiff?|png|gif|jp2|webp|pdf)$',
+    'i'
+  );
+
+  function iiifFullImageCandidates(url) {
+    const m = IIIF_IMAGE_RE.exec(String(url || ''));
+    if (!m) return [];
+    const base = m[1];
+    return [base + '/full/full/0/default.jpg', base + '/full/max/0/default.jpg'];
+  }
+
+  // The first IIIF Image-API URL present in the DOM (img/source src + srcset,
+  // anchor href). The browser's largest rendered <img> is a derivative; this
+  // finds a URL we can rewrite to the full image instead.
+  function detectIiifImageUrl() {
+    const urls = [];
+    document.querySelectorAll('img[src], source[src], a[href], link[href]').forEach((el) => {
+      const v = el.getAttribute('src') || el.getAttribute('href');
+      if (v) urls.push(absUrl(v));
+    });
+    document.querySelectorAll('img[srcset], source[srcset]').forEach((el) => {
+      (el.getAttribute('srcset') || '').split(',').forEach((part) => {
+        const u = part.trim().split(/\s+/)[0];
+        if (u) urls.push(absUrl(u));
+      });
+    });
+    for (const u of urls) {
+      if (IIIF_IMAGE_RE.test(u)) return u;
+    }
+    return null;
+  }
+
+  // An error page or a derivative is small; a full archival scan is not. Lower
+  // than the Ancestry bar because a full/full request already asks for the
+  // largest the server allows (so it is rarely a thumbnail) - this only catches
+  // an error body or an empty response masquerading as the image.
+  const IIIF_MIN_FULL_BYTES = 12 * 1024;
+
+  // Fetch the full-res IIIF image for the current page. Public domain, no auth,
+  // so a plain fetch suffices (simpler than the Ancestry token dance). Tries
+  // full/full (2.x) then full/max (3.x); size-guards the result. Same result
+  // shape as fetchAsset so the panel consumes it identically.
+  async function fetchIiifFullImage() {
+    const seed = detectIiifImageUrl();
+    if (!seed) {
+      return { ok: false, error: 'no IIIF image was found on this page' };
+    }
+    const candidates = iiifFullImageCandidates(seed);
+    let lastError = 'the IIIF image would not come through';
+    for (const imgUrl of candidates) {
+      try {
+        const resp = await fetch(imgUrl, { credentials: 'omit' });
+        if (!resp.ok) {
+          lastError = 'the IIIF server returned HTTP ' + resp.status;
+          continue;
+        }
+        const blob = await resp.blob();
+        if (blob.size < IIIF_MIN_FULL_BYTES) {
+          lastError =
+            'the IIIF image came back too small (' +
+            Math.round(blob.size / 1024) +
+            ' KB) to be the full record';
+          continue;
+        }
+        const base64 = await blobToBase64(blob);
+        const ext = extFromContentType(
+          blob.type || resp.headers.get('content-type'),
+          imgUrl
+        );
+        return {
+          ok: true,
+          base64,
+          ext: ext === 'bin' ? 'jpg' : ext,
+          contentType: blob.type || 'image/jpeg',
+        };
+      } catch (e) {
+        lastError = 'could not reach the IIIF image service';
+      }
+    }
+    return { ok: false, error: lastError };
+  }
+
   function buildPrefill() {
     const url = location.href;
     const canonical = absUrl(
@@ -337,6 +516,12 @@
       pdfUrl: detectPdf(),
       recipeHint: recipeHint(url),
       ancestryImageViewer: !!ancestry,
+      // A public archive whose full image can be fetched automatically (IIIF);
+      // the panel can offer the one-click fetch instead of a manual download.
+      iiif: !!detectIiifImageUrl(),
+      // A non-null warning when the detail panel looks empty/unloaded at capture
+      // time (08-A) - the panel shows it so the human opens the record first.
+      warning: captureWarning(),
     };
   }
 
@@ -527,6 +712,12 @@
         // Full-res Ancestry record fetch for the current page, in-session.
         // Same result shape as fetchAsset so the panel handles both alike.
         fetchAncestryFullImage()
+          .then(sendResponse)
+          .catch((e) => sendResponse({ ok: false, error: String(e) }));
+        return true; // async response
+      case 'iiifImage':
+        // Full-res IIIF image fetch (open archives) for the current page.
+        fetchIiifFullImage()
           .then(sendResponse)
           .catch((e) => sendResponse({ ok: false, error: String(e) }));
         return true; // async response

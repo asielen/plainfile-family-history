@@ -208,6 +208,25 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertIn('Smith–Jones', self._only_stub().read_text(encoding='utf-8'))
 
+    def test_generic_prefers_ogtitle_over_junk_page_title(self) -> None:
+        # EX19 shape: og:title is clean; page.title is a print-shop run-on.
+        rc = self._capture(_sample('open-archive-luna'),
+                           url='https://maps.example.com/luna/detail/9981')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['title'], 'National City and Vicinity')
+        self.assertEqual(meta['source_date'], '1887')        # harvested from og:description
+
+    def test_generic_strips_site_suffix_and_harvests_title_year(self) -> None:
+        # EX18 shape: no og:title; strip the " | Site" chrome and harvest the
+        # year from the title.
+        rc = self._capture(_sample('open-archive-islandora'),
+                           url='https://digital.example.edu/items/fairview-1910')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['title'], 'Panoramic map of Fairview, 1910')
+        self.assertEqual(meta['source_date'], '1910')
+
     # ── M7.6 / M7.7 recipes ─────────────────────────────────────────────────────
 
     def test_recipe_detection_is_mutually_exclusive(self) -> None:
@@ -245,6 +264,36 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Edith Hartley', meta['people'])
         self.assertEqual(meta['source_date'], '1880')
 
+    def test_ancestry_imageviewer_grid_people_and_hint_title(self) -> None:
+        # EX5 shape: no household <table>; the detail panel is a grid of
+        # grid-cell divs (Surname/Given Name columns). The grid reader recovers
+        # the people the table path returns [] for, and the tree-hint <h1> is
+        # kept out of the title.
+        rc = self._capture(_sample('ancestry-imageviewer'),
+                           url='https://www.ancestry.com/imageviewer/collections/2442/images/x')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_type'], 'census')
+        self.assertEqual(meta['source_date'], '1940')
+        self.assertIn('Calvin Hartley', meta['people'])           # Given Name + Surname
+        self.assertIn('Edith Hartley', meta['people'])
+        self.assertNotIn('Given Name', meta['people'])            # label never leaks
+        self.assertNotIn('Surname', meta['people'])
+        self.assertNotIn('Does', meta['title'])                   # hint prompt not the title
+
+    def test_ancestry_offsite_index_pointer(self) -> None:
+        # An Ancestry "Index" record embedding a Newspapers.com clip URL surfaces
+        # it as an external link so the reviewer can go upstream (WS B.5).
+        html = ('<html><head><meta property="og:site_name" content="Ancestry">'
+                '<meta property="og:title" content="California Newspapers Index">'
+                '</head><body><a href="https://www.newspapers.com/clip/152871046/">'
+                'View on Newspapers.com</a></body></html>')
+        rc = self._capture(html, url='https://www.ancestry.com/search/collections/9/records/5')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        urls = [link['url'] for link in meta['external_links']]
+        self.assertIn('https://www.newspapers.com/clip/152871046/', urls)
+
     def test_familysearch_recipe(self) -> None:
         rc = self._capture(_sample('familysearch'),
                            url='https://www.familysearch.org/ark:/61903/1:1:X')
@@ -267,6 +316,36 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Mary Smith', meta['people'])
         self.assertNotIn("Father's Name", meta['people'])
         self.assertNotIn("Mother's Name", meta['people'])
+        self.assertNotIn('Birth Date', meta['people'])       # fact label, not a person
+
+    def test_familysearch_content_page_grid_people(self) -> None:
+        # EX13 shape: React content panel, no table. The subject comes from the
+        # "Given Name:/Surname:" text and the household from the "Others on This
+        # Record" data-testid names. title/date/type already work; people was [].
+        rc = self._capture(_sample('familysearch-content'),
+                           url='https://www.familysearch.org/ark:/61903/3:1:XXYY-ZZZ')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_type'], 'census')
+        self.assertEqual(meta['source_date'], '1860')
+        self.assertIn('William W Church', meta['people'])         # subject, not []
+        self.assertIn('Caleb C Church', meta['people'])           # household member
+        self.assertNotIn('Given Name', meta['people'])            # label never leaks
+
+    def test_familysearch_index_page_title_collection_split(self) -> None:
+        # EX14 shape: the <title> is the person with the collection quoted; the
+        # split recovers the collection so the type re-derives (vital-record,
+        # not the generic 'website') and the person is captured, not the labels.
+        rc = self._capture(_sample('familysearch-index'),
+                           url='https://www.familysearch.org/ark:/61903/1:1:AAAA-111')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_type'], 'vital-record')
+        self.assertEqual(meta['source_date'], '1905')
+        self.assertEqual(meta['title'], 'California, Birth Index, 1905-1995')
+        self.assertIn('Mark B Sielen', meta['people'])
+        self.assertNotIn('Event Type', meta['people'])
+        self.assertNotIn('Event Place', meta['people'])
 
     def test_newspapers_recipe(self) -> None:
         rc = self._capture(_sample('newspapers'),
@@ -275,7 +354,79 @@ class CaptureTestCase(unittest.TestCase):
         meta = read_record(self._only_stub())['meta']
         self.assertEqual(meta['source_type'], 'newspaper')
         self.assertEqual(meta['repository'], 'The Fairview Gazette')
+        # No "Mon DD, YYYY" phrase in og:description here → year-only fallback
+        # (proves the harvest_date path still fires).
         self.assertEqual(meta['source_date'], '1898')
+
+    def test_newspapers_wholepage_full_date_and_clean_citation(self) -> None:
+        # EX3 shape: nav-style og:title, full date in og:description, no clip id.
+        rc = self._capture(_sample('newspapers-wholepage'),
+                           url='https://www.newspapers.com/image/1046785212/')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_date'], '1884-08-07')        # full ISO date
+        # The nav-style page title is not quoted into the citation as a headline.
+        self.assertNotIn('"Aug 07, 1884', meta['citation'])
+        self.assertIn('The Fairview Gazette, 7 Aug 1884, p. 3', meta['citation'])
+        # No clipping_id → only the viewer URL, no clip link.
+        self.assertEqual([link['url'] for link in meta['external_links']],
+                         ['https://www.newspapers.com/image/1046785212/'])
+
+    def test_familysearch_multiword_surname(self) -> None:
+        # A spaced surname (Van Buren / De La Cruz) must be kept whole, not
+        # truncated to its first token, and must stop at the next fact label.
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from capture_recipes import familysearch
+        self.assertEqual(
+            familysearch._subject_from_text('Given Name: Martin Surname: Van Buren Sex: Male'),
+            'Martin Van Buren')
+        self.assertEqual(
+            familysearch._subject_from_text(
+                'Given Name: Ana Surname: De La Cruz Birth Date: 1880'),
+            'Ana De La Cruz')
+        # A possessive relationship label ("Mother's Name:") is a boundary too.
+        self.assertEqual(
+            familysearch._subject_from_text(
+                "Given Name: Martin Surname: Van Buren Mother's Name: Jane"),
+            'Martin Van Buren')
+
+    def test_generic_keeps_hyphen_descriptor_and_year(self) -> None:
+        # A record title using a plain hyphen ("Jane Smith - 1920 Census") is not
+        # site chrome: keep the descriptor and let the year harvest see 1920.
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import capture as capture_mod
+        self.assertEqual(
+            capture_mod._strip_site_suffix('Jane Smith - 1920 Census'),
+            'Jane Smith - 1920 Census')
+        # A genuine " | Site" tail is still stripped.
+        self.assertEqual(
+            capture_mod._strip_site_suffix('Panoramic map, 1910 | Example Libraries'),
+            'Panoramic map, 1910')
+
+    def test_newspapers_parses_sept_abbreviation(self) -> None:
+        # "Sept" is a very common dateline abbreviation strptime rejects; the
+        # recipe must still recover the full date instead of degrading to a year.
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from capture_recipes import newspapers
+        iso, cite = newspapers._parse_full_date('Sept 05, 1900')
+        self.assertEqual(iso, '1900-09-05')
+        self.assertEqual(cite, '5 Sep 1900')
+
+    def test_newspapers_clip_emits_public_clip_link(self) -> None:
+        # EX9 shape: clipping_id on the URL → durable public clip link emitted.
+        rc = self._capture(
+            _sample('newspapers-clip'),
+            url='https://www.newspapers.com/image/1046785212/?match=1&clipping_id=152871046')
+        self.assertEqual(rc, EXIT_CLEAN)
+        meta = read_record(self._only_stub())['meta']
+        self.assertEqual(meta['source_date'], '1904-03-10')
+        # The clip link is the durable, subscription-free citation anchor. The
+        # stub frontmatter persists url + accessed per link (not the recipe's
+        # `label`), and the viewer URL stays first.
+        links = meta['external_links']
+        self.assertEqual(links[0]['url'],
+                         'https://www.newspapers.com/image/1046785212/?match=1&clipping_id=152871046')
+        self.assertEqual(links[1]['url'], 'https://www.newspapers.com/clip/152871046/')
 
     def test_findagrave_recipe(self) -> None:
         rc = self._capture(_sample('findagrave'),
@@ -289,6 +440,20 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Fairview Cemetery', rec['body'])
         self.assertEqual(meta['source_date'], '1929')
 
+    def test_findagrave_date_from_title_and_memorial_park(self) -> None:
+        # B2: lifespan only in the title → source_date still populates.
+        # B3: a "Memorial Park" burial place is found, and the "Virtual
+        # Cemetery" decoy is rejected.
+        rc = self._capture(_sample('findagrave-memorial-park'),
+                           url='https://www.findagrave.com/memorial/28906345/frances-dodson')
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        meta = rec['meta']
+        self.assertEqual(meta['source_date'], '1921')
+        # The place hint is the Memorial Park, not the "Virtual Cemetery" decoy.
+        self.assertIn('place_text hint): Greenwood Memorial Park', rec['body'])
+        self.assertNotIn('place_text hint): Ancestry Virtual Cemetery', rec['body'])
+
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def test_visible_text_truncates_on_word_boundary(self) -> None:
@@ -301,6 +466,100 @@ class CaptureTestCase(unittest.TestCase):
     def test_domain_strips_www(self) -> None:
         self.assertEqual(capture.domain_of('https://www.Example.com/x'), 'example.com')
         self.assertEqual(capture.domain_of(None), '')
+
+
+class LabelGuardTestCase(unittest.TestCase):
+    """The shared `_common.py` label-as-people guard (capture-frontend-01 WS-A).
+
+    Field labels ("Birth Date", "Event Type", …) leaked into the people list
+    across the Ancestry / FamilySearch / Find a Grave recipes. The guard is
+    site-neutral, so it is tested directly against `_common`.
+    """
+
+    # Real labels seen leaking in the EX1/EX2/EX4/EX6 corpus - none may pass.
+    LABELS = [
+        'Birth Date', 'Death Date', 'Residence Place', 'Residence Date',
+        'Marital Status', 'Event Type', 'Event Place', 'Newspaper Title',
+        'Estimated Birth Year', 'Highest Grade Completed',
+        'Relation to Head of House', "Father's Name", "Mother's Name",
+        'Name at Birth', 'Household Members', 'Family Members',
+    ]
+    # Genuine names, including surnames that brush against label vocabulary.
+    NAMES = [
+        'Calvin Hartley', 'Edith May Hartley', 'Harriet Webb',
+        "Mary O'Brien", 'Jean-Luc Picard', 'John Q. Adams',
+        'Larry Page', 'John Ward', 'Sarah Young',
+        # Surnames that collide with field-label tail words: must still pass.
+        'Mary Place', 'John Race', 'Anna Roll',
+    ]
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from capture_recipes import _common
+        self.common = _common
+
+    def test_labels_never_look_like_names(self) -> None:
+        for label in self.LABELS:
+            self.assertTrue(self.common.is_field_label(label), f'{label!r} not a label')
+            self.assertFalse(self.common.looks_like_name(label),
+                             f'{label!r} leaked as a name')
+
+    def test_real_names_pass(self) -> None:
+        for name in self.NAMES:
+            self.assertFalse(self.common.is_field_label(name), f'{name!r} flagged as label')
+            self.assertTrue(self.common.looks_like_name(name), f'{name!r} rejected as a name')
+
+    def test_label_value_rows_read_the_value(self) -> None:
+        rows = [
+            ['Name', 'John Smith'],
+            ["Father's Name", 'William Smith'],
+            ['Birth Date', '1850'],
+            ['Marital Status', 'Married'],
+            ['Event Type', 'Birth'],
+        ]
+        self.assertEqual(self.common.people_from_table(rows),
+                         ['John Smith', 'William Smith'])
+
+    def test_household_rows_read_the_name(self) -> None:
+        # A genuine household/index table: first column IS the person.
+        rows = [
+            ['Name', 'Relationship', 'Age'],          # header row, skipped
+            ['Calvin Hartley', 'Head', '45'],
+            ['Edith Hartley', 'Wife', '42'],
+        ]
+        self.assertEqual(self.common.people_from_table(rows),
+                         ['Calvin Hartley', 'Edith Hartley'])
+
+    def test_bare_label_with_no_value_is_dropped(self) -> None:
+        # A known label in a single-column row must never leak as a person.
+        self.assertEqual(self.common.people_from_table([['Birth Date'], ['Event Type']]), [])
+
+    def test_collision_surname_in_household_row_survives(self) -> None:
+        # A person whose surname doubles as a field-label word ("Place") must
+        # not be mistaken for a label and dropped from a household table.
+        rows = [
+            ['Name', 'Relationship', 'Age'],          # header row, skipped
+            ['Mary Place', 'Head', '38'],
+            ['John Race', 'Boarder', '24'],
+        ]
+        self.assertEqual(self.common.people_from_table(rows),
+                         ['Mary Place', 'John Race'])
+
+    def test_domain_place_label_still_caught(self) -> None:
+        # "<domain> Place" remains a label even though bare "Place" is a surname.
+        for label in ('Birth Place', 'Event Place', 'Residence Place'):
+            self.assertTrue(self.common.is_field_label(label), f'{label!r} not a label')
+
+    def test_place_value_is_not_promoted_to_a_person(self) -> None:
+        # A place/date/status label's value is NOT a person; only a name-bearing
+        # label ("Father's Name") reads its value cell.
+        rows = [
+            ['Birth Place', 'New York'],
+            ['Event Place', 'Los Angeles'],
+            ['Marital Status', 'Married'],
+            ["Father's Name", 'William Smith'],   # name-bearing → value IS read
+        ]
+        self.assertEqual(self.common.people_from_table(rows), ['William Smith'])
 
 
 if __name__ == '__main__':

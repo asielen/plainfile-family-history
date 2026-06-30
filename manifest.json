@@ -61,7 +61,7 @@
     {
       "path": "TOOLING_INGESTION.md",
       "category": "operating",
-      "sha256": "f17e32cc3c7319e53873ee01299da1e84cfb59eeda977a9c11dde31c18f3d6c7",
+      "sha256": "b1517ca04f865adefc8cf7b86922e2c716c6f4fd4c4f92fe90c91068886fbef2",
       "spec_version": "1.2"
     },
     {
@@ -218,7 +218,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "3bb2563a9327ead60e17b0d20fbd021de14fcf60990fa1ca31e4894a4566a7c2",
+      "sha256": "6f10af78e703a5fd6f94e237f4a1c9674ad11ae9fdfbc9742cf96068873ad3d4",
       "spec_version": "1.2"
     },
     {
@@ -230,7 +230,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "bb3ba254bc92b442e4aa33640e6bb0703f0f467b837a36bee0f0fd0374d910dd",
+      "sha256": "8b837c0e467545b67394f5555166b7f24c2e24bec76ec4ec6083aba727293d78",
       "spec_version": "1.2"
     },
     {
@@ -242,31 +242,31 @@
     {
       "path": "tools/capture_recipes/_common.py",
       "category": "operating",
-      "sha256": "1da448c56387f31e3db20b6d045db7ccc97909e0721cc1ba545a54c96ed2a389",
+      "sha256": "d12ecb465f2b1ee7b65da6ca5cf7a8f4ffe5baa889740b7e11f3de3d69fa4aa4",
       "spec_version": "1.2"
     },
     {
       "path": "tools/capture_recipes/ancestry.py",
       "category": "operating",
-      "sha256": "08fc7a602ec30f88e6af0e1525a074029ca7f806ff8844c3424a06369969f28a",
+      "sha256": "4727b604879278889b084066b4f4913378aa1ad2b50bb7153c0a402f1e54dce8",
       "spec_version": "1.2"
     },
     {
       "path": "tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "18ab13c3287b2d2e111c84321d0190689d8f6af802b5f10dd7e67dde4a152e90",
+      "sha256": "75bea0a603963db135427e8e3044752a5612b448eae5a06a50c5fa52b7aa2478",
       "spec_version": "1.2"
     },
     {
       "path": "tools/capture_recipes/findagrave.py",
       "category": "operating",
-      "sha256": "e7e6a4172be38ade1bbb6ed721c07db5867d6b3d4a74e3f928de3ed0e22ae04b",
+      "sha256": "86cbce5dc5c4ff3cb18994399a2b03ba3d21e8dee917316c6698213098513566",
       "spec_version": "1.2"
     },
     {
       "path": "tools/capture_recipes/newspapers.py",
       "category": "operating",
-      "sha256": "543b21bf95f1cc7ac5a0b80d9346542daf238c5b5d78e3376f8df42ffa1a8e9b",
+      "sha256": "71eaecaae7cb0020095a334aabbc215831bc62ea4d65de4834aa8b7e294aaac1",
       "spec_version": "1.2"
     },
     {

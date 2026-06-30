@@ -169,6 +169,11 @@
             <option value="yes">Yes, save the actual file</option>
             <option value="none">No, the page copy is the record</option>
           </select>
+          <label class="check"><input type="checkbox" id="cb-seamless" />
+            File straight into my archive (skip Downloads)</label>
+          <p class="hint" id="seamless-hint">Needs the capture host installed once:
+            run <code>fha capture --install-host</code> in your archive, then tick
+            this to grant the one-time permission. Off = stage to Downloads.</p>
           <p class="hint">After capturing, file everything with
             <code>fha capture --ingest</code> in your archive.</p>
         </details>
