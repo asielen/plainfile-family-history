@@ -31,7 +31,7 @@ files:            # the scan or photo this points at (put the file in documents/
 ```yaml
 - value: "the fact in plain words"     # e.g. "Jane Doe born 14 June 1950, Millbrook"
   type: birth                          # birth, death, marriage, residence, census, occupation, ...
-  persons: ["Name Here"]               # whose fact this is
+  persons: ["[[Name Here]]"]           # whose fact this is - link them with [[ ]]
   status: suggested                    # suggested -> accepted, once you're confident
   confidence: medium                   # high / medium / low
   date:                                # when it happened (1950, 1950-06-14, or 195X)

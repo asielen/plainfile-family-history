@@ -15,7 +15,10 @@ REPO = pathlib.Path(__file__).resolve().parent
 OUT = REPO / "downloads"
 
 SKIP_SUFFIX = (".sqlite", ".sqlite-journal", ".pyc")
-SKIP_PART = ("__pycache__", ".DS_Store", "Thumbs.db")
+# .cache/ is the archive's rebuildable, machine-local state (see .gitignore) - the
+# generated site, the query index, vendored JS. It is never archive content, so it
+# must stay out of the downloads or they bloat and stop being reproducible.
+SKIP_PART = (".cache", "__pycache__", ".DS_Store", "Thumbs.db")
 
 # The full system showcase carries the tool design too; the by-hand starters omit
 # TOOLING.md (irrelevant to a no-tools user) but keep the law + agent docs.

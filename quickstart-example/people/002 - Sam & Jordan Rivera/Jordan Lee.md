@@ -13,7 +13,7 @@ death:
 **Died:** -
 **Married:** [[Sam Rivera]]
 **Parents:** [[David Lee]] and [[Susan Park]]
-**Children:** [[Ava Rivera]]
+**Children:** Ava (b. 2019)
 
 ## Notes
 My partner, born **Jordan Lee** in Albany - she goes by Rivera now, since we

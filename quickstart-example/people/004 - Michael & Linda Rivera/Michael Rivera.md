@@ -12,6 +12,7 @@ death:
 **Died:** -
 **Married:** [[Linda Brooks]]
 **Parents:** [[Robert Rivera]] and [[Maria Garcia]]
+**Siblings:** [[Carol Rivera]]
 **Children:** [[Sam Rivera]]
 
 ## Notes

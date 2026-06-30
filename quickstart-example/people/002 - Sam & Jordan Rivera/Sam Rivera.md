@@ -12,7 +12,7 @@ death:
 **Died:** -
 **Married:** [[Jordan Lee]]
 **Parents:** [[Michael Rivera]] and [[Linda Brooks]]
-**Children:** [[Ava Rivera]]
+**Children:** Ava (b. 2019) - she's still little, so no page of her own yet
 
 ## Notes
 This is me. I teach high school history in Poughkeepsie, which is probably why I

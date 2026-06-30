@@ -11,8 +11,8 @@
 - status: open
 - context:
   - (Sam, today) [[Maria Garcia]] said she worked in her father's shop in Dallas
-    during the war, but I don't know the name or the neighborhood. A city directory
-    from the early 1940s might list it - and might finally name her parents.
+    in the early 1950s, but I don't know the name or the neighborhood. A city directory
+    from that time might list it - and might finally name her parents.
 
 ## Q: Can I confirm Robert Rivera's Korea service dates?
 - status: open
