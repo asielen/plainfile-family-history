@@ -224,7 +224,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "338f11f4151206af8d90e027e09e4bda626a6c71f2c0108e99981dce36491d19",
+      "sha256": "38007a55ac25828902cb374fd43077a899f59be69de6e7011bdb80d13e8ed6fc",
       "spec_version": "1.2"
     },
     {
@@ -314,7 +314,7 @@
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "ea888da4e043df7fb79529a9cb445b4b3806b65aca03671f83f993173defbe11",
+      "sha256": "2f59a142e531e7752d10a219abb03ad496f8acf11bf5534eada518617cb5f399",
       "spec_version": "1.2"
     },
     {
@@ -392,7 +392,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "3a5e1b1dc13fe0b4ba82b24b3c1e99b9f6a12f88cda3b6292ebbeb94d42837af",
+      "sha256": "80221a3d2cbce6b1e8f877877cf0e321b9158e8206df98ad5da56641c58af68e",
       "spec_version": "1.2"
     },
     {
@@ -464,7 +464,7 @@
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "9cc8e5ee6a9e3a6c367dd824f05b5f585bf1fa65e244f2c550dc1c4e7dbfeb3d",
+      "sha256": "c771ec8a62e3aa9a3bb52c113faacbe6f41f064cc2d853083cda799cdb881a55",
       "spec_version": "1.2"
     },
     {

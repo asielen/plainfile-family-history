@@ -50,6 +50,26 @@ class ResolveHelperTests(unittest.TestCase):
     def test_unknown_ref_is_none(self):
         self.assertIsNone(resolve_ref('nobody', self.amap))
 
+    def test_restricted_variant_dict_resolves_by_value(self):
+        # A restricted name variant (deadname, SPEC §18) is a {value:, restricted:}
+        # mapping. Its clean value must still resolve internally; str(dict) would
+        # make the Python repr the alias key, so the real prior name would resolve
+        # to nothing and a clash on it would go undetected.
+        records = [{
+            'id': 'P-de957bcda1', 'name': 'Jane Hartley',
+            'name_variants': [{'value': 'John Hartley', 'restricted': 'true'}],
+        }]
+        amap = build_alias_map(records)
+        self.assertEqual(resolve_ref('John Hartley', amap), 'p-de957bcda1')
+        self.assertEqual(resolve_ref('[[John Hartley]]', amap), 'p-de957bcda1')
+        # And a deadname colliding with another person's name is still a clash.
+        clash = [
+            {'id': 'P-aaaaaaaaaa', 'name': 'John Hartley'},
+            {'id': 'P-bbbbbbbbbb', 'name': 'Jane Hartley',
+             'name_variants': [{'value': 'John Hartley', 'restricted': 'true'}]},
+        ]
+        self.assertIn('john hartley', alias_clashes(clash))
+
     def test_clashing_name_never_resolves(self):
         records = [
             {'id': 'P-aaaaaaaaaa', 'name': 'John Smith'},

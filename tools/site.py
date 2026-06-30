@@ -1149,7 +1149,10 @@ class _SiteBuilder:
             return False
         for row in rows:
             person = self.person_meta.get(row['person_ref'] or '')
-            if person and (person['living'] or '') in ('true', 'unknown'):
+            # A deceased `restricted: by-request` person is redacted too, not just
+            # living/unknown - mirror the person photo strips, which gate on the
+            # full _person_is_redacted predicate.
+            if person and self._person_is_redacted(person):
                 return True
         return False
 

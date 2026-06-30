@@ -185,6 +185,37 @@ class WikitreeRenderTests(unittest.TestCase):
         r = wikitree.run_wikitree(self.root, 'nope')
         self.assertEqual(r['status'], 'bad-args')
 
+    def test_restricted_name_wikilink_refused(self):
+        # A restricted name variant (deadname) written as a name-style wikilink
+        # renders verbatim and would publish the deadname even though the linked
+        # person is not themselves restricted. The export must fail closed.
+        marian = self.root / 'people' / 'p-0000000002.md'
+        marian.write_text(
+            '---\nid: P-0000000002\nname: Mary Jones\nliving: false\n'
+            'name_variants:\n  - value: Marion Jones\n    restricted: true\n---\n',
+            encoding='utf-8',
+        )
+        profile = self.root / 'people' / 'subject.md'
+        profile.write_text(
+            profile.read_text(encoding='utf-8')
+            + '\nFormerly known as [[Marion Jones]].\n',
+            encoding='utf-8',
+        )
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        conn.execute("UPDATE persons SET path='people/p-0000000002.md' WHERE id='p-0000000002'")
+        conn.execute(
+            "INSERT INTO aliases(alias, canonical_id, kind) VALUES (?,?,?)",
+            ('marion jones', 'p-0000000002', 'variant'),
+        )
+        conn.commit()
+        conn.close()
+
+        r = wikitree.run_wikitree(self.root, 'p-0000000001')
+
+        self.assertEqual(r['status'], 'restricted-names')
+        self.assertIsNone(r['text'])
+        self.assertIn('Marion Jones', r['messages'][0])
+
     def test_restricted_source_citation_refused(self):
         profile = self.root / 'people' / 'subject.md'
         profile.write_text(

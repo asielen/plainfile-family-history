@@ -90,7 +90,7 @@ configure_utf8_stdout()
 
 _REQUIRED_TABLES = (
     'persons', 'person_variants', 'person_external', 'sources', 'claims',
-    'claim_persons', 'places',
+    'claim_persons', 'places', 'aliases',
 )
 
 
@@ -347,9 +347,12 @@ def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str]
     source_ids: set[str] = set()
     person_ids: set[str] = set()
     for m in _WIKILINK_TARGET_RE.finditer(text):
-        target = m.group(1).strip()
-        if is_valid_id(target):
-            continue  # already handled by extract_token_ids
+        # Drop an Obsidian #heading / #^block fragment before lookup: the alias
+        # table stores names without it, so `[[Restricted Person#bio]]` would
+        # otherwise miss the lookup and slip past the privacy scan.
+        target = m.group(1).split('#', 1)[0].strip()
+        if not target or is_valid_id(target):
+            continue  # blank, or an ID already handled by extract_token_ids
         for row in conn.execute(
             'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE',
             (target,),
@@ -460,6 +463,51 @@ def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: 
             continue
         if _is_restricted_value(value):
             flagged.append(row)
+    return flagged
+
+
+def _restricted_name_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[tuple[str, str]]:
+    """Name-style wikilinks whose text is a restricted name variant (a deadname).
+
+    A deadname (SPEC §18) is a restricted NAME of a person who may not themselves
+    be restricted, so `_restricted_person_refs` (which checks the person record's
+    own `restricted` marker) misses it. The clean value is in the alias table, so
+    `[[Deadname]]` resolves to the person; but `_render_tokens` emits a name-style
+    wikilink VERBATIM (it is not an ID token), publishing the deadname. WikiTree is
+    public with no opt-in, so a deadname in the prose must block the export.
+
+    Returns (person_id_display, deadname) pairs for the cleanup message."""
+    flagged: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for m in _WIKILINK_TARGET_RE.finditer(text):
+        target = m.group(1).split('#', 1)[0].strip()
+        if not target or is_valid_id(target):
+            continue
+        key = target.lower()
+        if key in seen:
+            continue
+        for row in conn.execute(
+            'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE',
+            (target,),
+        ).fetchall():
+            cid = row['canonical_id']
+            if not cid or id_type_of(cid) != 'P':
+                continue
+            prow = conn.execute(
+                'SELECT id, path FROM persons WHERE id = ?', (cid,)
+            ).fetchone()
+            if prow is None or not prow['path']:
+                continue
+            try:
+                meta = read_record(archive_root / prow['path'])['meta']
+            except Exception:
+                continue
+            for v in meta.get('name_variants') or []:
+                if (isinstance(v, dict) and _is_restricted_value(v.get('restricted'))
+                        and str(v.get('value') or '').strip().lower() == key):
+                    flagged.append((fmt_id_display(cid), target))
+                    seen.add(key)
+                    break
     return flagged
 
 
@@ -654,7 +702,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
     """
     Render the WikiTree-dialect markup for one curated person. Returns:
       {'status': 'ok'|'not-found'|'not-curated'|'living-subject'|'restricted-subject'|
-       'restricted-sources'|'restricted-people'|'no-index'|'bad-args',
+       'restricted-sources'|'restricted-people'|'restricted-names'|'no-index'|'bad-args',
        'text': str|None, 'messages': [str, ...]}
     """
     if not is_valid_id(pid) or id_type_of(pid) != 'P':
@@ -721,6 +769,18 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                     'messages': [
                         'WikiTree output is public-facing; remove or rewrite links '
                         f'to restricted people before export: {items}.'
+                    ]}
+
+        # A restricted NAME variant (deadname, SPEC §18) written as a name-style
+        # wikilink renders verbatim and would publish the deadname even when the
+        # person is not themselves restricted. Fail closed, same posture as above.
+        restricted_names = _restricted_name_refs(conn, archive_root, body)
+        if restricted_names:
+            items = ', '.join(f'"{name}" ({pid_disp})' for pid_disp, name in restricted_names)
+            return {'status': 'restricted-names', 'text': None,
+                    'messages': [
+                        'WikiTree output is public-facing; remove or rewrite the '
+                        f'restricted (deadname) name links before export: {items}.'
                     ]}
         spacetime = _spacetime_index(conn, pid)
         templates = _load_templates()
@@ -816,7 +876,7 @@ def run_wikitree(archive_root: Path, pid: str) -> Result:
     elif status in ('not-found', 'not-curated'):
         exit_code = EXIT_WARNINGS
     else:  # bad-args, no-index, merged, living-subject, restricted-subject,
-           # restricted-sources, restricted-people
+           # restricted-sources, restricted-people, restricted-names
         exit_code = EXIT_FAILURE
     return Result(ok=(status == 'ok'), exit_code=exit_code, data=payload)
 
@@ -851,6 +911,8 @@ def _cmd_wikitree(args: argparse.Namespace) -> int:
     if status == 'restricted-sources':
         return EXIT_FAILURE
     if status == 'restricted-people':
+        return EXIT_FAILURE
+    if status == 'restricted-names':
         return EXIT_FAILURE
     if status == 'not-found':
         print(f'{fmt_id_display(pid)}: not found in index.', file=sys.stderr)

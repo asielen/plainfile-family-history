@@ -72,6 +72,7 @@ import re
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -410,12 +411,17 @@ def _public_source_filter_sql() -> str:
     return "(COALESCE(s.restricted, 0) = 0 AND COALESCE(s.source_type, '') != 'dna' AND COALESCE(s.publication_ok, 1) != 0)"
 
 
-def _load_vitals(conn: sqlite3.Connection, pids: set[str]) -> dict[tuple[str, str], sqlite3.Row]:
+def _load_vitals(
+    conn: sqlite3.Connection, pids: set[str],
+    is_public: 'Callable[[sqlite3.Row], bool] | None' = None,
+) -> dict[tuple[str, str], sqlite3.Row]:
     """First public-safe accepted birth/death claim per (person_id, type).
 
     Filtering joins through `sources` here rather than later during emission so
     a restricted/DNA fact cannot leak as an event with the source pointer merely
-    omitted.
+    omitted. `is_public`, when given, also rejects free-text-restricted and
+    per-claim-restricted rows BEFORE the per-key pick, so an earlier-dated
+    restricted claim cannot evict (and thereby suppress) a publishable later one.
     """
     if not pids:
         return {}
@@ -438,6 +444,8 @@ def _load_vitals(conn: sqlite3.Connection, pids: set[str]) -> dict[tuple[str, st
     ).fetchall()
     out: dict[tuple[str, str], sqlite3.Row] = {}
     for r in rows:
+        if is_public is not None and not is_public(r):
+            continue
         out.setdefault((r['person_id'], r['type']), r)
     return out
 
@@ -469,8 +477,16 @@ def _spouse_persons_for_claim(conn: sqlite3.Connection, claim_id: str) -> frozen
     return frozenset()
 
 
-def _load_marriages(conn: sqlite3.Connection) -> dict[frozenset[str], sqlite3.Row]:
-    """Accepted public-safe marriage claims keyed by spouse pair."""
+def _load_marriages(
+    conn: sqlite3.Connection,
+    is_public: 'Callable[[sqlite3.Row], bool] | None' = None,
+) -> dict[frozenset[str], sqlite3.Row]:
+    """Accepted public-safe marriage claims keyed by spouse pair.
+
+    `is_public`, when given, rejects free-text-restricted and per-claim-restricted
+    rows BEFORE the per-couple pick, so a restricted marriage claim cannot evict
+    (and thereby suppress) a publishable one for the same couple.
+    """
     rows = conn.execute(
         f"""
         SELECT c.id, c.date_edtf, c.place_id, c.place_text, c.source_id
@@ -482,6 +498,8 @@ def _load_marriages(conn: sqlite3.Connection) -> dict[frozenset[str], sqlite3.Ro
     ).fetchall()
     out: dict[frozenset[str], sqlite3.Row] = {}
     for r in rows:
+        if is_public is not None and not is_public(r):
+            continue
         persons = _spouse_persons_for_claim(conn, r['id'])
         if len(persons) >= 2:
             out.setdefault(frozenset(persons), r)
@@ -745,8 +763,8 @@ def _gedcom_payload(
         # A free-text-restricted source is not an eligible fact source, so its
         # vital/marriage rows are dropped before emission (the SQL filter in the
         # loaders already removed index-restricted/DNA/publication_ok=0 ones).
-        vitals = {k: v for k, v in _load_vitals(conn, included).items() if _public_claim_row(v)}
-        marriages = {k: v for k, v in _load_marriages(conn).items() if _public_claim_row(v)}
+        vitals = _load_vitals(conn, included, _public_claim_row)
+        marriages = _load_marriages(conn, _public_claim_row)
 
         # Collect the sources actually cited by an emitted, non-redacted fact.
         used_sources: set[str] = set()
