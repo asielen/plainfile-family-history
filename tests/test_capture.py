@@ -267,6 +267,7 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Mary Smith', meta['people'])
         self.assertNotIn("Father's Name", meta['people'])
         self.assertNotIn("Mother's Name", meta['people'])
+        self.assertNotIn('Birth Date', meta['people'])       # fact label, not a person
 
     def test_newspapers_recipe(self) -> None:
         rc = self._capture(_sample('newspapers'),
@@ -301,6 +302,71 @@ class CaptureTestCase(unittest.TestCase):
     def test_domain_strips_www(self) -> None:
         self.assertEqual(capture.domain_of('https://www.Example.com/x'), 'example.com')
         self.assertEqual(capture.domain_of(None), '')
+
+
+class LabelGuardTestCase(unittest.TestCase):
+    """The shared `_common.py` label-as-people guard (capture-frontend-01 WS-A).
+
+    Field labels ("Birth Date", "Event Type", …) leaked into the people list
+    across the Ancestry / FamilySearch / Find a Grave recipes. The guard is
+    site-neutral, so it is tested directly against `_common`.
+    """
+
+    # Real labels seen leaking in the EX1/EX2/EX4/EX6 corpus - none may pass.
+    LABELS = [
+        'Birth Date', 'Death Date', 'Residence Place', 'Residence Date',
+        'Marital Status', 'Event Type', 'Event Place', 'Newspaper Title',
+        'Estimated Birth Year', 'Highest Grade Completed',
+        'Relation to Head of House', "Father's Name", "Mother's Name",
+        'Name at Birth', 'Household Members', 'Family Members',
+    ]
+    # Genuine names, including surnames that brush against label vocabulary.
+    NAMES = [
+        'Calvin Hartley', 'Edith May Hartley', 'Harriet Webb',
+        "Mary O'Brien", 'Jean-Luc Picard', 'John Q. Adams',
+        'Larry Page', 'John Ward', 'Sarah Young',
+    ]
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(ROOT / 'tools'))
+        from capture_recipes import _common
+        self.common = _common
+
+    def test_labels_never_look_like_names(self) -> None:
+        for label in self.LABELS:
+            self.assertTrue(self.common.is_field_label(label), f'{label!r} not a label')
+            self.assertFalse(self.common.looks_like_name(label),
+                             f'{label!r} leaked as a name')
+
+    def test_real_names_pass(self) -> None:
+        for name in self.NAMES:
+            self.assertFalse(self.common.is_field_label(name), f'{name!r} flagged as label')
+            self.assertTrue(self.common.looks_like_name(name), f'{name!r} rejected as a name')
+
+    def test_label_value_rows_read_the_value(self) -> None:
+        rows = [
+            ['Name', 'John Smith'],
+            ["Father's Name", 'William Smith'],
+            ['Birth Date', '1850'],
+            ['Marital Status', 'Married'],
+            ['Event Type', 'Birth'],
+        ]
+        self.assertEqual(self.common.people_from_table(rows),
+                         ['John Smith', 'William Smith'])
+
+    def test_household_rows_read_the_name(self) -> None:
+        # A genuine household/index table: first column IS the person.
+        rows = [
+            ['Name', 'Relationship', 'Age'],          # header row, skipped
+            ['Calvin Hartley', 'Head', '45'],
+            ['Edith Hartley', 'Wife', '42'],
+        ]
+        self.assertEqual(self.common.people_from_table(rows),
+                         ['Calvin Hartley', 'Edith Hartley'])
+
+    def test_bare_label_with_no_value_is_dropped(self) -> None:
+        # A known label in a single-column row must never leak as a person.
+        self.assertEqual(self.common.people_from_table([['Birth Date'], ['Event Type']]), [])
 
 
 if __name__ == '__main__':
