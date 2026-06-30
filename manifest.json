@@ -260,7 +260,7 @@
     {
       "path": "tools/capture_recipes/findagrave.py",
       "category": "operating",
-      "sha256": "e7e6a4172be38ade1bbb6ed721c07db5867d6b3d4a74e3f928de3ed0e22ae04b",
+      "sha256": "86cbce5dc5c4ff3cb18994399a2b03ba3d21e8dee917316c6698213098513566",
       "spec_version": "1.2"
     },
     {

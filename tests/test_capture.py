@@ -322,6 +322,20 @@ class CaptureTestCase(unittest.TestCase):
         self.assertIn('Fairview Cemetery', rec['body'])
         self.assertEqual(meta['source_date'], '1929')
 
+    def test_findagrave_date_from_title_and_memorial_park(self) -> None:
+        # B2: lifespan only in the title → source_date still populates.
+        # B3: a "Memorial Park" burial place is found, and the "Virtual
+        # Cemetery" decoy is rejected.
+        rc = self._capture(_sample('findagrave-memorial-park'),
+                           url='https://www.findagrave.com/memorial/28906345/frances-dodson')
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        meta = rec['meta']
+        self.assertEqual(meta['source_date'], '1921')
+        # The place hint is the Memorial Park, not the "Virtual Cemetery" decoy.
+        self.assertIn('place_text hint): Greenwood Memorial Park', rec['body'])
+        self.assertNotIn('place_text hint): Ancestry Virtual Cemetery', rec['body'])
+
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def test_visible_text_truncates_on_word_boundary(self) -> None:

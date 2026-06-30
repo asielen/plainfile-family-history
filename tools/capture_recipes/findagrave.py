@@ -25,7 +25,16 @@ PRIORITY = 40
 # "1842 – 1918" / "1842–1918" / "BIRTH 12 Mar 1842 … DEATH 4 Jan 1918"
 _BIRTH_DEATH_RE = re.compile(
     r'(1[5-9]\d{2}|20\d{2})\s*[–\-]\s*(1[5-9]\d{2}|20\d{2})')
-_CEMETERY_RE = re.compile(r'([A-Z][\w.\'’]*(?:\s+[A-Z][\w.\'’]*)*\s+Cemetery)')
+
+# A burial-place name: capitalized words ending in a recognized burial suffix.
+# "Cemetery" alone missed "Greenwood Memorial Park" and grabbed the decoy
+# "Ancestry Virtual Cemetery" (a virtual collection, not a burial place).
+_CEMETERY_RE = re.compile(
+    r"([A-Z][\w.'’]*(?:\s+[A-Z][\w.'’]*)*\s+"
+    r"(?:Cemetery|Memorial Park|Memorial Gardens?|Burial Ground|Churchyard|Columbarium))")
+
+# The place named immediately after a "Burial"/"Plot" label is the real one.
+_BURIAL_LABEL_RE = re.compile(r'\b(?:Burial|Plot)\b[:\s]*(.{0,80})', re.I)
 
 
 def detect(html: str, url: str | None) -> bool:
@@ -41,17 +50,32 @@ def _birth_death(text: str) -> tuple[str | None, str | None]:
     return (m.group(1), m.group(2)) if m else (None, None)
 
 
+def _cemetery(text: str) -> str | None:
+    """The burial place, preferring the value next to a Burial/Plot label and
+    never a "… Virtual Cemetery" (an online collection, not a grave)."""
+    text = text or ''
+    for label in _BURIAL_LABEL_RE.finditer(text):
+        m = _CEMETERY_RE.search(label.group(1))
+        if m and 'virtual' not in m.group(1).lower():
+            return m.group(1).strip()
+    for m in _CEMETERY_RE.finditer(text):
+        if 'virtual' not in m.group(1).lower():
+            return m.group(1).strip()
+    return None
+
+
 def extract(html: str, url: str | None) -> dict:
     page = parse_html(html)
     name = first_nonempty(meta_content(page, 'og:title'), page.h1, page.title) or 'Find a Grave memorial'
     description = first_nonempty(meta_content(page, 'og:description'), page.text) or ''
 
+    # Find a Grave reliably puts the lifespan in the title/name, so search it
+    # first; og:description and the page body are the fallbacks.
     birth, death = _birth_death(' '.join(filter(None, [
-        meta_content(page, 'og:description'), page.text[:400],
+        name, meta_content(page, 'og:description'), page.text[:400],
     ])))
 
-    cem_m = _CEMETERY_RE.search(' '.join(filter(None, [description, page.text])))
-    cemetery = cem_m.group(1) if cem_m else None
+    cemetery = _cemetery(' '.join(filter(None, [description, page.text])))
 
     # The memorial subject, plus any family members in a linked table.
     people: list[str] = []
