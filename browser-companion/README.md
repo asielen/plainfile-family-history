@@ -30,7 +30,7 @@ Every capture writes one **staged bundle** to
 ```
 <slug>-<timestamp>/
   page.html        ← the raw captured DOM, ALWAYS saved; the clean scrape source
-  page-copy.html   ← optional self-contained page snapshot (role webpage), when
+  page-snapshot.html   ← optional self-contained page snapshot (role webpage), when
                      "Keep a copy of the whole page" is on
   record.<ext>     ← optional evidence file (role record): an image or PDF, pulled
                      from the page address or dropped in; absent for "No file"
@@ -57,7 +57,7 @@ per staged file with its `role`:
   "source_type": "census",
   "assets": [
     { "file": "record.jpg", "role": "record", "mode": "manual", "provisional": true },
-    { "file": "page-copy.html", "role": "webpage", "mode": "singlefile" }
+    { "file": "page-snapshot.html", "role": "webpage", "mode": "singlefile" }
   ],
   "people": ["Thomas Hartley", "Margaret Hartley"],
   "notes": "Bob's great-grandfather's household.",

@@ -131,7 +131,7 @@ class ExampleBundleTestCase(unittest.TestCase):
             self.assertEqual(len(folders), 1)
             bundle_dir = folders[0]
             self.assertTrue((bundle_dir / 'notes.md').is_file())
-            self.assertTrue((bundle_dir / 'page-copy.html').is_file())
+            self.assertTrue((bundle_dir / 'page-snapshot.html').is_file())
             self.assertTrue((bundle_dir / 'record.jpg').is_file())
             # page.html is the scrape source, consumed at ingest — NOT filed.
             self.assertFalse((bundle_dir / 'page.html').exists())
@@ -150,7 +150,7 @@ class ExampleBundleTestCase(unittest.TestCase):
             # dissolves the bundle) name both assets with their roles.
             files = rec['meta']['files']
             by_name = {f['file']: f.get('role') for f in files}
-            self.assertEqual(by_name.get('page-copy.html'), 'webpage')
+            self.assertEqual(by_name.get('page-snapshot.html'), 'webpage')
             self.assertEqual(by_name.get('record.jpg'), 'record')
 
             # Bundle parked, not deleted.

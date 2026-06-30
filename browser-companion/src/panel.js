@@ -312,7 +312,7 @@
     }
     return {
       blob: new Blob([resp.html], { type: 'text/html' }),
-      filename: 'page-copy.html',
+      filename: 'page-snapshot.html',
     };
   }
 

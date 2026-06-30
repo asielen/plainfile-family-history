@@ -325,11 +325,11 @@ class IngestTestCase(unittest.TestCase):
             'people': ['Thomas Hartley'], 'notes': 'Both artifacts saved.',
             'assets': [
                 {'file': 'record.jpg', 'role': 'record', 'mode': 'fetch'},
-                {'file': 'page-copy.html', 'role': 'webpage', 'mode': 'singlefile'},
+                {'file': 'page-snapshot.html', 'role': 'webpage', 'mode': 'singlefile'},
             ],
         }), encoding='utf-8')
         (bundle / 'record.jpg').write_bytes(b'\xff\xd8\xff\xe0 fake jpeg')
-        (bundle / 'page-copy.html').write_text('<html>snapshot</html>', encoding='utf-8')
+        (bundle / 'page-snapshot.html').write_text('<html>snapshot</html>', encoding='utf-8')
 
         res = self._ingest()
         self.assertEqual(res.data['ingested'], 1)
@@ -339,7 +339,7 @@ class IngestTestCase(unittest.TestCase):
         folder = dirs[0]
         self.assertTrue((folder / 'notes.md').is_file())
         self.assertTrue((folder / 'record.jpg').is_file())
-        self.assertTrue((folder / 'page-copy.html').is_file())
+        self.assertTrue((folder / 'page-snapshot.html').is_file())
         # page.html is the scrape source, consumed at ingest — never filed.
         self.assertFalse((folder / 'page.html').exists())
 
@@ -349,7 +349,7 @@ class IngestTestCase(unittest.TestCase):
         self.assertIn('Thomas Hartley', rec['meta']['people'])
         by_name = {f['file']: f.get('role') for f in rec['meta']['files']}
         self.assertEqual(by_name.get('record.jpg'), 'record')
-        self.assertEqual(by_name.get('page-copy.html'), 'webpage')
+        self.assertEqual(by_name.get('page-snapshot.html'), 'webpage')
 
     def test_schema2_empty_assets_is_pointer_only(self) -> None:
         # assets: [] (the panel's pointer-only emission) → asset_elsewhere stub.
@@ -371,10 +371,10 @@ class IngestTestCase(unittest.TestCase):
         bundle = self.staging / 'snapshot-only'
         bundle.mkdir(parents=True)
         # No page.html — only the single-file snapshot asset.
-        (bundle / 'page-copy.html').write_text(_sample('ancestry'), encoding='utf-8')
+        (bundle / 'page-snapshot.html').write_text(_sample('ancestry'), encoding='utf-8')
         (bundle / 'capture.json').write_text(json.dumps({
             'schema': 2, 'url': 'https://www.ancestry.com/rec/1', 'accessed': '2026-06-24',
-            'assets': [{'file': 'page-copy.html', 'role': 'webpage', 'mode': 'singlefile'}],
+            'assets': [{'file': 'page-snapshot.html', 'role': 'webpage', 'mode': 'singlefile'}],
         }), encoding='utf-8')
         res = self._ingest()
         self.assertEqual(res.data['ingested'], 1)

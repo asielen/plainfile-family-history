@@ -7,7 +7,7 @@
   "source_type": "census",
   "assets": [
     { "file": "record.jpg", "role": "record", "mode": "manual", "provisional": true },
-    { "file": "page-copy.html", "role": "webpage", "mode": "singlefile" }
+    { "file": "page-snapshot.html", "role": "webpage", "mode": "singlefile" }
   ],
   "people": ["Thomas Hartley", "Margaret Hartley", "Ethel Hartley"],
   "notes": "Bob's great-grandfather's household. The boy listed as 'Calvin' is Cal.",
