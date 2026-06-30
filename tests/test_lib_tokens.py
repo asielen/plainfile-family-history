@@ -1,5 +1,5 @@
 """
-test_lib_tokens.py — the `[[ ]]` citation-token grammar in _lib.
+test_lib_tokens.py - the `[[ ]]` citation-token grammar in _lib.
 
 The token grammar is the single chokepoint every consumer (index, find,
 wikitree, site, packet, report, lint) resolves through, so these tests pin the
@@ -117,7 +117,7 @@ class TokenGrammarTests(unittest.TestCase):
         self.assertEqual(display, 'Margaret')
 
     def test_token_re_single_group_contract(self):
-        """findall / group(1) still yield the bare ID — the unswept-consumer shape."""
+        """findall / group(1) still yield the bare ID - the unswept-consumer shape."""
         text = '[[S-bbbbbbbbbb|Display]] and [P-aaaaaaaaaa] and [[H-eeeeeeeeee#h]]'
         self.assertEqual(
             TOKEN_RE.findall(text),

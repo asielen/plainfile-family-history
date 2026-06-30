@@ -1,9 +1,9 @@
 """
-test_site.py — fha site (M8.1 source page + M8.2 person page).
+test_site.py - fha site (M8.1 source page + M8.2 person page).
 
 Builds a synthetic .cache/index.sqlite (and, where needed, .cache/photos.sqlite)
-directly from index.py's / photoindex.py's DDL — the same pattern as
-tests/test_packet.py — so the publication generator can be exercised without a
+directly from index.py's / photoindex.py's DDL - the same pattern as
+tests/test_packet.py - so the publication generator can be exercised without a
 full archive fixture, exiftool, or a network. The prose/citation that `fha site`
 reads from the record .md files is written to disk alongside the index rows.
 
@@ -48,7 +48,7 @@ class _Base(unittest.TestCase):
         self.conn.close()
         self._tmp.cleanup()
 
-    # — seeding —
+    # - seeding -
 
     def _seed_person(self, pid, name='Test Person', *, living='false', tier='curated',
                      surname='Person', body='# Test Person\n'):
@@ -652,7 +652,7 @@ class StandaloneRedactionAuditTests(_Base):
 
 
 class TreeTests(_Base):
-    """M8.5: interactive trees — vendored renderer + adapter, build-time neutral
+    """M8.5: interactive trees - vendored renderer + adapter, build-time neutral
     tree JSON (descendants from the root person's apex on the home page, ancestor
     pedigree per curated person), redaction baked into the JSON."""
 

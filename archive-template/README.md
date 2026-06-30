@@ -24,11 +24,11 @@ After copying:
    copy the `tools/`, `docs/`, and `.claude/skills/` folders plus the root rulebooks
    (`SPEC.md`, `TOOLING.md`, `AGENTS.md`, `AGENTS_TOOLING.md`, `CLAUDE.md`, `BUILD.md`,
    `README.md`) into this archive folder.
-   *(Alternatively, `fha install` does this in one step — but it must run against a **fresh,
+   *(Alternatively, `fha install` does this in one step - but it must run against a **fresh,
    empty** folder name, not a copy of this template. If you've already copied archive-template,
    use the manual copy path above. See `docs/SETUP_FROM_ZIP.md`.)*
    Later, `fha update-tools --repo <updated-clone>` pulls improvements and backs up anything
-   you've customized — never deleting, never touching your `fha.yaml` or `places.yaml`
+   you've customized - never deleting, never touching your `fha.yaml` or `places.yaml`
    (`BUILD.md` M9.1-M9.2, TOOLING.md §13c).
 3. Open in your AI agent and start processing `inbox/` items.
 

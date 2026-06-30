@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-id.py — fha id: mint and check archive IDs.
+id.py - fha id: mint and check archive IDs.
 
   fha id mint P|S|C|L|H [-n N]      Print fresh IDs (checked for non-existence)
   fha id check <ID>                  Show where an ID appears in the tree
@@ -145,7 +145,7 @@ def _run_id(args: argparse.Namespace) -> int:
         return EXIT_CLEAN
 
     else:
-        # No subcommand — print help
+        # No subcommand - print help
         print('Usage: fha id mint TYPE [-n N] | fha id check ID')
         return EXIT_CLEAN
 

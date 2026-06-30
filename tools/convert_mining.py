@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-convert_mining.py — fha convert-mining: one-time legacy interview migration.
+convert_mining.py - fha convert-mining: one-time legacy interview migration.
 
   fha convert-mining [--root PATH]            Dry-run: print the conversion plan
   fha convert-mining [--root PATH] --apply    Write the conformant records
@@ -9,7 +9,7 @@ Migrates a legacy transcript-mining pipeline's output (the `mining/` folder of
 `sources.txt`, `facts.txt`, `stories.txt`, `questions.txt`, `aliases.txt`, and
 the raw `transcripts/`) into conformant archive records (SPEC §12.1/§14,
 TOOLING §11). It is the migration analogue of `fha process` + the draft pass, and is
-**dry-run by default** — nothing is written without `--apply`. It is a one-shot
+**dry-run by default** - nothing is written without `--apply`. It is a one-shot
 migration (re-applying mints fresh IDs and would duplicate), so the dry-run plan
 is the safety gate; review it, then `--apply` once.
 
@@ -48,22 +48,22 @@ re-use of the same `_lib` primitives `fha process` uses, not an import of it.
 #
 #  Legacy parsing
 #    parse_sources / parse_aliases / parse_facts / parse_stories / parse_questions
-#    _parse_table_block        — markdown fact table → row dicts (+ Update lines)
+#    _parse_table_block        - markdown fact table → row dicts (+ Update lines)
 #
 #  Field derivation
-#    derive_claim_type         — Claim text + Section → (type, subtype)
-#    legacy_to_edtf            — Earliest/Latest cells → a valid EDTF, or None
-#    _confidence               — H/M/L → high/medium/low
-#    find_anchor               — 3 rarest words → unique transcript line, or None
+#    derive_claim_type         - Claim text + Section → (type, subtype)
+#    legacy_to_edtf            - Earliest/Latest cells → a valid EDTF, or None
+#    _confidence               - H/M/L → high/medium/low
+#    find_anchor               - 3 rarest words → unique transcript line, or None
 #
 #  Resolution + minting
-#    PersonResolver            — name → P-id (alias or fresh), tracks stubs to mint
+#    PersonResolver            - name → P-id (alias or fresh), tracks stubs to mint
 #    _person_filename / _person_stub_text
 #    _slugify / _yaml_inline
 #
 #  Building
-#    build_plan                — parse everything into a ConversionPlan (no writes)
-#    _render_source_record     — one source record's full text
+#    build_plan                - parse everything into a ConversionPlan (no writes)
+#    _render_source_record     - one source record's full text
 #    _render_questions_block / _render_mapping_csv
 #
 #  Apply + CLI
@@ -288,7 +288,7 @@ def parse_questions(text: str) -> list[dict]:
 
 # Keyword → claim type, in priority order. `relationship`/`name` are deliberately
 # absent: relationship claims require `roles` (lint E015), and these heuristics
-# can't responsibly infer either — they stay `event` for human review instead.
+# can't responsibly infer either - they stay `event` for human review instead.
 _TYPE_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
     (('born', 'birth'), 'birth'),
     (('married', 'marriage', 'wedding', 'wed '), 'marriage'),
@@ -349,7 +349,7 @@ def legacy_to_edtf(earliest: str, latest: str) -> str | None:
 
     Equal (or single) → one value (`1890`, `1890~` when uncertain, `189X` for
     an unknown-final-digit decade per TOOLING §11); two different values on
-    either side → the `min/max` interval — decade/decade (`189X/190X`),
+    either side → the `min/max` interval - decade/decade (`189X/190X`),
     decade/year (`189X/1900`), or year/year alike. Anything that won't
     validate as EDTF is dropped rather than written (lint E014 would reject
     a malformed date).
@@ -368,7 +368,7 @@ def legacy_to_edtf(earliest: str, latest: str) -> str | None:
     l_token = l_decade or (one(l_year, l_approx) if l_year else None)
 
     if e_bare and l_bare and e_bare == l_bare:
-        # Same underlying value on both sides (e.g. `1890~`/`1890`) — one
+        # Same underlying value on both sides (e.g. `1890~`/`1890`) - one
         # value, with the uncertainty marker if *either* side carried it.
         edtf = e_decade or one(e_bare, e_approx or l_approx)
     elif e_token and l_token:
@@ -406,7 +406,7 @@ def find_anchor(value: str, transcript_lines: list[str]) -> str | None:
 
     Content words present in the transcript are ranked rarest-first; the tool
     looks for a line containing all 3 (then 2, then the single rarest). The
-    first uniqueness — exactly one matching line — yields that 1-based line
+    first uniqueness - exactly one matching line - yields that 1-based line
     number; if no subset is unique, the anchor is omitted (TOOLING §11).
     """
     lower_lines = [ln.lower() for ln in transcript_lines]
@@ -448,7 +448,7 @@ class PersonResolver:
 
     A name in the alias map takes that P-id; an unaliased name gets a freshly
     minted one. Either way, a P-id with no existing person record under
-    `people/` is flagged `needs_stub` so the conversion writes a stub for it —
+    `people/` is flagged `needs_stub` so the conversion writes a stub for it -
     that is what keeps every claim/story/question reference lint-clean (E005).
     """
 
@@ -862,7 +862,7 @@ def _render_mapping_csv(rows: list[tuple[str, str, str]]) -> str:
 
 def print_plan(plan: ConversionPlan, *, applied: bool) -> None:
     verb = 'Wrote' if applied else 'Would write'
-    head = 'Applied conversion' if applied else 'Conversion plan (dry-run — use --apply to write)'
+    head = 'Applied conversion' if applied else 'Conversion plan (dry-run - use --apply to write)'
     print(head)
     print(f'  Sources:       {len(plan.sources)}')
     print(f'  Claims:        {sum(len(s.claims) for s in plan.sources)}')
@@ -941,7 +941,7 @@ def apply_plan(plan: ConversionPlan, fha_config: dict) -> None:
 
     def write_new(path: Path, text: str) -> None:
         ensure_parent(path)
-        # Register the cleanup before writing, same as copy_new — a
+        # Register the cleanup before writing, same as copy_new - a
         # write_text() that fails partway (e.g. disk full) can still leave a
         # partially-written file behind.
         undo.append(lambda p=path: p.unlink(missing_ok=True))
@@ -998,7 +998,7 @@ def run_convert(archive_root: Path, fha_config: dict, *, apply: bool) -> Result:
     """Convert a legacy mining export into conformant records; return a Result.
 
     The plan is printed inline (the human preview is this intake tool's surface);
-    the Result reports the outcome — exit code plus, on a successful --apply, the
+    the Result reports the outcome - exit code plus, on a successful --apply, the
     written record/transcript files in `changed` (a dry-run plan writes nothing
     and leaves `changed` empty).  Result == int (see _lib.py), so callers and
     tests comparing against EXIT_* keep working unchanged.

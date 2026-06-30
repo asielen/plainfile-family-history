@@ -265,7 +265,7 @@ class XrefTests(unittest.TestCase):
 
     def test_negated_substantive_claim_not_overlapping_positive_not_paired(self) -> None:
         # A negated 1880 residence and a positive 1900 residence for the same
-        # person are not in tension — they describe different periods, so
+        # person are not in tension - they describe different periods, so
         # the non-overlap exclusion for recurring types should still apply
         # even when polarity differs.
         self._seed_persons_sources()
@@ -294,7 +294,7 @@ class XrefTests(unittest.TestCase):
 
     def test_negated_substantive_claim_different_place_not_paired(self) -> None:
         # A negated residence claim about one place and a positive residence
-        # claim about a different place, same year, aren't in conflict —
+        # claim about a different place, same year, aren't in conflict -
         # both can be true at once.
         self._seed_persons_sources()
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'residence',
@@ -325,7 +325,7 @@ class XrefTests(unittest.TestCase):
     def test_marriage_to_different_spouse_not_paired(self) -> None:
         # Marriage claims always share the literal role "spouse" for both
         # parties, so role can't distinguish one marriage from another for
-        # the same person — the counterpart must. A first-marriage claim and
+        # the same person - the counterpart must. A first-marriage claim and
         # a second-marriage claim (different spouse) shouldn't be compared.
         self._seed_persons_sources()
         self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
@@ -365,7 +365,7 @@ class XrefTests(unittest.TestCase):
 
     def test_negated_marriage_with_no_spouse_named_contradicts_positive_marriage(self) -> None:
         # "Never married" proof claims name no spouse, so they can't be
-        # bucketed by counterpart the way a normal marriage claim is — they
+        # bucketed by counterpart the way a normal marriage claim is - they
         # have to be compared against every marriage claim for this person.
         self._seed_persons_sources()
         self.conn.execute("INSERT INTO persons(id, name, living, tier, path) VALUES "
@@ -404,7 +404,7 @@ class XrefTests(unittest.TestCase):
 
     def test_vital_place_phrase_excludes_trailing_date_clause(self) -> None:
         # "born in Springfield in 1840" should compare as place "Springfield",
-        # not "Springfield in 1840" — the date belongs to date_edtf, not the
+        # not "Springfield in 1840" - the date belongs to date_edtf, not the
         # place phrase, so this isn't a place mismatch with bare "Springfield".
         self._seed_persons_sources()
         _insert_claim(self.conn, 'c-aaaaaaaaaa', 's-1111111111', 'birth',
@@ -447,7 +447,7 @@ class XrefTests(unittest.TestCase):
     def test_missing_required_column_returns_failed_status(self) -> None:
         # A cache built against an older claims schema has all the required
         # tables (so the table probe passes) but is missing a column xref's
-        # query selects — this must surface the documented incompatible-
+        # query selects - this must surface the documented incompatible-
         # schema message rather than an uncaught OperationalError.
         self.conn.execute('ALTER TABLE claims RENAME TO claims_old')
         self.conn.execute(

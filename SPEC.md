@@ -147,7 +147,7 @@ IDs are assigned at processing, on need - the processing path (§4) applied to i
 - **`H-` ids** give hypotheses stable handles for the report (tracking across sessions), question references, and the discovery join ("a hypothesis from 2024 verified today"). **An H-id never converts to a C-id** - IDs are immutable and typed for life. Verification mints a *new* claim from the found source; hypothesis records `verified → C-…`, claim carries optional `hypothesis: H-…` back-pointer; both persist.
 
 Relationships and events are not separate object types - they are **claim types** (§8.2), sourced like any other fact.
-Organizations are out of scope for now: organization names are claim values rather than a dedicated record type.
+Organizations are claim values, not a dedicated record type: an organization's name lives in a claim's `value` (and an optional `value_org:` for grouping), never in an `Org-` record. A person's **membership** in one - a tribe, a military unit, a lodge, an employer, a church - is a structured `relationship` claim (`subtype: member-of` or `employer`, §8.2), sourced like any fact or held as a hypothesis until it is, so the belonging edge is queryable while the organization stays a value.
 
 ## 8. Claims `LOCKED`
 
@@ -183,7 +183,7 @@ This table is ours and editable; editing it is a logged decision, never a per-cl
 | Significance | Types | Role |
 |---|---|---|
 | **vital** | `birth`, `death`, `marriage` (+ `baptism`, `burial` where they stand in for vital records) | Defines completeness: a person's record is complete when each applicable vital type has ≥1 `accepted` claim. *Applicability:* `death` is inapplicable while `living: true|unknown`; `marriage` is satisfied by a `no_known_marriages` flag or a `negated: true` marriage claim (§8.6) - a confirmed absence counts complete, not missing. |
-| **substantive** | `residence`, `census`, `occupation`, `education`, `military`, `immigration`, `divorce`, `name`, `relationship` | Enriches the record; recurring; not required for completeness. `relationship` covers kin (`subtype: child-of`, `spouse-of`) **and social ties** (`subtype: friend`, `associate`, `neighbor`) - the latter, when sourced (e.g. a hunting-party clipping), is how the FAN network is built; unsourced social ties live as hypotheses. |
+| **substantive** | `residence`, `census`, `occupation`, `education`, `military`, `immigration`, `divorce`, `name`, `relationship` | Enriches the record; recurring; not required for completeness. `relationship` carries a **`subtype` naming the nature of the bond**, drawn from a standardized vocabulary. *Kin-nature:* `biological` (the default for an unqualified parent or child edge), `adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `surrogate-genetic`, `donor-sperm`, `donor-egg`, `social`. *Non-kin and power ties:* `enslaver`, `enslaved-by`, `employer`, `employee`, `member-of`, and the social ties `friend`, `associate`, `neighbor` - the latter, when sourced (a hunting-party clipping, a unit roster), is how the FAN network is built; unsourced ties live as hypotheses. Two parents of differing nature (a biological and an adoptive father) are two co-valid edges, never a contradiction. The list is mostly closed: an unlisted nature lands in `subtype` free text, so no relationship stalls for lack of a word. |
 | **incidental** | `event`, `note` | Preserved, never scored - anecdotes, one-off moments. `subtype` free text carries detail. |
 
 The vocabulary is mostly closed: new normalized types are added here deliberately; everything else lands in `event`/`note` + `subtype`, so no fact ever stalls for lack of a category.
@@ -191,6 +191,8 @@ The vocabulary is mostly closed: new normalized types are added here deliberatel
 ### 8.3 Multi-subject claims
 
 A claim may reference multiple subject persons (`persons:` list) - a marriage names two, a census household many. `persons:` is the index of who is involved; the optional `roles:` map carries the semantics (child/parent, spouse, head/household_member) and is **required for `relationship` claims** - positional convention alone is too fragile for exporters and tree regeneration.
+
+A `relationship` claim may repeat a role with distinct subtypes - a child can carry several `parent` edges (`subtype: biological`, `adoptive`, `surrogate-gestational`, `donor-egg`), each a separate, equally valid bond rather than a conflict. Beyond `child`/`parent`/`spouse`/`head`/`household_member`, `roles:` also names directional power ties - `enslaved`/`enslaver`, `employer`/`employee` - and the affiliation role `member`, so an exporter never confuses victim and perpetrator or guesses a direction the source made explicit.
 
 ### 8.4 Claim field reference
 
@@ -213,16 +215,26 @@ A claim may reference multiple subject persons (`persons:` list) - a marriage na
     Listed as book-keeper for the Plains Junction RR in the 1874 directory; the 1869
     Champion item places him there from the railroad's early days.
   # ---- other optional fields, present only when used ----
-  subtype: child-of              # free-text refinement (relationship, event, note); social
-                                 #   relationship subtypes incl. friend | associate | neighbor
+  subtype: biological            # the NATURE of a relationship (kin: biological [default] | adoptive |
+                                 #   step | foster | guardian | surrogate-gestational | surrogate-genetic |
+                                 #   donor-sperm | donor-egg | social; non-kin: enslaver | enslaved-by |
+                                 #   employer | employee | member-of | friend | associate | neighbor);
+                                 #   also free-text refinement on event/note. Unlisted natures: free text.
   roles:                         # explicit semantics for multi-subject claims;
-    child: P-de957bcda1          #   REQUIRED for type: relationship; recommended for
-    parent: [P-aaaaaaaaaa]       #   marriage (spouse:) and census (head:, household_member:)
+    child: P-de957bcda1          #   REQUIRED for type: relationship; repeated roles with distinct
+    parent: [P-aaaaaaaaaa]       #   subtypes are valid (multiple parents of differing nature). Also:
+                                 #   spouse:, head:/household_member:, enslaved:/enslaver:, employer:/
+                                 #   employee:, member: for the matching subtype.
   negated: true                  # confirmed ABSENCE: "we researched and it did not happen"
                                  #   (e.g. type: marriage + negated: true = confirmed never married);
                                  #   pairs with evidence: negative. See §8.6.
+  restricted: true               # optional; keeps this single claim out of public output and out of
+                                 #   packets unless --include-restricted (§19). A free-text type
+                                 #   (restricted: by-request) marks a no-override exclusion.
   place_text: "Fairview City, Breton Co., Kansas"   # the place AS WRITTEN in the source;
                                  #   `place:` is the normalized L-id interpretation
+  value_org: "Cherokee Nation"   # optional; the organization a member-of/employer relationship names,
+                                 #   as a string (no record type) - lets views group "everyone in Co. K"
   information: primary           # Mills analysis (optional): primary | secondary | undetermined
   evidence: direct               # direct | indirect | negative
   asset: b-back                  # pins claim to a copy/role suffix of the source's files
@@ -290,10 +302,23 @@ death: 1941                      #   birth/death claim. Linter tracks these towa
 face_tags: ["Thomas Edward Hartley"]   # optional: EXACT face/people-tag strings meaning
                                  # this person in the photo library (§20) - the durable
                                  # name→P-id resolution; one line here vs retagging photos
-sex: M                           # M | F | U
+sex: M                           # optional; birth-assigned where a record states it; M | F | intersex | unknown
+gender: man                      # optional; identity, free text with suggested values; omit unless there is something to record
 living: false                    # required; true | false | unknown - drives export redaction (§19)
+restricted: false                # optional; keeps this person out of public output, and out of packets
+                                 #   unless --include-restricted. A type (restricted: by-request) is
+                                 #   a no-override exclusion honored by every export path (§19).
 no_known_marriages: false        # optional; confirmed-absence convenience flag (§8.6)
 no_known_children: false         # optional; confirmed-absence convenience flag (§8.6)
+relationships:                   # optional; the working surface where relationship claims are
+  - to: "[[P-075114a0f8|Caleb Comstock Hartley]]"   # forgiving target: name, [[name]], or [[P-id]]
+    type: parent                 #   the ROLE; subtype names the NATURE (§8.2)
+    subtype: biological          #   omit for biological (the default)
+    claim: "[[C-90ad2e11b7]]"    #   link the backing claim (preferred) or source: [[S-…]]; optional to
+                                 #   write, required for the entry to count complete. No link = a belief.
+  - to: "[[Walter Doe]]"         # an unsourced belief: jotted before evidence is filed
+    type: parent                 #   linter lists it as needing a source, never rejects it
+    status: hypothesis           #   honestly marked as not yet a fact (§16)
 external_ids:                    # optional
   wikitree: Hartley-6084
   ancestry: "382013742308"
@@ -303,7 +328,11 @@ tier: curated                    # stub | curated
 
 The person record is identity, flags, and prose; sourced facts live with evidence, as claims. The record may carry optional **provisional** `birth:` / `death:` estimates - most genealogists expect to record those as core data points. Like any fact they want a source: add a `birth`/`death` claim tagged to the person, and that sourced claim supersedes the frontmatter estimate. When run, the linter matches the provisional `birth:`/`death:` values against sourced birth/death claims to keep them aligned, and lists any still needing a source (§8.6).
 
-A person's `name` and each `name_variants` entry are mirrored into `aliases:`, so typing `[[Thomas Edward Hartley]]` resolves to that person without needing the unique ID. People can share a name, though: if two `John Smith`s exist, the linter flags an **alias clash**, and the clashing name is pinned to its ID (`[[P-…|John Smith]]`). You get the best of both worlds - the stable unique ID and an easy-to-read name.
+A person's `name` and each `name_variants` entry are mirrored into `aliases:`, so typing `[[Thomas Edward Hartley]]` resolves to that person without needing the unique ID. People can share a name, though: if two `John Smith`s exist, the linter flags an **alias clash**, and the clashing name is pinned to its ID (`[[P-…|John Smith]]`). You get the best of both worlds - the stable unique ID and an easy-to-read name. A `name_variants` entry may be written as a `{value:, restricted: true}` mapping rather than a bare string when the name should stay private - a prior name someone no longer uses, for instance. It still resolves internally (so existing links keep working) and is redacted on export (§18, §19); it is the general `restricted` marker (§19) applied to a name, not a separate mechanism.
+
+The optional `relationships:` block is the human-writable surface where relationship claims are applied to the lives they concern. Each entry names the other person the forgiving way (a name, a `[[name]]` tag, or a pinned `[[P-id|Name]]`, settled by the tools), a `type` (the role: parent, child, spouse, sibling, …), and a `subtype` (the nature of the bond, §8.2). A **sourced** entry links its backing with `claim: [[C-…]]` or `source: [[S-…]]` - optional to write, required for the entry to count complete - and the linter reconciles it against the accepted `relationship` claim that is its durable home. An **unsourced** entry carries `status: hypothesis`: a belief you hold before you can cite it, listed as needing a source, never an error. This mirrors the provisional `birth:`/`death:` pattern (§8.6): most of what you know about a person begins as an unsourced jotting and graduates when the source is found and mints the claim.
+
+Two parents of differing nature sit side by side as equally valid edges - a biological and an adoptive father, a gestational and a genetic and an intended mother - never a contradiction. The claim stays canonical: delete the block and a reindex rebuilds every sourced edge from claims, while the unsourced beliefs live here as hypotheses always have. The linter records the reciprocal edge on the other person automatically (a `child` edge here implies a `parent` edge there, pointing at the same claim) and offers to add a missing mirror rather than asking you to write both ends by hand.
 
 ## 10. Identifiers `LOCKED`
 
@@ -413,7 +442,8 @@ Reorganizing or rescanning assets must never orphan a source or claim; the recor
 - Direct-line children get their own numbered folder, never a subfolder.
 - **A direct ancestor's non-ancestral marriages** get suffix folders sorting beside the ancestral one: `040b Thomas Hartley + (second spouse) [children]`. Occupants beyond the ancestor are connections-tier people; half-siblings of the line live here.
 - Ahnentafel's even/odd convention is a sorting convenience, not an assumption - use one partner's even number consistently; nothing in the model requires opposite-sex couples.
-- The whole tree is a projection, regenerable from relationship claims; Ahnentafel numbers are derivable, never stored in records. The derivation root - the person at position #1 - is declared in `fha.yaml` as `root_person` (§12.4); any direct-line descendant works as the anchor, since all full siblings share one ancestor tree. With that declaration, tools compute every ancestral couple's Ahnentafel number from accepted `relationship` claims and can verify and correct folder placement (see `fha views brackets`, `TOOLING.md §7`).
+- The whole tree is a projection, regenerable from relationship claims; Ahnentafel numbers are derivable, never stored in records. The derivation root - the person at position #1 - is declared in `fha.yaml` as `root_person` (§12.4); any direct-line descendant works as the anchor, since all full siblings share one ancestor tree. With that declaration, tools compute every ancestral couple's Ahnentafel number by following only the **genetic** parent edges among accepted `relationship` claims (`subtype: biological` - the default - `surrogate-genetic`, `donor-sperm`, `donor-egg`); social and legal parent edges (`adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `social`) are shown in the folder's bracket list and the relationship views, clearly marked, but are not numbered into the pedigree. Tools also verify and correct folder placement (see `fha views brackets`, `TOOLING.md §7`).
+- A person who occupies **multiple Ahnentafel positions** - cousin marriage, endogamy, pedigree collapse - **homes to the lowest position number**; their files live in that one couple folder, and every higher position carries a cross-link entry in its folder's bracket list (`Thomas Hartley (also #128 - see 040)`). The lowest-number rule is deterministic, so placement and bracket refreshes are stable across runs. The folder is a projection, so the cross-link lives in the regenerated bracket text, not in an extra file.
 
 ### 12.3 Connections (everyone beyond)
 
@@ -473,8 +503,8 @@ Every record file is **self-identifying** - its ID is in its filename, so files 
 The ID-in-filename is the **formalized** form, maintained by tools. A record a person creates by hand may be named however they like - `john-smith.md`, `grandpas-letter.md` - with no ID suffix, a valid pre-machine state (§10): the human identifies it by name. On first tool contact the file is renamed to the grammar below, with the original name preserved both as the mutable `slug` and as an alias, so existing `[[name]]` links keep resolving. From then on the filename carries the ID and the self-identifying invariant holds.
 
 - **Source records:** `{slug}_{S-id}.md` - slug lowercase hyphenated, mutable; ID immutable.
-- **Source files (documents root):** `{slug}[-{copy}][-{role}]_{S-id}.{ext}` - the *source's* ID, shared by all versions. **Photos-root files are never renamed *by us*** (§12.1) - but another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (§ tooling) when files move. Roles: `front`, `back`, `page-N`, `clipping`, `recording`, `transcript`… Copies: `b`, `c`, `negative`… Derivative views: `-crop` stacks on any other suffix (`front-crop`, `back-crop`, `negative-crop`) marking supplementary detail images, never independent sources. Note: `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` - it is the physical film or glass-plate source material for the root image. Suffix parsing priority order: `-crop` stripped first, then part-kind (`-negative` before `-back`/`-front`/`-pageN`), then trailing variant letter; remaining stem = base id (see `TOOLING.md` §6 for the full algorithm). Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions - "text from alternate version" tags - so any copy reveals the others.)
-- **Person files:** `{surname}__{given_names}[_{kind}]_{P-id}.md` - **double underscore** after the surname (families sort together), underscores within given names, **birth surname always** (keeps women findable under the name in their early records; matches WikiTree practice). `kind` ∈ `research` | `timeline` | `sources-index` | `draft-queue`.
+- **Source files (documents root):** `{slug}[-{copy}][-{role}]_{S-id}.{ext}` - the *source's* ID, shared by all versions. **Photos-root files are never renamed *by us*** (§12.1) - but another system (eg Lightroom, a cleanup pass) may rename or move them, so the filename is **not** a reliable identifier for photos. The durable identity is the embedded `SOURCE:` keyword; the record inventory stores the last-known path as a hint, reconciled by `fha photoindex reconcile` (§ tooling) when files move. Roles: `front`, `back`, `page-N`, `clipping`, `recording`, `transcript`, `translation`… Copies: `b`, `c`, `negative`… Derivative views: `-crop` stacks on any other suffix (`front-crop`, `back-crop`, `negative-crop`) marking supplementary detail images, never independent sources. Note: `-negative` is mutually exclusive with `-front`, `-back`, and `-pageN` - it is the physical film or glass-plate source material for the root image. Suffix parsing priority order: `-crop` stripped first, then part-kind (`-negative` before `-back`/`-front`/`-pageN`), then trailing variant letter; remaining stem = base id (see `TOOLING.md` §6 for the full algorithm). Rarely more than ~3 versions; skimmable by design. (The photo pipeline propagates text between versions - "text from alternate version" tags - so any copy reveals the others.)
+- **Person files:** `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` - **double underscore** after the sort name (families sort together), underscores within given names. The **primary sort name** is the birth surname when there is one (keeping women findable under the name in their early records; matching WikiTree practice); where a person has no surname - a mononym, an enslaved ancestor recorded by given name, a patronymic, a foundling - the slot is empty and the filename **leads with the double underscore** (`__caesar_P-….md`, `__jon_thorsson_P-….md`), a distinct no-surname sort group. Two-surname systems put the paternal (or chosen sort) surname in the slot and the full `Apellido1 Apellido2` form in `name`; surname-first cultures sort by the surname slot and display in cultural order via `name`. The full cultural name always lives in `name` / `name_variants` (§9); the filename is only a sort handle. `kind` ∈ `research` | `timeline` | `sources-index` | `draft-queue`.
 
 The deliberate style difference - person files underscored, source files hyphenated - instantly distinguishes record kinds in search results.
 
@@ -492,6 +522,7 @@ title: Campaign card for T. E. Hartley, Clerk of the District Court, 1880
 source_type: photo            # census | vital-record | photo | interview | letter | newspaper | …
 source_date: 1880-11~         # EDTF; the date OF the source itself
 source_class: original        # optional: original | derivative | authored (§8.5; proofs: authored)
+original_language: de         # optional; language of the evidence itself, only when not English (BCP-47/ISO-639)
 repository: family collection # where the evidence came from / lives
 citation: >
   Campaign card for T. E. Hartley, candidate for Clerk of the District
@@ -515,12 +546,18 @@ physical_location:            # optional: where the PHYSICAL original lives (cha
 files:                        # inventory: roles + provenance
   - file: photos/1880/Hartley-6084-1.jpg          # PHOTOS ROOT: never renamed
     role: front                                   #   identity = SOURCE: keyword + this inventory
+    language: en              # optional; the language of THIS file
     digitized: "Scanned by Sam Rivera, 2025-05" # optional per-file digitization provenance
   - file: photos/1880/Hartley-6084-1-back.jpg
     role: back
   - file: documents/interviews/…-transcript_S-….md  # DOCUMENTS ROOT: renamed at processing
     role: transcript
+    language: en              # the transcription's language (verbatim, as written)
     derived: true             # hand-corrected derivative; an original in its own right
+  - file: documents/interviews/…-translation_S-….md
+    role: translation         # an English rendering of a non-English original
+    language: en
+    derived: true             # a derivative, an original in its own right
 created: 2026-06-10
 ---
 
@@ -543,6 +580,7 @@ The `files:` inventory documents roles and provenance for humans.
 Each file may carry an optional `status:` - omitted means present; **`missing-fixture`** marks a deliberately absent placeholder, allowed **only** under `example-archive/` and `tests/fixtures/` (warning-level there); a `missing` file in a real archive is an error (E011).
 For documents-root files the link has three carriers (filename, inventory, embedded keyword where supported); for photos-root files, two (inventory + keyword - filenames are sacred).
 Tooling verifies the carriers agree.
+A source may carry an optional `original_language:` (the language of the evidence), and each `files:` entry an optional `language:` (the language of that file); a translated rendering is filed as a `role: translation` derivative beside the original, the same way a corrected transcript is. Language codes follow BCP-47 / ISO-639 (`de`, `en`, `la`) and are informational, never hard-validated.
 
 The frontmatter `people:` / `places:` are the human cross-link surface: link-valued so an Obsidian-only editor can cross-link by name and draw the graph edges, hand-editable, normalized to the stable `[[P-…|Name]]` / `[[L-…|Name]]` form by the tools. The claims block (§8) instead requires **bare** IDs - `persons: [P-…]`, `place: L-…` - because it is structured data in a fenced block; links live in the frontmatter, not the claims (§8.7). `places:` is optional and may be hand-added or linter-synced from the claims' `place:` fields.
 
@@ -672,15 +710,14 @@ Double-bracket ID links, greppable and tool-verifiable:
 - **Uncited prose is by definition story/context, never fact.** The fact-safety rule, expressed as syntax.
 - Exporters swap links for refs; the WikiTree exporter renders `[[S-…]]` as `<ref>` blocks from the source's `citation` field, and redacts the display name of any `living`/`unknown` person (§19).
 
-**Resolution and the alias surface.** A `[[ ]]` link's target may be an ID or a name/stem; either resolves to a canonical ID through the record's `aliases:`. Three related fields stay distinct in purpose so they never conflate: **`aliases:`** are link-resolution handles - the canonical ID, any human stems, and (for persons *and* places) the `name` plus its `name_variants` / `alt_names` mirrored in, so a name-link resolves; **`name_variants:` / `alt_names:`** are the display/genealogical name variants a human curates - the *source* the tool mirrors into `aliases:`; **`face_tags:`** are exact photo people-tag strings (§20). The human edits `name` / `name_variants` / `alt_names`; the tool keeps `aliases:` in sync. Because mirrored names can collide (two `Springfield`s, two `John Smith`s), the alias-clash check (`TOOLING.md` §3) governs all of them, and a clashing name resolves only when pinned to its ID (§7).
+**Resolution and the alias surface.** A `[[ ]]` link's target may be an ID or a name/stem; either resolves to a canonical ID through the record's `aliases:`. Three related fields stay distinct in purpose so they never conflate: **`aliases:`** are link-resolution handles - the canonical ID, any human stems, and (for persons *and* places) the `name` plus its `name_variants` / `alt_names` mirrored in, so a name-link resolves; **`name_variants:` / `alt_names:`** are the display/genealogical name variants a human curates - the *source* the tool mirrors into `aliases:`; **`face_tags:`** are exact photo people-tag strings (§20). The human edits `name` / `name_variants` / `alt_names`; the tool keeps `aliases:` in sync. Because mirrored names can collide (two `Springfield`s, two `John Smith`s), the alias-clash check (`TOOLING.md` §3) governs all of them, and a clashing name resolves only when pinned to its ID (§7). A name marked `restricted` (a `name_variants` entry carrying `restricted: true`) still resolves through the alias surface internally, so links and search keep working, but its display is redacted in any external export - the same internal-resolves / external-redacts rule that governs a `living` person's name (§19).
 
 ## 19. Privacy `LOCKED`
 
-Two narrow flags; no tier system.
-Flags appear only where they apply.
+Two privacy flags; no tier system. Flags appear only where they apply.
 
 - `living: true | false | unknown` (Person) - drives redaction in any external export, packet, or publication. **`unknown` is treated as living** for all external-facing output; stubs default to `unknown` (uncertainty is safe by default).
-- `restricted: true` (Source) - never included in export packets by default. **DNA materials always carry it.**
+- `restricted` - a marker placed on whatever should stay out of public output: a **source**, a single **claim**, a whole **person**, or a **name** (a `name_variants` entry written as `{value:, restricted: true}` - how a private prior name is recorded). Plain `restricted: true` is excluded from public output and from packets unless `--include-restricted` is passed. It may carry a free-text **type** instead (`restricted: dna`, `restricted: by-request`, …) when types must be told apart; two are **no-override** - `dna` (always restricted; requires its own `--include-dna`) and `by-request` (a person who asked to be left out, honored by every export path with no opt-in). The marker keeps material in the archive and out of what leaves it; nothing is deleted, and a restricted name still resolves internally (§18).
 
 ## 20. Embedded metadata `LOCKED`
 
@@ -713,8 +750,8 @@ Generated output that leaves the archive falls into two categories with differen
 - `unknown` is treated as living. Stubs default to `unknown`.
 - Direct-line couple folders whose occupants are all redacted are collapsed to a stub entry; their folder number is retained so the pedigree chain remains intact.
 
-**Public output - restricted sources (mandatory):**
-- Sources with `restricted: true` are never included in any public output. Their claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently.
+**Public output - restricted material (mandatory):**
+- Anything carrying `restricted` - a source, a claim, a person, or a name - is never included in any public output. A restricted source's claim contributions (dates, vitals) may appear only if an unrestricted co-source also establishes the same fact independently; a restricted claim, person, or name is withheld (a restricted name is rendered as the person's unrestricted display name).
 - DNA evidence always carries `restricted: true`. No DNA-derived conclusions appear in public output without an additional, independent non-DNA source establishing the same fact.
 
 **Scope (what "public output" covers):**
@@ -724,7 +761,7 @@ Generated output that leaves the archive falls into two categories with differen
 **Private export (`fha packet`) - its own rules, per TOOLING §8:**
 - `fha packet` is a family/private export, not public output, and is not subject to the redaction rules above. A packet may include `living: false` people's full prose and cite other people who are still living, with a README caution rather than redaction.
 - The packet *subject* is held to a stricter rule than the cited-other-people case: `living: true` and `living: unknown` subjects are refused before any output is written, with no opt-in.
-- `restricted: true` sources are excluded by default (named by ID only in the README); `--include-restricted` overrides, except DNA sources, which stay excluded until `--include-dna` is also passed.
+- Anything `restricted` is excluded by default (restricted sources named by ID only in the README); `--include-restricted` overrides, except the **no-override** types: `restricted: dna` stays excluded until `--include-dna` is also passed, and `restricted: by-request` is never included by any flag. A `restricted: by-request` *person* vanishes from packet content but keeps their folder number so the pedigree chain stays intact (as with the all-redacted couple-folder collapse above).
 
 **Site generation freshness contract:**
 - `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite` - it is as live as the last `fha index` run.
@@ -748,17 +785,18 @@ Invariants for all tools: generated artifacts are disposable caches; tools repor
 | Tool | Requirement (the *what*) |
 |---|---|
 | **Index builder** | Rebuild, from scratch on demand, a queryable SQLite index of all persons, sources, claims, places, files, citations, plus full-text search over transcripts and notes. Never authoritative, never appended. |
-| **Linter** | Walk the archive; verify every rule in this spec (IDs, filenames, schemas, references, statuses, dates, inventory/keyword agreement, summary-block drift); report vitals gaps and suggested-claim backlogs; spawn questions for contradictions on request. |
+| **Linter** | Walk the archive; verify every rule in this spec (IDs, filenames, schemas, references, statuses, dates, inventory/keyword agreement, summary-block drift); report vitals gaps and suggested-claim backlogs; spawn questions for contradictions on request; reconcile each sourced person-doc `relationships:` entry against its accepted `relationship` claim (pair, role, subtype) and check reciprocity, offering to add a missing mirror edge. |
 | **ID mint** | Generate spec-conformant IDs with existence checking; batch capable. |
 | **Stub minter** | Create person stubs in bulk from claims that reference unresolved people. |
 | **Processing assistant** | Given a file or folder: mint S-id, mark identity (documents: rename; photos: keyword only - never rename under Lightroom), scaffold the source record; folder mode triages candidates first. |
 | **View generators** | Per-person timelines; per-person and per-couple-folder sources-indexes; refreshed folder bracket lists; **relationship views** - ancestor / descendant / FAN trees for any person - all derived from accepted claims, never stored. |
+| **Relationship calculator** | For any two persons, derive both the **blood relationship** (the cousin/removal/great-grandparent name, via lowest common ancestor over genetic edges) and the **shortest social path** (a readable chain of role-named hops over all relationship edges) - at query time, from accepted `relationship` claims, never stored. Returns a structured result; the text form renders the sentence. |
 | **GEDCOM exporter** | Derive a standard GEDCOM (relationships + vitals) for a person or the whole tree, at export time, from relationship/vital claims. For exchange with genealogy apps only - never the corpus, never re-imported as truth. |
 | **Person packet** | Gather everything about a person - profile, claims, sources, files, *and all photos of them* (bare `P-id` keywords + `face_tags:` resolution) - into a zip of copies, clearly labeled as a derived export, honoring `living`/`restricted`. |
 | **Photo metadata index** | Scrape embedded metadata of the entire photo library into a fast, disposable search catalog (so finding photos never requires opening Lightroom); incremental rescan; powers the packet's photo gathering. **Variation-aware:** versions of one physical photo (fronts/backs/copies/negatives) are grouped as one logical photo, returned once; per-variant date tags are resolved to one best-confidence group date, and cross-variant date disagreements are surfaced as a report. |
 | **Place geocoder** | Backfill `coords` and `alt_names` in `places.yaml` from an offline gazetteer, with human confirmation. |
 | **Interview converter** | Migrate the prior transcript-mining output (T###/R###/Q### records) into conformant sources, `suggested` claims with anchors, stories, and questions. |
-| **Static site generator** | Render the archive as a **self-contained static HTML snapshot** - its own web-optimized asset derivatives, only publication-eligible material (living/unknown redacted, restricted/DNA excluded), interactive trees via a vendored rendering library fed a neutral JSON contract. No server, no accounts, no dependency on the archive once generated; works from a USB stick; embeds in packets. Visual design is built live, not specified here; the JSON data contract is. |
+| **Static site generator** | Render the archive as a **self-contained static HTML snapshot** - its own web-optimized asset derivatives, only publication-eligible material (living/unknown redacted, restricted/DNA excluded), interactive trees via a vendored rendering library fed a neutral JSON contract - a navigable family tree (an ancestor pedigree on each person's page and a descendant explorer from the line's apex) built from accepted `relationship` claims, its social and adoptive edges drawn distinctly from the genetic line (§12.2). No server, no accounts, no dependency on the archive once generated; works from a USB stick; embeds in packets. Visual design is built live, not specified here; the JSON data contract is. |
 | **WikiTree exporter** | Render a curated profile to WikiTree markup; `[[S-…]]` links → `<ref>` citations. |
 | **Doctor** | One health command: root + `fha.yaml` + mapped roots reachable; exiftool/Python present; index & photoindex freshness; lint summary; inbox aging; restricted/living/unknown counts; agent-instruction drift (stale command or skill names in AGENTS/skills). |
 | **Formatter** | Conservative normalization as a lint feature (`--format-check/--format-write`): key order, ID casing, blank lines, final newline - never rewrites prose. |

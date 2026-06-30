@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-photoindex.py — fha photoindex: photo metadata catalog.
+photoindex.py - fha photoindex: photo metadata catalog.
 
   fha photoindex [--full]
 
@@ -11,18 +11,18 @@ TOOLING §9.
 
 ARCHITECTURE OVERVIEW
 ----------------------
-Photos are never renamed (Lightroom catalog integrity — SPEC §13) and most
+Photos are never renamed (Lightroom catalog integrity - SPEC §13) and most
 are never "processed" into a source record at all, so the filename and the
 embedded metadata are the only durable identity a photo carries. This tool
 reads that metadata in one batched `exiftool -j` pass per scan and writes it
 into a queryable cache, then derives two things on top of the raw rows:
 
-  1. Variation grouping — fronts/backs/copies/negatives/crops of one
+  1. Variation grouping - fronts/backs/copies/negatives/crops of one
      physical photo are one logical photo. Group key is (in priority order)
      a shared `SOURCE:` S-id keyword, then same-directory + same filename
      base_id (`_lib.parse_media_filename`). Conservative by design: never
      groups across directories, never on caption similarity alone.
-  2. Person resolution — bare `P-id` keywords (authoritative) → cached face
+  2. Person resolution - bare `P-id` keywords (authoritative) → cached face
      region strings matched against `person_face_tags` → name/name_variant
      matches (weakest). The latter two require a fresh `.cache/index.sqlite`;
      absent, stale, or unreadable indexes degrade to pid-keyword-only
@@ -38,79 +38,79 @@ tag-person`, the two sub-commands that touch on-disk state or embedded
 metadata, completing layer 3. `reconcile` heals drift between the catalog's
 stored paths and what is actually on disk (a file moved outside `fha` is
 re-matched by its embedded `SOURCE:` keyword, never by trusting the old
-path); `tag-person` writes a bare `P-id` keyword into specific photos —
+path); `tag-person` writes a bare `P-id` keyword into specific photos -
 either explicit `--paths` or every photo carrying an ambiguous `--from-face-
-tag` name — making a human identification durable in the file itself.
+tag` name - making a human identification durable in the file itself.
 
 CODE MAP
 --------
   Schema
-    _DDL                      — CREATE TABLE statements for photos.sqlite
+    _DDL                      - CREATE TABLE statements for photos.sqlite
 
   exiftool integration
-    PHOTO_EXTENSIONS          — recognised photo/scan file extensions (imported from _lib)
-    _run_exiftool             — batched `exiftool -j -struct` invocation (test seam)
-    _SOURCE_KEYWORD_RE, _PID_KEYWORD_RE, _DATE_KEYWORD_RE — keyword patterns
-    _extract_keywords         — flatten Keywords+Subject into one string list
-    _keyword_to_edtf          — confidence-coded DATE: keyword -> EDTF (SPEC §20)
-    _extract_face_regions     — XMP-mwg-rs:RegionInfo -> list of (name, type, area)
-    _row_to_photo             — one exiftool JSON row -> photos table column dict
+    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (imported from _lib)
+    _run_exiftool             - batched `exiftool -j -struct` invocation (test seam)
+    _SOURCE_KEYWORD_RE, _PID_KEYWORD_RE, _DATE_KEYWORD_RE - keyword patterns
+    _extract_keywords         - flatten Keywords+Subject into one string list
+    _keyword_to_edtf          - confidence-coded DATE: keyword -> EDTF (SPEC §20)
+    _extract_face_regions     - XMP-mwg-rs:RegionInfo -> list of (name, type, area)
+    _row_to_photo             - one exiftool JSON row -> photos table column dict
 
   Person resolution
-    _index_is_fresh           — schema-valid + not-older-than-newest-record check on index.sqlite
-    _load_face_tag_index      — person_face_tags + persons name/variants from index.sqlite
-    _load_source_people       — source_id -> [P-id] from source record people: lists (source-people tier)
-    _resolve_photo_people     — pid-keyword / face-tag / name-match, in confidence order
-    _rebuild_photo_people     — recompute photo_people from keywords + face regions + source-people
+    _index_is_fresh           - schema-valid + not-older-than-newest-record check on index.sqlite
+    _load_face_tag_index      - person_face_tags + persons name/variants from index.sqlite
+    _load_source_people       - source_id -> [P-id] from source record people: lists (source-people tier)
+    _resolve_photo_people     - pid-keyword / face-tag / name-match, in confidence order
+    _rebuild_photo_people     - recompute photo_people from keywords + face regions + source-people
 
   Variation grouping
-    _edtf_confidence          — sortable confidence score for an EDTF string (SPEC §20)
-    _group_photos             — assign group_id/is_primary/variant_role; build photo_groups
+    _edtf_confidence          - sortable confidence score for an EDTF string (SPEC §20)
+    _group_photos             - assign group_id/is_primary/variant_role; build photo_groups
 
-  Query (fha photoindex find — M3.2)
-    _paths_by_person/_keyword/_edtf/_text — one matching-path set per filter
-    _group_keys_for           — map each path to its group key (group_id or singleton)
-    _primary_path_for         — the primary_path of a group_id
-    run_find                  — AND the requested filters at the group level;
+  Query (fha photoindex find - M3.2)
+    _paths_by_person/_keyword/_edtf/_text - one matching-path set per filter
+    _group_keys_for           - map each path to its group key (group_id or singleton)
+    _primary_path_for         - the primary_path of a group_id
+    run_find                  - AND the requested filters at the group level;
                                  group-dedupe unless --files
 
-  Triage (fha photoindex triage — M3.3)
-    _candidate_groups         — groups with no source_id on any member (unprocessed)
-    _score_group              — TOOLING §15b evidence-signal score for one group
-    run_triage                — rank candidates, return top N
+  Triage (fha photoindex triage - M3.3)
+    _candidate_groups         - groups with no source_id on any member (unprocessed)
+    _score_group              - TOOLING §15b evidence-signal score for one group
+    run_triage                - rank candidates, return top N
 
-  Report (fha photoindex report — M3.3)
-    run_report                — list photo_groups with date_conflict=1, all variants' dates/captions
+  Report (fha photoindex report - M3.3)
+    run_report                - list photo_groups with date_conflict=1, all variants' dates/captions
 
-  Reconcile (fha photoindex reconcile — M3.4)
-    _on_disk_aliases          — alias path -> absolute Path for every file under the photos root
-    _scrape_source_ids        — exiftool SOURCE: keyword read over untracked candidate files
-    run_reconcile             — re-match moved files by source_id, flag the rest as MISSING
+  Reconcile (fha photoindex reconcile - M3.4)
+    _on_disk_aliases          - alias path -> absolute Path for every file under the photos root
+    _scrape_source_ids        - exiftool SOURCE: keyword read over untracked candidate files
+    run_reconcile             - re-match moved files by source_id, flag the rest as MISSING
 
-  Tag-person (fha photoindex tag-person — M3.4)
-    run_tag_person_plan       — resolve candidate paths (read-only; CLI previews this before writing)
-    _run_exiftool_write       — per-file `exiftool -keywords+=` write (the one path here that
+  Tag-person (fha photoindex tag-person - M3.4)
+    run_tag_person_plan       - resolve candidate paths (read-only; CLI previews this before writing)
+    _run_exiftool_write       - per-file `exiftool -keywords+=` write (the one path here that
                                  mutates an original photo file, not the cache); reports per-path
                                  success/failure rather than batching all candidates into one call
-    _refresh_photo_fts_keywords — resync photo_fts.keywords for just-tagged paths
-    apply_tag_person          — write the P-id keyword + update photo_keywords/photo_people/photo_fts
+    _refresh_photo_fts_keywords - resync photo_fts.keywords for just-tagged paths
+    apply_tag_person          - write the P-id keyword + update photo_keywords/photo_people/photo_fts
 
   Scan orchestration
-    _get_db                   — open (or create) .cache/photos.sqlite, apply DDL
-    run_scan                  — top-level: walk photos root, scrape, group, report
+    _get_db                   - open (or create) .cache/photos.sqlite, apply DDL
+    run_scan                  - top-level: walk photos root, scrape, group, report
 
   CLI
-    register                  — attach 'photoindex' to the main fha parser; wires 'find',
+    register                  - attach 'photoindex' to the main fha parser; wires 'find',
                                  'triage', 'report', 'reconcile', 'tag-person'
-    _resolve_root_and_config  — shared --root/fha.yaml preamble for every _cmd_* handler
-    _print_photoindex_status  — shared absent/unreadable/stale message + exit-code mapping
-    _cmd_scan                 — argparse -> run_scan bridge
-    _cmd_find                 — argparse -> run_find bridge
-    _cmd_triage               — argparse -> run_triage bridge
-    _cmd_report               — argparse -> run_report bridge
-    _cmd_reconcile            — argparse -> run_reconcile bridge
-    _cmd_tag_person           — argparse -> run_tag_person_plan -> preview/confirm -> apply_tag_person
-    _standalone_main          — for `python tools/photoindex.py` direct invocation
+    _resolve_root_and_config  - shared --root/fha.yaml preamble for every _cmd_* handler
+    _print_photoindex_status  - shared absent/unreadable/stale message + exit-code mapping
+    _cmd_scan                 - argparse -> run_scan bridge
+    _cmd_find                 - argparse -> run_find bridge
+    _cmd_triage               - argparse -> run_triage bridge
+    _cmd_report               - argparse -> run_report bridge
+    _cmd_reconcile            - argparse -> run_reconcile bridge
+    _cmd_tag_person           - argparse -> run_tag_person_plan -> preview/confirm -> apply_tag_person
+    _standalone_main          - for `python tools/photoindex.py` direct invocation
 """
 
 from __future__ import annotations
@@ -239,7 +239,7 @@ _PID_KEYWORD_RE = re.compile(r'^P-[0-9a-hjkmnp-tv-z]{10}$', re.I)
 _DATE_KEYWORD_RE = re.compile(r'^DATE:\s*(.+)$')
 
 # Keeps a single exiftool invocation's command line bounded on a large photo
-# root — every batched call to _run_exiftool (full scan or reconcile rematch)
+# root - every batched call to _run_exiftool (full scan or reconcile rematch)
 # uses this same chunk size.
 _EXIFTOOL_BATCH_SIZE = 500
 
@@ -259,7 +259,7 @@ def _run_exiftool(paths: list[Path]) -> list[dict]:
     parsed JSON rows.
 
     This is the seam a test harness replaces to inject pre-cooked JSON
-    without requiring exiftool on PATH (BUILD.md layer-3 fixture note) —
+    without requiring exiftool on PATH (BUILD.md layer-3 fixture note) -
     keep its signature (list of paths in, list of JSON-row dicts out)
     stable. `-n` forces numeric GPS output (default exiftool formats GPS as
     a DMS string); `-struct` is required for RegionInfo to come back as a
@@ -305,7 +305,7 @@ def _keyword_to_edtf(pattern: str) -> str | None:
     The pipeline writes per-component confidence markers (`!` confident,
     `~` best guess, `?`/omitted unknown) directly on the digits, e.g.
     '1942!-11!-25!' or '1960~'. We stop building the EDTF string at the
-    first component that is missing or marked '?' — SPEC §20 states 'Y!' is
+    first component that is missing or marked '?' - SPEC §20 states 'Y!' is
     deliberately equivalent to 'Y!M?D?', i.e. an unconfirmed component is
     the same as an absent one, not a reason to guess. A bare digit string
     with no markers at all (e.g. a hand-typed '1880') is treated as fully
@@ -493,7 +493,7 @@ def _resolve_photo_people(
     bare P-id keyword (authoritative) -> face-region name matched exactly against
     person_face_tags (skip if ambiguous) -> name/name_variant match (weakest).
 
-    A tag matching more than one person is never guessed at this layer — it's
+    A tag matching more than one person is never guessed at this layer - it's
     surfaced (by being absent here) for `fha photoindex tag-person` to settle
     by hand in a later PR.
     """
@@ -567,7 +567,7 @@ def _load_source_people(
     source record after initial processing.
 
     Returns an empty dict when no photos carry source_ids, or when source records
-    are absent or unparseable — callers fall back gracefully to keyword-only resolution.
+    are absent or unparseable - callers fall back gracefully to keyword-only resolution.
     """
     source_ids = {
         row[0]
@@ -604,13 +604,13 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     the group, not just the path that carries it. When variants disagree on
     `via` for the same person, the most confident one wins.
 
-    Resolution tiers in confidence order (all authoritative — priority 0):
-      pid-keyword   — bare P-id keyword embedded directly in the image file
-      source-people — person listed in the source record's `people:` field
+    Resolution tiers in confidence order (all authoritative - priority 0):
+      pid-keyword   - bare P-id keyword embedded directly in the image file
+      source-people - person listed in the source record's `people:` field
 
     Weaker inferred tiers (require face regions + a fresh index.sqlite):
-      face-tag    — face region name matched against person_face_tags
-      name-match  — face region name matched against person name/variants
+      face-tag    - face region name matched against person_face_tags
+      name-match  - face region name matched against person name/variants
 
     Bulk pid-keyword tagging is incremental work (TOOLING §9): most of the
     archive starts out resolved only via the weaker `face-tag`/`name-match`
@@ -618,7 +618,7 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
     stale `.cache/index.sqlite` already means new weak matches can't be
     trusted (`_load_face_tag_index` returns nothing for that case), but the
     weak matches an earlier, fresher rebuild already recorded are not
-    re-derived here at all — wiping them out on every rebuild until the
+    re-derived here at all - wiping them out on every rebuild until the
     index catches up would erase real, already-screened identifications
     just because some *other* photo's tagging triggered this rebuild. So a
     stale index keeps every existing non-`pid-keyword`/`source-people` row
@@ -653,7 +653,7 @@ def _rebuild_photo_people(conn: sqlite3.Connection, archive_root: Path) -> None:
         face_regions = face_regions_by_path.get(path, [])
         resolved = _resolve_photo_people(keywords, face_regions, face_tags, names)
         # source-people tier: people listed in the source record are authoritative
-        # even when no P-id keyword has been embedded in the file yet — the source
+        # even when no P-id keyword has been embedded in the file yet - the source
         # record is the human's canonical "who is in this photo" statement.
         source_id = source_id_by_path.get(path)
         if source_id and source_id in source_people:
@@ -712,11 +712,11 @@ def _group_photos(conn: sqlite3.Connection) -> None:
     Recompute group_id/is_primary/variant_copy/variant_role for every photo,
     and rebuild photo_groups, from the current `photos` rows.
 
-    Grouping key, in priority order (TOOLING §9): (1) a shared SOURCE: S-id —
+    Grouping key, in priority order (TOOLING §9): (1) a shared SOURCE: S-id -
     files already processed into one source are one logical photo regardless
     of name; (2) same directory + same filename base_id after stripping the
     *recognized* suffix grammar (_lib.parse_media_filename, excluding
-    freeform roles — see _grouping_stem) — the pipeline's own variation
+    freeform roles - see _grouping_stem) - the pipeline's own variation
     convention. Always run over every row (not just changed ones): grouping
     is cheap pure-SQL/Python and a partial re-group after an incremental scan
     would silently miss a newly-added sibling joining an existing group.
@@ -736,7 +736,7 @@ def _group_photos(conn: sqlite3.Connection) -> None:
         stem_key_by_path[path] = f'{p.parent.as_posix()}:{_grouping_stem(parsed)}'
 
     # A SOURCE: S-id keyword wins for every file sharing a stem group, not
-    # just the file(s) that carry the keyword themselves — a front/back/crop
+    # just the file(s) that carry the keyword themselves - a front/back/crop
     # set is one logical photo even when only one member has been processed
     # into a source record.
     source_id_by_stem_key: dict[str, str] = {}
@@ -763,7 +763,7 @@ def _group_photos(conn: sqlite3.Connection) -> None:
         # Order candidates with the primary file first, then lexicographically,
         # so a confidence tie (e.g. two variants both 'year only, no marker')
         # resolves deterministically to the primary's date rather than
-        # insertion order — and falls back to path order only when the
+        # insertion order - and falls back to path order only when the
         # primary itself carries no date.
         dated = sorted(
             ((edtf_by_path[p], p) for p in paths if edtf_by_path[p]),
@@ -788,7 +788,7 @@ def _group_photos(conn: sqlite3.Connection) -> None:
         for path in paths:
             parsed = parsed_by_path[path]
             # Negatives are stored at the stem level regardless of any variant
-            # letter in their filename (TOOLING §9) — a negative is source
+            # letter in their filename (TOOLING §9) - a negative is source
             # material for the root image, not an A/B variant of the print.
             variant_copy = None if parsed.part_kind == 'negative' else parsed.variant_id
             conn.execute(
@@ -799,7 +799,7 @@ def _group_photos(conn: sqlite3.Connection) -> None:
             )
 
 
-# ── Query (fha photoindex find — BUILD.md M3.2) ──────────────────────────
+# ── Query (fha photoindex find - BUILD.md M3.2) ──────────────────────────
 
 def _paths_by_person(conn: sqlite3.Connection, person_id: str) -> set[str]:
     return {
@@ -851,7 +851,7 @@ def _paths_by_text(conn: sqlite3.Connection, query: str) -> set[str]:
     user to know FTS5 syntax. Each whitespace-separated token is therefore quoted
     as a literal phrase (doubling embedded quotes) so punctuation like `-`, `:`,
     `"`, `*` or bare AND/OR/NOT is matched literally instead of parsed as an
-    operator — `--text Smith-Jones` and `--text P-de957bcda1` find those strings
+    operator - `--text Smith-Jones` and `--text P-de957bcda1` find those strings
     rather than raising. Tokens are space-joined, preserving implicit-AND across
     words; a whitespace-only query matches nothing.
     """
@@ -875,7 +875,7 @@ def _group_keys_for(conn: sqlite3.Connection, paths: set[str]) -> dict[str, obje
 
     A grouped photo's key is its `group_id` (a string); an ungrouped photo is its
     own singleton, keyed by the tuple ('path', path) so it can never collide with
-    a real group_id. Used to AND filters at the logical-photo level — see run_find.
+    a real group_id. Used to AND filters at the logical-photo level - see run_find.
     """
     keys: dict[str, object] = {}
     for path in paths:
@@ -953,7 +953,7 @@ def run_find(
     variants are a single logical hit. Intersecting raw paths would wrongly drop
     such a group, so each filter's hits are widened to their groups before the AND.
 
-    Default output is one row per group (the group's primary_path) — search
+    Default output is one row per group (the group's primary_path) - search
     results and packet-style gathering always treat variants of one physical
     photo as a single hit (TOOLING §9). `--files` instead returns every raw row
     of each matched group, including sibling variants that did not themselves
@@ -1005,13 +1005,13 @@ def run_find(
                 # the unit of matching and all its files are one physical photo.
                 matched: set[str] = set()
                 for key in matched_groups:
-                    if isinstance(key, str):     # real group — pull all members
+                    if isinstance(key, str):     # real group - pull all members
                         matched.update(
                             row[0] for row in conn.execute(
                                 'SELECT path FROM photos WHERE group_id=?', (key,)
                             )
                         )
-                    else:                        # singleton — the path itself
+                    else:                        # singleton - the path itself
                         matched.add(key[1])
                 paths = sorted(matched)
             else:
@@ -1019,9 +1019,9 @@ def run_find(
                 primaries: set[str] = set()
                 for path in qualifying:
                     key = group_key[path]
-                    if isinstance(key, str):     # grouped — collapse to the group primary
+                    if isinstance(key, str):     # grouped - collapse to the group primary
                         primaries.add(_primary_path_for(conn, key) or path)
-                    else:                        # singleton — the path is its own primary
+                    else:                        # singleton - the path is its own primary
                         primaries.add(path)
                 paths = sorted(primaries)
 
@@ -1040,14 +1040,14 @@ def run_find(
         conn.close()
 
 
-# ── Triage (fha photoindex triage — BUILD.md M3.3) ───────────────────────
+# ── Triage (fha photoindex triage - BUILD.md M3.3) ───────────────────────
 
 _AI_COMMENT_RE = re.compile(r'^\s*(AI|Model):', re.I)
 
 
 def _candidate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """
-    Groups with no `source_id` on any member — TOOLING §15b's 'unprocessed' set.
+    Groups with no `source_id` on any member - TOOLING §15b's 'unprocessed' set.
 
     Deliberately `NOT EXISTS`, not `NOT IN (SELECT group_id FROM photos ...)`:
     a `NOT IN` against a subquery that returns even one NULL makes the whole
@@ -1079,7 +1079,7 @@ def _candidate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def _members_by_group(conn: sqlite3.Connection) -> dict[str, list[sqlite3.Row]]:
-    """Bulk-load every photo, grouped by group_id — one query, not one per group."""
+    """Bulk-load every photo, grouped by group_id - one query, not one per group."""
     by_group: dict[str, list[sqlite3.Row]] = {}
     for row in conn.execute(
         'SELECT group_id, path, caption, user_comment, edtf, variant_role FROM photos'
@@ -1089,7 +1089,7 @@ def _members_by_group(conn: sqlite3.Connection) -> dict[str, list[sqlite3.Row]]:
 
 
 def _pid_keyword_paths(conn: sqlite3.Connection) -> set[str]:
-    """Every path with an authoritative pid-keyword person match — one query, not one per group."""
+    """Every path with an authoritative pid-keyword person match - one query, not one per group."""
     return {
         row[0] for row in conn.execute(
             "SELECT path FROM photo_people WHERE via='pid-keyword'"
@@ -1105,7 +1105,7 @@ def _score_group(
     (score, [signal, ...]) for display.
 
     All signals are evaluated across every variant in the group (TOOLING §9:
-    grouped photos are one logical photo) — a caption transcribed onto the
+    grouped photos are one logical photo) - a caption transcribed onto the
     back of a print scores the whole group, not just that file. `members` and
     `pid_keyword_paths` are bulk-loaded once by the caller (see
     `_members_by_group`/`_pid_keyword_paths`) so scoring N groups costs no
@@ -1177,11 +1177,11 @@ def run_triage(archive_root: Path, fha_config: dict, top: int = 10) -> Result:
     return _query_photoindex(archive_root, fha_config, {'candidates': []}, query)
 
 
-# ── Report (fha photoindex report — BUILD.md M3.3) ────────────────────────
+# ── Report (fha photoindex report - BUILD.md M3.3) ────────────────────────
 
 def run_report(archive_root: Path, fha_config: dict) -> Result:
     """
-    List every photo_groups row with `date_conflict=1` — a date disagreement
+    List every photo_groups row with `date_conflict=1` - a date disagreement
     between variants of one physical photo (e.g. front vs. back) is a research
     finding worth a question, not a value to silently average (TOOLING §9).
 
@@ -1213,7 +1213,7 @@ def run_report(archive_root: Path, fha_config: dict) -> Result:
     return _query_photoindex(archive_root, fha_config, {'conflicts': []}, query)
 
 
-# ── Reconcile (fha photoindex reconcile — BUILD.md M3.4) ─────────────────
+# ── Reconcile (fha photoindex reconcile - BUILD.md M3.4) ─────────────────
 
 _MISSING_PREFIX = 'MISSING:'
 _RECONCILE_TABLES = (
@@ -1225,7 +1225,7 @@ def _move_cached_path(conn: sqlite3.Connection, old_path: str, new_path: str) ->
     """
     Rename one cached photo path across every path-keyed table, including
     `photo_fts` (an `UPDATE` against an FTS5 table re-indexes the row in
-    place, same as for an ordinary table) — otherwise `fha find --text`
+    place, same as for an ordinary table) - otherwise `fha find --text`
     would keep matching the photo's pre-reconcile path indefinitely.
 
     Reconcile moves path text as cache maintenance, not source-truth editing.
@@ -1259,7 +1259,7 @@ def _scrape_source_ids(paths: list[Path]) -> dict[Path, str]:
     Used only by reconcile's re-match step: an untracked file's *content*
     identity (its embedded SOURCE: keyword) is the only reliable way to tell
     whether it is a missing cached photo that moved, since its new filename
-    carries no S-id (photos are never renamed — SPEC §13).
+    carries no S-id (photos are never renamed - SPEC §13).
     """
     out: dict[Path, str] = {}
     for start in range(0, len(paths), _EXIFTOOL_BATCH_SIZE):
@@ -1286,7 +1286,7 @@ def run_reconcile(
     """
     Heal drift between the catalog's stored paths and what is actually on disk
     (TOOLING §9 reconciliation). A photo's stored path is a refreshable cache,
-    never its identity — identity rides in the embedded SOURCE: keyword (or,
+    never its identity - identity rides in the embedded SOURCE: keyword (or,
     failing that, nothing photoindex can verify), so a row whose path no
     longer exists on disk is handled three ways:
 
@@ -1305,7 +1305,7 @@ def run_reconcile(
         already carrying that prefix is left as-is (not double-prefixed) when
         it fails to rematch again. An ordinary `fha photoindex` scan never
         touches a 'MISSING:' key (it never matches a real on-disk alias, so a
-        naive cache-removal pass would erase it instead of resolving it) —
+        naive cache-removal pass would erase it instead of resolving it) -
         only reconcile itself ever removes or transforms one, so the row's
         source_id/path history survives until a later --with-exif retry
         heals it.
@@ -1318,7 +1318,7 @@ def run_reconcile(
 
     With dry_run=True, the plan (rematched/missing/new) is computed and
     reported exactly as it would be applied, but no cache row is moved and
-    nothing is committed — mirroring the repo's "every mutating operation
+    nothing is committed - mirroring the repo's "every mutating operation
     ships --dry-run" contract for what is otherwise an unprompted mutation.
 
     Any untracked file left over (new_count > 0) was never scraped into the
@@ -1332,7 +1332,7 @@ def run_reconcile(
 
     A temporarily missing or unmounted photos root (an external drive that
     isn't plugged in, a bad roots.photos mapping) must not be treated as
-    "every cached photo vanished" — `run_scan` already warns and leaves the
+    "every cached photo vanished" - `run_scan` already warns and leaves the
     cache untouched for the same case, so reconcile checks `photos_root.is_dir()`
     up front and returns 'root_found': False instead of mass-flagging every
     row 'MISSING:'.
@@ -1449,7 +1449,7 @@ def run_reconcile(
     if not dry_run and (untracked or rematched_paths):
         # Cover both still-untracked files (never scraped) and files just
         # rematched by SOURCE: keyword (path renamed in cache, but mtime/size
-        # never refreshed) — either can leave photos.sqlite newer than a file
+        # never refreshed) - either can leave photos.sqlite newer than a file
         # whose on-disk content the cache doesn't actually reflect yet, which
         # would make photoindex_status() report 'fresh' regardless. A photo
         # root on removable/network storage can also vanish mid-stat once the
@@ -1468,7 +1468,7 @@ def run_reconcile(
     return Result(exit_code=(EXIT_WARNINGS if result['missing'] else EXIT_CLEAN), data=result)
 
 
-# ── Tag-person (fha photoindex tag-person — BUILD.md M3.4) ───────────────
+# ── Tag-person (fha photoindex tag-person - BUILD.md M3.4) ───────────────
 
 def run_tag_person_plan(
     archive_root: Path,
@@ -1553,7 +1553,7 @@ def _resolve_catalog_path(
     Accepts the alias form directly ('photos/x.jpg', the common case since
     that is what `fha photoindex find` prints), or a filesystem path under the
     configured photos root. Raises ValueError if neither resolves to a row
-    already in the catalog — tag-person only ever touches cataloged photos.
+    already in the catalog - tag-person only ever touches cataloged photos.
     """
     direct = raw.replace('\\', '/')
     row = conn.execute('SELECT path FROM photos WHERE path=?', (direct,)).fetchone()
@@ -1571,7 +1571,7 @@ def _resolve_catalog_path(
 def _run_exiftool_write(paths: list[Path], keyword: str) -> dict[Path, str | None]:
     """
     Add `keyword` to each file's embedded Keywords (exiftool's `+=` list-
-    append syntax — existing keywords, including SOURCE:/DATE:, are never
+    append syntax - existing keywords, including SOURCE:/DATE:, are never
     removed) and overwrite the original in place.
 
     One exiftool process per file, not one batched call across every
@@ -1580,18 +1580,18 @@ def _run_exiftool_write(paths: list[Path], keyword: str) -> dict[Path, str | Non
     corrupt), which would hide a successful write to every other file behind
     one bare error. Writing one file at a time lets the caller learn exactly
     which paths succeeded so it can update the cache for those and report
-    the rest — AGENTS_TOOLING's "partial success must be reported clearly"
+    the rest - AGENTS_TOOLING's "partial success must be reported clearly"
     rule, applied to a keyword write instead of a rename.
 
     This is the one path in this tool that mutates an original photo file
     rather than the disposable cache (AGENTS.md contract: photos are never
     renamed, but spec'd keyword writes through `fha` tools are permitted).
-    Callers must preview and obtain human confirmation before calling this —
+    Callers must preview and obtain human confirmation before calling this -
     see `_cmd_tag_person`.
 
     Returns `{path: None}` for each successful write, `{path: stderr text}`
     for each failed one. Raises RuntimeError only when exiftool itself is
-    missing — that is an environment problem, not a per-file outcome.
+    missing - that is an environment problem, not a per-file outcome.
     """
     results: dict[Path, str | None] = {}
     for p in paths:
@@ -1625,10 +1625,10 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     """
     Write the bare P-id keyword into each candidate photo's embedded metadata,
     then update the cache so `photo_people` and `photo_fts` reflect the new
-    authoritative pid-keyword match immediately (TOOLING §9) — without
+    authoritative pid-keyword match immediately (TOOLING §9) - without
     waiting for a full `fha photoindex` rescan to notice the new keyword.
 
-    `person_id` must already be normalized (lowercase) by the caller — see
+    `person_id` must already be normalized (lowercase) by the caller - see
     `run_tag_person_plan`. The embedded keyword text uses the canonical
     'P-' + lowercase-id form regardless of the casing the human typed, so a
     later scan's `_PID_KEYWORD_RE` match and this call agree on one spelling.
@@ -1641,11 +1641,11 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
     `result['tagged']` unchanged.
 
     Raises RuntimeError (wrapping a `sqlite3.Error`) if the cache update
-    itself fails after one or more original files were already written —
+    itself fails after one or more original files were already written -
     the original-file writes cannot be rolled back, so the caller must learn
     exactly which `tagged` paths now carry the keyword in-file even though
     the cache update did not complete. `tagged` is recorded as soon as each
-    file's own exiftool write succeeds, before its cache insert is attempted —
+    file's own exiftool write succeeds, before its cache insert is attempted -
     otherwise a cache failure on the very candidate whose file write just
     succeeded would drop it from the recovery list this error reports.
     """
@@ -1656,7 +1656,7 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
             data={'tagged': [], 'failed': []},
         ).add(
             'warning',
-            'photoindex tag-person is not available in working-copy mode — '
+            'photoindex tag-person is not available in working-copy mode - '
             'the photo files are on the main machine. '
             'Run this command there.',
         )
@@ -1686,7 +1686,7 @@ def apply_tag_person(archive_root: Path, fha_config: dict, person_id: str, candi
                 _refresh_photo_fts_keywords(conn, tagged)
                 # Rebuild rather than upsert one row per tagged path: a pid-keyword
                 # match propagates to every variant in the photo's group (front/back,
-                # copies — TOOLING §9), and only a full recompute keeps those sibling
+                # copies - TOOLING §9), and only a full recompute keeps those sibling
                 # paths' photo_people rows in sync with the new keyword.
                 _rebuild_photo_people(conn, archive_root)
             conn.commit()
@@ -1746,7 +1746,7 @@ def _get_db(cache_dir: Path) -> tuple[sqlite3.Connection, bool, str | None]:
     Open (or create) .cache/photos.sqlite and apply the schema.
 
     Raises RuntimeError on a corrupt/unreadable existing file rather than
-    letting sqlite3's exception surface as a raw traceback — `_cmd_scan`
+    letting sqlite3's exception surface as a raw traceback - `_cmd_scan`
     turns this into a clean error message and EXIT_FAILURE, matching how
     other tools in the suite report a broken cache (AGENTS_TOOLING error-path
     inventory: a corrupt cache must degrade with a message, never crash).
@@ -1800,7 +1800,7 @@ def run_scan(archive_root: Path, fha_config: dict, full: bool = False) -> Result
 
     Incremental by (path, mtime, size): a file already in `photos` with a
     matching mtime+size is assumed unchanged and is not re-sent to exiftool
-    (the slow step, ~50-100 files/sec) — `--full` bypasses this and rescans
+    (the slow step, ~50-100 files/sec) - `--full` bypasses this and rescans
     everything. Files that have disappeared from disk since the last scan are
     deleted from the cache so stale entries never linger as phantom search
     hits.
@@ -1970,7 +1970,7 @@ def _add_photoindex_args(p: argparse.ArgumentParser) -> None:
 
     Shared by `register()` (the `fha photoindex` dispatcher path) and
     `_standalone_main()` (`python tools/photoindex.py` direct invocation) so
-    the two entry points cannot drift apart — without this, a fix applied to
+    the two entry points cannot drift apart - without this, a fix applied to
     one path (e.g. adding a new stubbed sub-command) would silently miss the
     other.
     """
@@ -2047,7 +2047,7 @@ def _resolve_root_and_config(args: argparse.Namespace) -> tuple[Path, dict] | in
     `_cmd_*` handler needs before it can call its `run_*` function.
 
     Returns (archive_root, fha_config) on success, or an EXIT_FAILURE int the
-    caller should return immediately — callers do
+    caller should return immediately - callers do
     `resolved = _resolve_root_and_config(args); if isinstance(resolved, int): return resolved`.
     """
     archive_root = resolve_root_arg(args)
@@ -2072,7 +2072,7 @@ def _print_photoindex_status(
     """
     Print the documented absent/unreadable/stale message for a photoindex_status
     value. Returns an EXIT_FAILURE int the caller should return immediately for
-    absent/unreadable, or None to keep going (status is 'fresh', or 'stale' —
+    absent/unreadable, or None to keep going (status is 'fresh', or 'stale' -
     stale still queries, it just warns first).
 
     `require_fresh=True` is for mutating commands like tag-person: a stale
@@ -2154,7 +2154,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
 
     if is_working_copy(archive_root):
         print(
-            'photoindex scan is not available in working-copy mode — '
+            'photoindex scan is not available in working-copy mode - '
             'the photo files are on the main machine. '
             'Run this command there.',
             file=sys.stderr,
@@ -2168,7 +2168,7 @@ def _cmd_scan(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
 
     if not summary['root_found']:
-        print(f"Photos root not found: {summary['photos_root']} — nothing scanned.")
+        print(f"Photos root not found: {summary['photos_root']} - nothing scanned.")
         return EXIT_WARNINGS
 
     if summary.get('rebuilt_reason'):
@@ -2228,7 +2228,7 @@ def _cmd_find(args: argparse.Namespace) -> int:
         date_label = row['edtf'] or '(no date)'
         caption = row['caption'] or row['title'] or ''
         role = '' if row['is_primary'] else f"  [{row['variant_role'] or 'variant'}]"
-        suffix = f'  — {caption}' if caption else ''
+        suffix = f'  - {caption}' if caption else ''
         print(f"  {row['path']}  [{date_label}]{role}{suffix}")
     return EXIT_CLEAN
 
@@ -2284,7 +2284,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
         print(f"  {group['group_id']}  (primary: {group['primary_path']})")
         for p in group['photos']:
             date_label = p['edtf'] or '(no date)'
-            caption = f"  — {p['caption']}" if p['caption'] else ''
+            caption = f"  - {p['caption']}" if p['caption'] else ''
             print(f"    {p['path']}  [{date_label}]{caption}")
     return EXIT_CLEAN
 
@@ -2307,7 +2307,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
 
     if result.get('working_copy'):
         print(
-            'photoindex reconcile is not available in working-copy mode — '
+            'photoindex reconcile is not available in working-copy mode - '
             'the photo files are on the main machine. Run this command there.',
             file=sys.stderr,
         )
@@ -2322,7 +2322,7 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
         return exit_code
 
     if getattr(args, 'dry_run', False):
-        print('(dry run — no changes made)')
+        print('(dry run - no changes made)')
 
     for old, new in result['rematched']:
         print(f'  RE-MATCHED  {old} -> {new}')
@@ -2353,7 +2353,7 @@ def _cmd_tag_person(args: argparse.Namespace) -> int:
 
     if is_working_copy(archive_root):
         print(
-            'photoindex tag-person is not available in working-copy mode — '
+            'photoindex tag-person is not available in working-copy mode - '
             'the photo files are on the main machine. '
             'Run this command there.',
             file=sys.stderr,

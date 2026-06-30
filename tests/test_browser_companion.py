@@ -5,10 +5,10 @@ no in-process way to exercise its DOM/fetch/download code here. What we *can*
 verify without a browser is the two things that actually keep the companion
 honest:
 
-  1. The MV3 manifest is well-formed and every file it names exists — the most
+  1. The MV3 manifest is well-formed and every file it names exists - the most
      common way an unpacked extension silently breaks.
   2. The companion's OUTPUT contract holds: the committed `test-bundle/` (built in
-     the exact shape `panel.js`/`bundle.js` write — `page.html` + the schema-2
+     the exact shape `panel.js`/`bundle.js` write - `page.html` + the schema-2
      asset files + `capture.json`) sweeps cleanly through `fha capture --ingest`.
      The example is the "both" case: a self-contained page copy (role `webpage`)
      AND a separate record evidence file (role `record`), so it must land as a
@@ -50,11 +50,11 @@ class ManifestTestCase(unittest.TestCase):
 
     def test_least_privilege_permissions(self) -> None:
         perms = set(self.manifest.get('permissions', []))
-        # The §5.4 least-privilege set (sidePanel added for the panel UX — see the
+        # The §5.4 least-privilege set (sidePanel added for the panel UX - see the
         # browser-companion README "Deviations" note).
         self.assertEqual(
             perms, {'activeTab', 'scripting', 'downloads', 'storage', 'sidePanel'})
-        # nativeMessaging stays OPTIONAL — the seamless host (§5.7) is opt-in.
+        # nativeMessaging stays OPTIONAL - the seamless host (§5.7) is opt-in.
         self.assertEqual(self.manifest.get('optional_permissions'), ['nativeMessaging'])
 
     def test_referenced_files_exist(self) -> None:
@@ -109,7 +109,7 @@ class ExampleBundleTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             # run_ingest MOVES swept bundles into .ingested/, so never sweep the
-            # committed copy in place — work on a throwaway staging copy.
+            # committed copy in place - work on a throwaway staging copy.
             staging = tmp / 'staging'
             staging.mkdir()
             shutil.copytree(EXAMPLE_BUNDLE, staging / EXAMPLE_BUNDLE.name)
@@ -131,9 +131,9 @@ class ExampleBundleTestCase(unittest.TestCase):
             self.assertEqual(len(folders), 1)
             bundle_dir = folders[0]
             self.assertTrue((bundle_dir / 'notes.md').is_file())
-            self.assertTrue((bundle_dir / 'page-copy.html').is_file())
+            self.assertTrue((bundle_dir / 'page-snapshot.html').is_file())
             self.assertTrue((bundle_dir / 'record.jpg').is_file())
-            # page.html is the scrape source, consumed at ingest — NOT filed.
+            # page.html is the scrape source, consumed at ingest - NOT filed.
             self.assertFalse((bundle_dir / 'page.html').exists())
             # No lone-sidecar stub was written for this multi-asset capture.
             self.assertEqual(list(inbox.glob('*.notes.md')), [])
@@ -150,7 +150,7 @@ class ExampleBundleTestCase(unittest.TestCase):
             # dissolves the bundle) name both assets with their roles.
             files = rec['meta']['files']
             by_name = {f['file']: f.get('role') for f in files}
-            self.assertEqual(by_name.get('page-copy.html'), 'webpage')
+            self.assertEqual(by_name.get('page-snapshot.html'), 'webpage')
             self.assertEqual(by_name.get('record.jpg'), 'record')
 
             # Bundle parked, not deleted.
@@ -158,7 +158,7 @@ class ExampleBundleTestCase(unittest.TestCase):
 
     def test_bundle_folder_dissolves_into_one_source(self) -> None:
         """The ingested bundle folder processes into a single source with both
-        assets in its files: inventory — the full intake → source round-trip.
+        assets in its files: inventory - the full intake → source round-trip.
 
         The photo seam (exiftool) is mocked, as in tests/test_process.py, so the
         record.jpg evidence files without a real exiftool on the test machine.

@@ -107,7 +107,7 @@ class CooccurPersonTests(unittest.TestCase):
     def test_claim_participants_without_source_people_still_pair(self) -> None:
         # Two people named only via claim_persons (no source_people frontmatter
         # list) on two different sources should still be detected as a
-        # co-occurring pair — source_people and claim_persons are unioned.
+        # co-occurring pair - source_people and claim_persons are unioned.
         for cid, sid in (('c-aaaaaaaaaa', 's-1111111111'), ('c-bbbbbbbbbb', 's-2222222222')):
             self.conn.execute(
                 "INSERT INTO claims(id, source_id, type, value, status) VALUES (?,?,?,?,?)",
@@ -137,7 +137,7 @@ class CooccurPersonTests(unittest.TestCase):
 
     def test_missing_required_column_returns_failed_status(self) -> None:
         # All required tables exist (table probe passes) but claims is missing
-        # a column _org_recurrence's query selects — must surface the
+        # a column _org_recurrence's query selects - must surface the
         # documented incompatible-schema message rather than an uncaught
         # OperationalError.
         self.conn.execute('ALTER TABLE claims RENAME TO claims_old')
@@ -267,7 +267,7 @@ class CooccurPlaceTests(unittest.TestCase):
         self.assertEqual(result['place_pairs'], [])
 
     def test_place_id_on_only_one_side_falls_back_to_place_text(self) -> None:
-        # A partially migrated archive — one claim has been normalized to a
+        # A partially migrated archive - one claim has been normalized to a
         # place_id, the other only has the matching place_text. The two
         # claims should still be recognized as the same place.
         self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
@@ -281,7 +281,7 @@ class CooccurPlaceTests(unittest.TestCase):
         self.assertEqual(len(result['place_pairs']), 1)
 
     def test_two_shared_places_produce_separate_candidates(self) -> None:
-        # Alice and Bob share two distinct places across two date ranges —
+        # Alice and Bob share two distinct places across two date ranges -
         # each place should be its own candidate, not blended into one.
         self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
                             place_text='Topeka, Kansas', date_edtf='1880')
@@ -305,7 +305,7 @@ class CooccurPlaceTests(unittest.TestCase):
 
     def test_undated_claim_not_a_candidate(self) -> None:
         # An undated claim gets unbounded EDTF bounds, so without this guard
-        # it would appear to overlap a dated claim from any era — undated
+        # it would appear to overlap a dated claim from any era - undated
         # placed claims should be excluded outright rather than matching
         # everything.
         self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
@@ -318,7 +318,7 @@ class CooccurPlaceTests(unittest.TestCase):
         self.assertEqual(result['place_pairs'], [])
 
     def test_negated_placed_claim_not_a_candidate(self) -> None:
-        # A negated residence claim means the person was NOT there — it
+        # A negated residence claim means the person was NOT there - it
         # shouldn't generate a shared-place lead with someone who was.
         self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
                             place_text='Topeka, Kansas', date_edtf='1880', negated=1)
@@ -332,7 +332,7 @@ class CooccurPlaceTests(unittest.TestCase):
     def test_same_source_claims_not_a_candidate(self) -> None:
         # Two residence claims from the same household source (e.g. a single
         # census record) naming different people at the same address aren't
-        # independent corroboration — they're one document's own household
+        # independent corroboration - they're one document's own household
         # listing, not a cross-source lead.
         self._insert_claim('c-aaaaaaaaaa', 's-1111111111', ['p-aaaaaaaaaa'],
                             place_text='Topeka, Kansas', date_edtf='1880')
@@ -424,7 +424,7 @@ class CooccurOrgTests(unittest.TestCase):
 
     def test_occupation_groups_by_entity_not_role(self) -> None:
         # SPEC §8.4's documented occupation value convention is
-        # "role, entity" (e.g. "bookkeeper, Plains Junction Railroad") — the
+        # "role, entity" (e.g. "bookkeeper, Plains Junction Railroad") - the
         # role varies between people at the same employer, so grouping
         # should key off the entity (text after the last comma), not the
         # whole value.
@@ -456,7 +456,7 @@ class CooccurOrgTests(unittest.TestCase):
     def test_entity_with_internal_comma_keeps_full_text(self) -> None:
         # The entity itself can contain a comma (e.g. a railroad division),
         # so the role/entity split has to happen on the FIRST comma, not the
-        # last — splitting on the last comma would silently drop everything
+        # last - splitting on the last comma would silently drop everything
         # before the entity's own internal comma.
         self._insert_claim('c-aaaaaaaaaa', 's-1111111111', 'occupation',
                             'bookkeeper, Plains Junction Railroad, Topeka Div.', ['p-aaaaaaaaaa'])
@@ -470,7 +470,7 @@ class CooccurOrgTests(unittest.TestCase):
 
     def test_negated_occupation_excluded_from_org_hub(self) -> None:
         # "not employed by Plains Junction Railroad" is a confirmed absence,
-        # not an affiliation — it shouldn't count toward the recurrence hub.
+        # not an affiliation - it shouldn't count toward the recurrence hub.
         self._insert_claim('c-aaaaaaaaaa', 's-1111111111', 'occupation',
                             'bookkeeper, Plains Junction Railroad', ['p-aaaaaaaaaa'])
         self.conn.execute(

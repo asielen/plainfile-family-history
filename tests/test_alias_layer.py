@@ -1,5 +1,5 @@
 """
-test_alias_layer.py — the `aliases:` resolution layer (wikilink-native step 03).
+test_alias_layer.py - the `aliases:` resolution layer (wikilink-native step 03).
 
 Covers the keystone contract: every reference (an ID, a human stem, a person's
 name) resolves to one canonical ID through the alias map; the human graph surface
@@ -143,7 +143,7 @@ class LintAliasTests(unittest.TestCase):
         self._two_johns()
         codes = self._codes()
         self.assertIn('W112', codes)        # latent
-        self.assertNotIn('W113', codes)     # not active — nothing links by the name
+        self.assertNotIn('W113', codes)     # not active - nothing links by the name
 
     def test_active_name_clash_flagged_not_guessed(self):
         self._two_johns()
@@ -151,7 +151,7 @@ class LintAliasTests(unittest.TestCase):
                '---\nid: S-1111111111\ntitle: A\nsource_type: photo\n---\n'
                '## Notes\nPictured with [[John Smith]] at the fair.\n')
         codes = self._codes()
-        self.assertIn('W113', codes)        # active — a link uses the ambiguous name
+        self.assertIn('W113', codes)        # active - a link uses the ambiguous name
 
     def test_self_alias_warns_only_when_aliases_present_but_wrong(self):
         # No aliases: field → not nagged (forgiving).
@@ -171,7 +171,7 @@ class LintAliasTests(unittest.TestCase):
 
     def test_unresolved_non_id_stem_is_inert(self):
         # A bare name/stem wikilink that matches no alias is an ordinary Obsidian
-        # link, not a citation — no finding at all.
+        # link, not a citation - no finding at all.
         _write(self.root / 'sources' / 'a_S-1111111111.md',
                '---\nid: S-1111111111\ntitle: A\nsource_type: photo\n---\n'
                '## Notes\nSee [[grandmas-album]].\n')

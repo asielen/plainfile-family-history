@@ -1,7 +1,7 @@
 ---
 id: S-ea61339378
 aliases: [S-ea61339378]
-title: Marriage notice — Thomas Hartley & Margaret Cole, 1871
+title: Marriage notice - Thomas Hartley & Margaret Cole, 1871
 source_type: newspaper
 source_date: 1871-03~
 source_class: original

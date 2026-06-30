@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-packet.py — fha packet: build a person data-export packet.
+packet.py - fha packet: build a person data-export packet.
 
   fha packet <P-id> [-o out/] [--include-research] [--include-restricted]
                      [--include-dna] [--no-photos] [--dry-run] [--overwrite]
@@ -16,7 +16,7 @@ suppressed) every photo of them the photo index can find. It is gathered as
 itself is never touched.
 
 This is explicitly NOT the public/standalone export path (`fha site
---standalone`, TOOLING §12) — the packet's README says so. A packet may
+--standalone`, TOOLING §12) - the packet's README says so. A packet may
 include `living: false` people's full prose and cite other people who are
 still living, with a caution in the README. The packet subject is different:
 SPEC §21 binds person packets to their own subject rule (separate from the
@@ -24,24 +24,29 @@ public-output redaction rules `fha site` follows), so `living: true` and
 `living: unknown` subjects are refused unless a future SPEC/TOOLING change
 adds an explicit packet opt-in.
 
-PRIVACY RULES (TOOLING §8 — apply at gather time, not as a post-filter):
+PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
   - `living: unknown` is treated the same as `living: true`.
   - The packet subject must be `living: false`; packets for living/unknown
-    subjects are refused before any output directory is created.
-  - `restricted: true` sources are excluded by default; `--include-restricted`
-    overrides — EXCEPT `source_type == 'dna'`, which stays excluded even then.
-    Only `--include-dna` includes DNA sources, and DNA sources are always
-    `restricted: true` (lint E017), so `--include-dna` alone is sufficient.
+    subjects are refused before any output directory is created. A restricted
+    subject is refused too - absolutely for `restricted: by-request`, otherwise
+    unless --include-restricted (or --include-dna for `restricted: dna`).
+  - The `restricted` marker (SPEC §19) is honored wherever it appears - a
+    source, a single claim, or the subject. The value is read from the record
+    file, not just the index's 0/1, so a free-text type is recognized. Plain
+    restrictions open with --include-restricted; `restricted: dna` needs
+    --include-dna (DNA is always restricted, lint E017); `restricted: by-request`
+    never opens under any flag. A restricted claim inside an otherwise-included
+    source is dropped from the timeline.
   - Excluded sources are still named (ID + title only) in the README so the
     human knows material exists but was withheld, not silently dropped.
   - Any *other* person named in the packet's included claims/sources who is
     themselves `living`/`unknown` gets a README caution (their prose/facts
-    are still included — packets are private, not for redistribution).
+    are still included - packets are private, not for redistribution).
 
 PHOTO GATHERING (TOOLING §8's "all photos of grandma" union):
-  (a) photos carrying the bare P-id keyword           — photo_people via='pid-keyword'
-  (b) photos whose face-region tags matched exactly    — photo_people via='face-tag'
-  (c) photos matched by name/name_variants (unverified) — photo_people via='name-match'
+  (a) photos carrying the bare P-id keyword           - photo_people via='pid-keyword'
+  (b) photos whose face-region tags matched exactly    - photo_people via='face-tag'
+  (c) photos matched by name/name_variants (unverified) - photo_people via='name-match'
   (d) image files attached to the *included* sources (whether or not the
       photoindex separately resolved them to this person)
   `photo_people` already computes the union of (a)-(c) per photoindex.py's
@@ -57,35 +62,35 @@ from the CLI handler that turns the dict into exit codes and stdout text.
 CODE MAP
 --------
   Helpers
-    _today                         — packet directory/README date stamp
-    _curated_person                — lookup + curated-tier gate
-    _source_ids_for_person        — claim_persons ∪ source_people union (views.py's pattern,
+    _today                         - packet directory/README date stamp
+    _curated_person                - lookup + curated-tier gate
+    _source_ids_for_person        - claim_persons ∪ source_people union (views.py's pattern,
                                      duplicated per-tool per TOOLING §15 "tools never import tools")
-    _classify_sources             — split source ids into included/excluded by privacy rules
-    _other_named_persons          — living/unknown persons named by included sources, for the
+    _classify_sources             - split source ids into included/excluded by privacy rules
+    _other_named_persons          - living/unknown persons named by included sources, for the
                                      README caution
-    _resolve_source_files         — source_files rows → resolved paths + missing/unresolvable notes
-    _is_image_path                — extension sniff for photo-type asset files
+    _resolve_source_files         - source_files rows → resolved paths + missing/unresolvable notes
+    _is_image_path                - extension sniff for photo-type asset files
 
   Photo gathering
-    _photo_people_paths           — photo_people rows for this pid (a/b/c union, already resolved)
-    _expand_photo_groups          — path set → full variation-group path set
-    _source_image_paths           — image-suffixed files among included sources' assets (d)
+    _photo_people_paths           - photo_people rows for this pid (a/b/c union, already resolved)
+    _expand_photo_groups          - path set → full variation-group path set
+    _source_image_paths           - image-suffixed files among included sources' assets (d)
 
   Timeline
-    _build_timeline_text          — self-contained fresh timeline.md content, filtered to the
-                                     packet's included sources (no GENERATED header — this is an
+    _build_timeline_text          - self-contained fresh timeline.md content, filtered to the
+                                     packet's included sources (no GENERATED header - this is an
                                      export copy, not a tracked archive view file)
 
   Packaging
-    _unique_dest_path             — collision-safe copy destination inside a packet subdirectory
-    _copy_into                    — copy one file, returning the dest path or None on a missing src
-    _write_readme                 — manifest + disclaimer + privacy captions
-    _zip_directory                — zip the finished packet directory
+    _unique_dest_path             - collision-safe copy destination inside a packet subdirectory
+    _copy_into                    - copy one file, returning the dest path or None on a missing src
+    _write_readme                 - manifest + disclaimer + privacy captions
+    _zip_directory                - zip the finished packet directory
 
   Core / CLI
-    _display_path                 — print paths relative to archive when possible
-    run_packet                    — library entry point: gather, copy, write, zip
+    _display_path                 - print paths relative to archive when possible
+    run_packet                    - library entry point: gather, copy, write, zip
     _cmd_packet, register, _standalone_main
 """
 
@@ -115,11 +120,49 @@ from _lib import (
     open_index_db,
     path_to_alias,
     photoindex_status,
+    read_record,
     resolve_path,
     resolve_root_arg,
 )
 
 configure_utf8_stdout()
+
+
+# ── The `restricted` marker (SPEC §19, TOOLING §1) ─────────────────────────────
+# `restricted` may sit on a source, a claim, a person, or a name. It defaults to
+# the boolean `true` but may carry a free-text type instead; two types never
+# open under any flag. These helpers are duplicated per export tool (tools never
+# import tools, TOOLING §15) and agree exactly on the contract.
+
+def _restricted_type(value) -> str | None:
+    """Normalize a raw `restricted:` value to its type, or None when unrestricted.
+
+    `read_record` coerces booleans to the strings `'true'`/`'false'`, so the
+    plain boolean arrives as `'true'`. An absent/false value is unrestricted; a
+    plain truthy value is the type `'plain'`; any other string is its own type
+    (`'dna'`, `'by-request'`, `'deadname'`, …), lowercased."""
+    if value in (None, False, '', 'false'):
+        return None
+    if value in (True, 'true'):
+        return 'plain'
+    return str(value).strip().lower() or 'plain'
+
+
+def _restricted_included(value, *, include_restricted: bool, include_dna: bool) -> bool:
+    """Does a record carrying this `restricted:` value belong in the export?
+
+    Unrestricted material is always included. `dna` opens only with
+    `--include-dna`; `by-request` never opens under any flag; every other type
+    (and the plain boolean) opens only with `--include-restricted`. Public paths
+    pass both flags False, so anything restricted is excluded."""
+    rtype = _restricted_type(value)
+    if rtype is None:
+        return True
+    if rtype == 'dna':
+        return include_dna
+    if rtype == 'by-request':
+        return False
+    return include_restricted
 
 _REQUIRED_TABLES = (
     'persons', 'claims', 'sources', 'claim_persons', 'source_files',
@@ -149,7 +192,7 @@ def _resolve_merged_person(
     """
     Follow `merged_into` to the survivor (SPEC §9: "tools resolve
     references through merged_into"). A merged tombstone's own `tier`/
-    `living` are irrelevant once redirected — the survivor's gate checks
+    `living` are irrelevant once redirected - the survivor's gate checks
     apply instead. Guards against a corrupt merge cycle by capping the
     chain length rather than looping forever.
     """
@@ -199,7 +242,7 @@ def _merged_alias_ids(conn: sqlite3.Connection, survivor_id: str) -> list[str]:
 
 def _source_ids_for_person(conn: sqlite3.Connection, pids: list[str]) -> list[str]:
     """
-    Distinct source IDs citing any of pids — the same two-table UNION
+    Distinct source IDs citing any of pids - the same two-table UNION
     views.py uses for sources-index (claim_persons→claims, plus the direct
     source_people table for sources that name someone without yet having
     extracted claims). Duplicated here rather than imported: tools never
@@ -225,8 +268,32 @@ def _source_ids_for_person(conn: sqlite3.Connection, pids: list[str]) -> list[st
     return [r[0] for r in rows]
 
 
+def _source_restricted_value(archive_root: Path, row: sqlite3.Row):
+    """The source's `restricted:` value, for the export decision.
+
+    The index stores `restricted` only as 0/1, so a free-text type
+    (`restricted: by-request` on a source) is lost there - the type is read from
+    the `.md` frontmatter. The two are combined rather than one overriding the
+    other: if the file states a value it wins (it carries the type), otherwise
+    the index's 1 still counts as a plain restriction, and a DNA source_type is
+    always treated as restricted (lint E017) even if the flag was hand-dropped.
+    An unreadable record falls back to the index's 0/1 - fail closed."""
+    try:
+        value = read_record(archive_root / row['path'])['meta'].get('restricted')
+    except Exception:
+        value = None
+    if value in (None, False, '', 'false'):
+        if (row['source_type'] or '') == 'dna':
+            return 'dna'
+        if (row['restricted'] or 0):
+            return 'true'
+        return None
+    return value
+
+
 def _classify_sources(
     conn: sqlite3.Connection,
+    archive_root: Path,
     source_ids: list[str],
     *,
     include_restricted: bool,
@@ -235,9 +302,11 @@ def _classify_sources(
     """
     Split source_ids into (included, excluded) rows per TOOLING §8 privacy rules.
 
-    DNA is checked first and independently of --include-restricted: a DNA
-    source is always restricted (lint E017), so checking restricted alone
-    would let --include-restricted leak DNA material the human didn't ask for.
+    The `restricted` marker is read from each source record (so a free-text type
+    like `restricted: by-request` is honored, not just the index's 0/1), and the
+    shared decision applies the no-override rule: `dna` needs --include-dna,
+    `by-request` is never opened, everything else (incl. the plain boolean) needs
+    --include-restricted.
     """
     if not source_ids:
         return [], []
@@ -253,12 +322,11 @@ def _classify_sources(
 
     included, excluded = [], []
     for row in rows:
-        if row['source_type'] == 'dna':
-            (included if include_dna else excluded).append(row)
-        elif row['restricted']:
-            (included if include_restricted else excluded).append(row)
-        else:
+        value = _source_restricted_value(archive_root, row)
+        if _restricted_included(value, include_restricted=include_restricted, include_dna=include_dna):
             included.append(row)
+        else:
+            excluded.append(row)
     return included, excluded
 
 
@@ -267,7 +335,7 @@ def _other_named_persons(
 ) -> list[sqlite3.Row]:
     """
     Return living/unknown persons (other than pid) named by an included
-    source's claims or its source_people list — the README caution set
+    source's claims or its source_people list - the README caution set
     (TOOLING §8: "any *other* person ... with living: true is named in a
     README caution"). living: unknown counts as living throughout.
     """
@@ -298,7 +366,7 @@ def _citation_named_persons(
     """
     Return living/unknown persons (other than pid) named by a bare `[P-id]`
     citation token anywhere in the packet's copied .md files (profile,
-    research note, included source records) — catches a living person
+    research note, included source records) - catches a living person
     mentioned only in prose, with no `claim_persons`/`source_people` row,
     that `_other_named_persons` would otherwise miss.
     """
@@ -365,7 +433,7 @@ def _is_image_path(p: Path) -> bool:
 
 def _photo_people_paths(photos_conn: sqlite3.Connection, pid: str) -> set[str]:
     """
-    Raw photo_people paths for pid — already the union of pid-keyword,
+    Raw photo_people paths for pid - already the union of pid-keyword,
     face-tag, and name-match resolution (photoindex.py's _resolve_photo_people
     computes this once per scan; we just read it).
     """
@@ -380,7 +448,7 @@ def _photo_people_paths(photos_conn: sqlite3.Connection, pid: str) -> set[str]:
 def _expand_photo_groups(photos_conn: sqlite3.Connection, paths: set[str]) -> set[str]:
     """
     Expand a set of matched photo paths to every path sharing their
-    group_id — so a person tagged on the front of a scan also gets its back
+    group_id - so a person tagged on the front of a scan also gets its back
     and crop variants (TOOLING §9: a logical photo is the whole group, not
     one file). Paths with no group_id (shouldn't happen post-scan, but a
     stale/partial cache is possible) pass through unchanged.
@@ -418,23 +486,70 @@ def _source_image_paths(
     return found
 
 
+# ── Claim-level restriction ────────────────────────────────────────────────────
+
+def _restricted_claim_ids(
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    included_source_ids: list[str],
+    *,
+    include_restricted: bool,
+    include_dna: bool,
+) -> set[str]:
+    """Claim IDs (within otherwise-included sources) that must NOT leak.
+
+    A single sensitive `restricted:` claim can sit inside an unrestricted source
+    (SPEC §8.4) - "cause of death: suicide", say. The index carries no
+    claim-level `restricted` column, so the marker is read from each included
+    source's `## Claims` block. Returns the normalized C-ids to exclude under the
+    active flags (a `by-request` claim is excluded even with --include-restricted).
+    """
+    excluded: set[str] = set()
+    if not included_source_ids:
+        return excluded
+    placeholders = ','.join('?' * len(included_source_ids))
+    rows = conn.execute(
+        f'SELECT id, path FROM sources WHERE id IN ({placeholders})', list(included_source_ids)
+    ).fetchall()
+    for row in rows:
+        try:
+            rec = read_record(archive_root / row['path'])
+        except Exception:
+            continue
+        for claim in rec['claims']:
+            if not isinstance(claim, dict):
+                continue
+            cid = normalize_id(str(claim.get('id', '')))
+            if not cid:
+                continue
+            if not _restricted_included(
+                claim.get('restricted'),
+                include_restricted=include_restricted, include_dna=include_dna,
+            ):
+                excluded.add(cid)
+    return excluded
+
+
 # ── Timeline ──────────────────────────────────────────────────────────────────
 
 def _build_timeline_text(
-    conn: sqlite3.Connection, pids: list[str], person_name: str, included_source_ids: set[str]
+    conn: sqlite3.Connection, pids: list[str], person_name: str,
+    included_source_ids: set[str], excluded_claim_ids: set[str] | None = None,
 ) -> str:
     """
     Build a fresh timeline.md body for the packet.
 
     Filtered to `included_source_ids` so a claim sourced from a restricted/DNA
     record that was excluded from the packet doesn't leak its facts into the
-    timeline anyway. Intentionally simpler than `fha views timeline`'s decade
-    grouping (no GENERATED header, no decade headers) — this is a one-shot
-    export artifact, not a tracked, regenerable archive view.
+    timeline anyway, and to `excluded_claim_ids` so a single restricted claim
+    inside an otherwise-included source is withheld too. Intentionally simpler
+    than `fha views timeline`'s decade grouping (no GENERATED header, no decade
+    headers) - this is a one-shot export artifact, not a tracked archive view.
 
     pids carries the survivor plus any merged-away aliases (SPEC §9) so
     claims still attached to an old id still surface here.
     """
+    excluded_claim_ids = excluded_claim_ids or set()
     if not included_source_ids:
         rows = []
     else:
@@ -442,7 +557,7 @@ def _build_timeline_text(
         src_placeholders = ','.join('?' * len(included_source_ids))
         rows = conn.execute(
             f"""
-            SELECT DISTINCT c.date_edtf, c.date_min, c.type, c.value,
+            SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value,
                    c.place_text, c.source_id
             FROM claim_persons cp
             JOIN claims c ON cp.claim_id = c.id
@@ -454,6 +569,7 @@ def _build_timeline_text(
             """,
             list(pids) + list(included_source_ids),
         ).fetchall()
+        rows = [r for r in rows if normalize_id(str(r['id'])) not in excluded_claim_ids]
 
     lines = [f'# Timeline: {person_name}\n']
     if not rows:
@@ -462,7 +578,7 @@ def _build_timeline_text(
 
     for row in rows:
         date_str = row['date_edtf'] or '(undated)'
-        line = f'- {date_str} — {row["type"]}: {row["value"]}'
+        line = f'- {date_str} - {row["type"]}: {row["value"]}'
         if row['place_text']:
             line += f' @ {row["place_text"]}'
         line += f' [{fmt_id_display(row["source_id"])}]\n'
@@ -476,7 +592,7 @@ def _unique_dest_path(dest_dir: Path, filename: str) -> Path:
     """Return a collision-free path for filename inside dest_dir.
 
     Two different sources rarely share a filename, but a stem-clash from
-    same-named scans on different machines is possible — append ` (2)`, ` (3)`
+    same-named scans on different machines is possible - append ` (2)`, ` (3)`
     etc. rather than silently overwriting one file with another.
     """
     candidate = dest_dir / filename
@@ -498,7 +614,7 @@ def _copy_into(src: Path, dest_dir: Path, *, messages: list[str] | None = None) 
 
     The copy is wrapped in try/except rather than left to propagate: a locked
     file, a permission error, or a full disk on ONE asset must not abort the
-    whole packet build and must not exit 0 either — when `messages` is given,
+    whole packet build and must not exit 0 either - when `messages` is given,
     the failure is appended there so the caller's exit code reflects it
     (AGENTS_TOOLING.md: filesystem errors must affect exit status, never be
     silently swallowed).
@@ -531,10 +647,10 @@ def _write_readme(
     missing_assets: list[str],
 ) -> None:
     lines = [
-        f'fha packet — {person_name} ({fmt_id_display(pid)})\n',
+        f'fha packet - {person_name} ({fmt_id_display(pid)})\n',
         f'Generated {_today()}\n',
         '\n'
-        'This is a derived export for family/private use — NOT a publication\n'
+        'This is a derived export for family/private use - NOT a publication\n'
         'format, and not itself research data. Facts live in the family\n'
         'archive; this packet is a point-in-time copy of what the archive\n'
         'said about this person on the date above. Edits made here are not\n'
@@ -553,7 +669,7 @@ def _write_readme(
     if unverified_photo_count:
         lines.append(
             f'\nNOTE: {unverified_photo_count} photo(s) in photos/ are matched by name only\n'
-            'and have not been visually confirmed — treat as unverified.\n'
+            'and have not been visually confirmed - treat as unverified.\n'
         )
 
     if included_sources:
@@ -563,7 +679,7 @@ def _write_readme(
 
     if excluded_sources:
         lines.append(
-            f'\nExcluded sources ({len(excluded_sources)}) — restricted or DNA material '
+            f'\nExcluded sources ({len(excluded_sources)}) - restricted or DNA material '
             'withheld by default, listed by ID only:\n'
         )
         for row in excluded_sources:
@@ -621,8 +737,8 @@ def _packet_payload(
     Build a packet for pid under out_dir. Returns a result dict:
 
       {'status': 'ok'|'dry-run'|'not-found'|'not-curated'|'living-subject'|
-       'no-index'|'no-photoindex'|'output-exists'|'write-failed'|'bad-config'|
-       'bad-output-path',
+       'restricted-subject'|'no-index'|'no-photoindex'|'output-exists'|
+       'write-failed'|'bad-config'|'bad-output-path',
        'packet_dir': Path|None, 'zip_path': Path|None,
        'messages': [str, ...]}
 
@@ -642,7 +758,7 @@ def _packet_payload(
     archive truth (TOOLING §15 "tools never import tools" applies just as
     much to one tool's output becoming another's input by accident).
     `out/` itself is exempt because `_index_citations` already skips it by
-    the same rule — the two must agree on what's safe.
+    the same rule - the two must agree on what's safe.
     """
     messages: list[str] = []
     try:
@@ -654,7 +770,7 @@ def _packet_payload(
         return {
             'status': 'bad-output-path', 'packet_dir': None, 'zip_path': None,
             'messages': [
-                f'ERROR: --out {out_dir} is inside {out_relative.parts[0]}/ — '
+                f'ERROR: --out {out_dir} is inside {out_relative.parts[0]}/ - '
                 'packet output must not be written into a record tree that '
                 '`fha index` scans.'
             ],
@@ -693,6 +809,29 @@ def _packet_payload(
         person_name = person['name']
         profile_path = archive_root / person['path']
 
+        # A restricted subject is refused before any output: the packet would BE
+        # this person's material. `by-request` is absolute; a plain/other type is
+        # refused unless --include-restricted (dna unless --include-dna), the same
+        # no-override rule every export path shares.
+        subject_restricted = None
+        try:
+            subject_restricted = read_record(profile_path)['meta'].get('restricted')
+        except Exception:
+            subject_restricted = None
+        if not _restricted_included(
+            subject_restricted, include_restricted=include_restricted, include_dna=include_dna
+        ):
+            rtype = _restricted_type(subject_restricted)
+            hint = (
+                'this person asked to be left out (restricted: by-request) and is never exported.'
+                if rtype == 'by-request' else
+                f'this person is restricted ({rtype}); pass --include-restricted to build their packet.'
+            )
+            return {
+                'status': 'restricted-subject', 'packet_dir': None, 'zip_path': None,
+                'messages': [f'{fmt_id_display(pid)}: {hint}'],
+            }
+
         photo_status = 'absent'
         if not no_photos:
             photo_status, _lag = photoindex_status(archive_root, fha_config)
@@ -700,7 +839,7 @@ def _packet_payload(
                 return {
                     'status': 'no-photoindex', 'packet_dir': None, 'zip_path': None,
                     'messages': [
-                        f'Photo index is {photo_status} — run `fha photoindex` first, '
+                        f'Photo index is {photo_status} - run `fha photoindex` first, '
                         'or pass --no-photos to export without photos.'
                     ],
                 }
@@ -708,7 +847,8 @@ def _packet_payload(
         alias_pids = [pid] + _merged_alias_ids(conn, pid)
         source_ids = _source_ids_for_person(conn, alias_pids)
         included_rows, excluded_rows = _classify_sources(
-            conn, source_ids, include_restricted=include_restricted, include_dna=include_dna,
+            conn, archive_root, source_ids,
+            include_restricted=include_restricted, include_dna=include_dna,
         )
         included_ids = {r['id'] for r in included_rows}
 
@@ -721,7 +861,7 @@ def _packet_payload(
 
         # Caution list combines structured-data matches now, and gets
         # extended with prose-citation and photo-only matches further below
-        # — the dict stays open until just before the README is written so
+        # - the dict stays open until just before the README is written so
         # every source can contribute without re-sorting repeatedly.
         copied_md_paths = {person['path']} | {r['path'] for r in included_rows}
         if research_row is not None:
@@ -735,6 +875,15 @@ def _packet_payload(
         )
         for item in missing_assets:
             messages.append(f'WARNING: {item}')
+
+        # A single restricted claim inside an otherwise-included source is
+        # withheld from the timeline (SPEC §8.4); the source record itself is
+        # still copied (its other claims are fine), but the sensitive fact does
+        # not surface in the generated chronology.
+        excluded_claim_ids = _restricted_claim_ids(
+            conn, archive_root, list(included_ids),
+            include_restricted=include_restricted, include_dna=include_dna,
+        )
 
         surname = person['surname'] or person_name.split()[-1]
         slug_surname = ''.join(c for c in surname.lower() if c.isalnum()) or 'person'
@@ -772,7 +921,7 @@ def _packet_payload(
                 zip_path.unlink()
             packet_dir.mkdir(parents=True)
 
-            # profile/ — the person's curated .md is the packet's central
+            # profile/ - the person's curated .md is the packet's central
             # record; a missing/failed copy is a structural failure (not the
             # per-file warning path used for optional assets), so it raises
             # into the cleanup handler below rather than shipping a packet
@@ -797,7 +946,10 @@ def _packet_payload(
 
             # timeline.md
             (packet_dir / 'timeline.md').write_text(
-                _build_timeline_text(conn, alias_pids, person_name, included_ids), encoding='utf-8',
+                _build_timeline_text(
+                    conn, alias_pids, person_name, included_ids, excluded_claim_ids,
+                ),
+                encoding='utf-8',
             )
 
             # sources/ + files/
@@ -832,7 +984,7 @@ def _packet_payload(
 
                     # Source-linked images aren't under photos/ control by tag, but a
                     # scan/copy of one may still share a photo_groups entry with a
-                    # tagged photo (front/back/crop of the same physical item) — convert
+                    # tagged photo (front/back/crop of the same physical item) - convert
                     # each to alias form and union with the tagged paths *before*
                     # expanding through photo_groups, so those siblings are captured too
                     # (TOOLING §9: a logical photo is the whole group, not one file).
@@ -869,7 +1021,7 @@ def _packet_payload(
 
                     # A photo-group sibling may be tagged with a different,
                     # still-living/unknown person who never appears in any claim or
-                    # source — catch that here so the caution list covers photo-only
+                    # source - catch that here so the caution list covers photo-only
                     # matches too.
                     tagged_aliases = {a for a in expanded_aliases if _is_photo_alias(a)}
                     if tagged_aliases:
@@ -924,7 +1076,7 @@ def _packet_payload(
             # schema) is different from one missing/locked file: it leaves
             # the build incomplete in a way per-file warnings can't express.
             # Clean up the half-built directory and any partial zip on a
-            # best-effort basis (their own failure is swallowed — we're
+            # best-effort basis (their own failure is swallowed - we're
             # already reporting the primary error) rather than leave debris
             # that would then block a retry with a misleading
             # "output already exists".
@@ -968,7 +1120,7 @@ def run_packet(
     """
     if is_working_copy(archive_root):
         _wc_msg = (
-            'fha packet is not available in working-copy mode — '
+            'fha packet is not available in working-copy mode - '
             'the photo and document files are on the main machine. '
             'Run this command there.'
         )
@@ -1001,7 +1153,7 @@ def run_packet(
     elif status in ('not-found', 'not-curated'):
         exit_code = EXIT_WARNINGS
     else:  # no-index, bad-output-path, bad-config, living-subject,
-           # no-photoindex, output-exists, write-failed
+           # restricted-subject, no-photoindex, output-exists, write-failed
         exit_code = EXIT_FAILURE
     return Result(
         ok=(status in ('ok', 'dry-run')),
@@ -1020,7 +1172,7 @@ def _cmd_packet(args: argparse.Namespace) -> int:
 
     if is_working_copy(archive_root):
         print(
-            'fha packet is not available in working-copy mode — '
+            'fha packet is not available in working-copy mode - '
             'the photo and document files are on the main machine. '
             'Run this command there.',
             file=sys.stderr,
@@ -1060,9 +1212,11 @@ def _cmd_packet(args: argparse.Namespace) -> int:
         print(f'{pid}: not found in index.', file=sys.stderr)
         return EXIT_WARNINGS
     if status == 'not-curated':
-        print(f'{pid}: not a curated person — packets are only built for curated profiles.', file=sys.stderr)
+        print(f'{pid}: not a curated person - packets are only built for curated profiles.', file=sys.stderr)
         return EXIT_WARNINGS
     if status == 'living-subject':
+        return EXIT_FAILURE
+    if status == 'restricted-subject':
         return EXIT_FAILURE
     if status == 'no-photoindex':
         return EXIT_FAILURE
@@ -1071,7 +1225,7 @@ def _cmd_packet(args: argparse.Namespace) -> int:
     if status == 'write-failed':
         return EXIT_FAILURE
     if status == 'dry-run':
-        print('(dry run — no changes written)')
+        print('(dry run - no changes written)')
         print(f'Would write: {_display_path(result["packet_dir"], archive_root)}')
         print(f'Would zip:   {_display_path(result["zip_path"], archive_root)}')
         return EXIT_WARNINGS if result['messages'] else EXIT_CLEAN

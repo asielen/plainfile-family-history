@@ -21,7 +21,7 @@
 //
 // Flow:
 //   init     → find the active tab, inject content.js, pull the pre-fill (P1→P2)
-//   step 2   → page-copy toggle + evidence picker (url or drop), provisional flag
+//   step 2   → page-copy toggle + evidence picker (url or drop)
 //   capture  → grab fresh page.html, build the page copy + evidence, stage bundle
 //
 // Classic script; depends on window.FHA.{captureJson,bundle,nativeHost}.
@@ -68,6 +68,11 @@
     droppedAsset: null, // { blob, ext, filename } | null
     folder: 'fha-inbox',
     busy: false,
+    // True on an Ancestry image-viewer page: the "Yes, save the actual file"
+    // flow then fetches the full-res record in-session (the seamless auto path)
+    // instead of pulling the URL box (which would be the thumbnail). Set from
+    // the prefill; drives buildEvidence() and the Ancestry note.
+    ancestryViewer: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -149,9 +154,19 @@
     $('f-repo').value = prefill.repository || '';
     $('f-url').value = prefill.url || '';
     renderPeople(prefill.people);
-    // Pre-fill the evidence url box with the best-guess image/PDF the page exposed.
-    if (prefill.imageUrl) $('f-asset-url').value = prefill.imageUrl;
-    else if (prefill.pdfUrl) $('f-asset-url').value = prefill.pdfUrl;
+    // Pre-fill the evidence url box with the best-guess image/PDF the page
+    // exposed - EXCEPT on an Ancestry image-viewer page, where detectImage()
+    // returns the 507x600 preview thumbnail (the EX7 trap). There the seamless
+    // full-res auto path replaces the URL box, so we leave it empty and let the
+    // Ancestry note (below) explain.
+    if (prefill.ancestryImageViewer) {
+      $('f-asset-url').value = '';
+    } else if (prefill.imageUrl) {
+      $('f-asset-url').value = prefill.imageUrl;
+    } else if (prefill.pdfUrl) {
+      $('f-asset-url').value = prefill.pdfUrl;
+    }
+    applyAncestryNote(!!prefill.ancestryImageViewer);
 
     const banner = $('recipe-banner');
     const hintLabel = RECIPE_LABELS[prefill.recipeHint];
@@ -160,6 +175,26 @@
       banner.classList.add('recipe');
     } else {
       banner.textContent = 'Generic capture, filing will read the page itself.';
+    }
+    updateAssetStatus();
+  }
+
+  // Show/hide the Ancestry auto-fetch affordance. On an image-viewer page the
+  // "Yes, save the actual file" choice gets the full-res record automatically on
+  // Capture (the seamless path); the note explains it pulls the SAME image
+  // Ancestry's own Download button would, in your session, one at a time. Off
+  // any other page this is a no-op and every existing behavior is untouched.
+  function applyAncestryNote(on) {
+    state.ancestryViewer = on;
+    const note = $('ancestry-note');
+    if (note) note.style.display = on ? 'block' : 'none';
+    const urlInput = $('f-asset-url');
+    if (urlInput) {
+      // The URL box still works as a manual override/fallback, but on the viewer
+      // its placeholder makes clear it is optional - the auto path is primary.
+      urlInput.placeholder = on
+        ? 'leave blank to auto-save the full record (or paste an address)'
+        : 'image or PDF address';
     }
     updateAssetStatus();
   }
@@ -181,6 +216,10 @@
 
   function hasEvidence() {
     if (evidenceMode() !== 'yes') return false;
+    // On an Ancestry image-viewer page the auto path supplies the full-res
+    // record on Capture, so "Yes" is satisfied with no dropped file or URL. A
+    // dropped file or a typed URL still takes precedence (manual override).
+    if (state.ancestryViewer) return true;
     return !!(state.droppedAsset || evidenceUrl());
   }
 
@@ -191,10 +230,12 @@
     if (pageCopyOn()) parts.push('Whole-page copy ✓');
     if (evidenceMode() === 'yes') {
       if (state.droppedAsset) {
-        const note = $('f-provisional').checked ? ' (screen capture)' : '';
-        parts.push('Record file: ' + state.droppedAsset.filename + note);
+        parts.push('Record file: ' + state.droppedAsset.filename);
       } else if (evidenceUrl()) {
         parts.push('Record file: from page address');
+      } else if (state.ancestryViewer) {
+        // Auto path: the full-res record is fetched on Capture.
+        parts.push('Record file: full record (Ancestry, auto)');
       } else {
         parts.push('Record file: add an address or drop a file');
       }
@@ -276,18 +317,9 @@
 
   // ── Step 3: assemble + stage the bundle ──────────────────────────────────────
 
-  function gatherNotes(provisional) {
-    let notes = $('f-notes').value;
-    if (!notes.trim()) notes = '';
-    // schema-2 capture.json carries the provisional flag structurally (on the
-    // record asset), but we ALSO surface it in the notes body - the one place
-    // review always reads (§5.6 "review sees every flag") - so a flagged screen
-    // capture is visible whether or not a tool honors the structured flag yet.
-    if (provisional) {
-      const flag = '[provisional image: a cleaner original may exist behind the paywall]';
-      notes = notes ? flag + '\n\n' + notes : flag;
-    }
-    return notes;
+  function gatherNotes() {
+    const notes = $('f-notes').value;
+    return notes.trim() ? notes : '';
   }
 
   function blobToBase64(blob) {
@@ -312,24 +344,48 @@
     }
     return {
       blob: new Blob([resp.html], { type: 'text/html' }),
-      filename: 'page-copy.html',
+      filename: 'page-snapshot.html',
     };
   }
 
-  // Resolve the evidence asset (role `record`): the dropped file as-is, or pull
-  // the url in the box from the page's own session (no separate fetch button -
-  // Capture pulls it). Returns { blob, filename } or throws.
+  // Resolve the evidence asset (role `record`). Precedence:
+  //   1. a dropped/chosen file (as-is)                          -> mode 'manual'
+  //   2. a URL typed into the box (pulled in-session)            -> mode 'fetch'
+  //   3. on an Ancestry image-viewer page with neither of the   -> mode 'ancestry-api'
+  //      above: the SEAMLESS full-res auto path (token -> assembled JPEG, in the
+  //      human's session, one image - the same file Ancestry's Download button
+  //      hands back). NEVER the thumbnail.
+  // Returns { blob, filename, mode } or throws (caller turns the throw into a
+  // panel message and the manual paths stay available - Capture never hard-fails
+  // because the auto-fetch failed).
   async function buildEvidence() {
     if (state.droppedAsset) {
-      return { blob: state.droppedAsset.blob, filename: 'record.' + state.droppedAsset.ext };
+      return {
+        blob: state.droppedAsset.blob,
+        filename: 'record.' + state.droppedAsset.ext,
+        mode: 'manual',
+      };
     }
     const url = evidenceUrl();
+    if (!url && state.ancestryViewer) {
+      const resp = await sendToTab(state.tabId, { action: 'ancestryImage' });
+      if (!resp || !resp.ok) {
+        // Surface Ancestry's reason (not signed in, downloads disabled, shape
+        // changed, thumbnail-sized) and point at the manual fallbacks.
+        throw new Error(
+          ((resp && resp.error) || 'could not fetch the full record from Ancestry') +
+            '. You can use Ancestry’s Download button and drop the file in, or paste an image address.'
+        );
+      }
+      const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
+      return { blob, filename: 'record.' + (resp.ext || 'jpg'), mode: 'ancestry-api' };
+    }
     const resp = await sendToTab(state.tabId, { action: 'fetchAsset', url });
     if (!resp || !resp.ok) {
       throw new Error((resp && resp.error) || 'could not pull that file from the page');
     }
     const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
-    return { blob, filename: 'record.' + (resp.ext || 'bin') };
+    return { blob, filename: 'record.' + (resp.ext || 'bin'), mode: 'fetch' };
   }
 
   async function capture() {
@@ -344,7 +400,7 @@
       );
       return;
     }
-    if (wantEvidence && !state.droppedAsset && !evidenceUrl()) {
+    if (wantEvidence && !state.droppedAsset && !evidenceUrl() && !state.ancestryViewer) {
       setStageResult(
         'Add the file address or drop a file, or switch to "No, the page copy is the record".',
         'warn'
@@ -366,8 +422,7 @@
 
       // Compose the asset list (the "both" case): the page copy and/or the
       // record evidence. Each entry carries its role so ingest files it right.
-      const provisional = wantEvidence && !!$('f-provisional').checked;
-      const assets = []; // { filename, blob, role, mode, provisional }
+      const assets = []; // { filename, blob, role, mode }
       if (wantPageCopy) {
         const pc = await buildPageCopy();
         assets.push({
@@ -375,13 +430,33 @@
           role: 'webpage', mode: 'singlefile',
         });
       }
+      let evidenceWarning = null;
       if (wantEvidence) {
-        const ev = await buildEvidence();
-        assets.push({
-          filename: ev.filename, blob: ev.blob,
-          role: 'record', mode: state.droppedAsset ? 'manual' : 'fetch',
-          provisional,
-        });
+        // The Ancestry seamless auto path (no dropped file, no typed URL, on a
+        // viewer page) may legitimately fail - not signed in, downloads disabled,
+        // API shape changed. That must NEVER hard-fail the capture: if a page
+        // copy was made, stage it and report the miss so the human can grab the
+        // file via Ancestry's own Download button. The explicit manual paths
+        // (dropped file / typed URL) still fail loudly - those are user choices.
+        const autoOnly =
+          state.ancestryViewer && !state.droppedAsset && !evidenceUrl();
+        if (autoOnly && wantPageCopy) {
+          try {
+            const ev = await buildEvidence();
+            assets.push({
+              filename: ev.filename, blob: ev.blob,
+              role: 'record', mode: ev.mode,
+            });
+          } catch (e) {
+            evidenceWarning = e.message;
+          }
+        } else {
+          const ev = await buildEvidence();
+          assets.push({
+            filename: ev.filename, blob: ev.blob,
+            role: 'record', mode: ev.mode || (state.droppedAsset ? 'manual' : 'fetch'),
+          });
+        }
       }
 
       const title = $('f-title').value.trim();
@@ -392,11 +467,10 @@
         sourceDate: $('f-date').value.trim(),
         sourceType: $('f-type').value,
         people: checkedPeople(),
-        notes: gatherNotes(provisional),
+        notes: gatherNotes(),
         recipeHint: state.prefill && state.prefill.recipeHint,
         assets: assets.map((a) => ({
           file: a.filename, role: a.role, mode: a.mode,
-          provisional: !!a.provisional,
         })),
       };
       const cap = captureJson.build(fields);
@@ -430,7 +504,7 @@
             assets: hostAssets,
           });
           viaHost = true;
-          reportStaged(resp.stub || 'your archive inbox', true);
+          reportStaged(resp.stub || 'your archive inbox', true, evidenceWarning);
         } catch (e) {
           // Fall back to the download path rather than failing the capture.
           viaHost = false;
@@ -438,7 +512,7 @@
       }
       if (!viaHost) {
         const result = await bundle.writeBundle(spec);
-        reportStaged(result.dir, false);
+        reportStaged(result.dir, false, evidenceWarning);
       }
 
       resetForNext();
@@ -450,16 +524,23 @@
     }
   }
 
-  function reportStaged(where, viaHost) {
+  function reportStaged(where, viaHost, evidenceWarning) {
+    // When the Ancestry auto-fetch missed but the page copy still staged, append
+    // the reason so the human knows to grab the file manually - the capture
+    // succeeded (it is not lost), it just doesn't yet carry the record image.
+    const suffix = evidenceWarning
+      ? '\nThe full record image was not saved: ' + evidenceWarning
+      : '';
+    const cls = evidenceWarning ? 'warn' : 'ok';
     if (viaHost) {
-      setStageResult('Filed straight into your archive: ' + where, 'ok');
+      setStageResult('Filed straight into your archive: ' + where + suffix, cls);
       $('handoff').classList.remove('show');
       return;
     }
     // Be exact about where it went, and reveal the handoff card with the
     // copyable ingest command (§5.1): the panel never pretends Downloads is the
     // archive.
-    setStageResult('Staged to Downloads/' + where, 'ok');
+    setStageResult('Staged to Downloads/' + where + suffix, cls);
     $('handoff').classList.add('show');
   }
 
@@ -479,7 +560,6 @@
       drop.classList.remove('has-file');
       drop.textContent = 'Drop a file here, or click to choose';
     }
-    $('f-provisional').checked = false;
     updateAssetStatus();
   }
 
@@ -541,7 +621,6 @@
       })
     );
     $('f-asset-url').addEventListener('input', updateAssetStatus);
-    $('f-provisional').addEventListener('change', updateAssetStatus);
     $('btn-capture').addEventListener('click', capture);
     $('btn-copy-cmd').addEventListener('click', () => copyCmd($('btn-copy-cmd')));
     $('btn-add-person').addEventListener('click', () => {

@@ -1,5 +1,5 @@
 """
-test_index.py — fha index: hypotheses/search_log parsing and indexing.
+test_index.py - fha index: hypotheses/search_log parsing and indexing.
 
 Covers the parser that extracts `## Hypotheses` and `## Research Log` entries
 from a person research file's markdown body (SPEC §16) and from
@@ -297,7 +297,7 @@ class IndexCitationsPacketOutputTests(unittest.TestCase):
 class IndexPublicationOkTests(unittest.TestCase):
     """rights.publication_ok must be stored three-state: 1 (true), 0 (explicit
     false), NULL (absent). The shared exporter predicate COALESCE(publication_ok,
-    1) = 0 — used by gedcom, wikitree, and site — only redacts on a stored 0, so
+    1) = 0 - used by gedcom, wikitree, and site - only redacts on a stored 0, so
     folding an explicit false to NULL (the old behavior) would silently leak a
     source the human marked unpublishable."""
 
@@ -332,7 +332,7 @@ class IndexPublicationOkTests(unittest.TestCase):
         self.assertIsNone(self._index('S-dddddddddd', 'rights:\n  holder: family collection\n'))
 
     def test_incremental_upsert_matches_full_rebuild(self) -> None:
-        # The three-state mapping must hold on the incremental path too — both
+        # The three-state mapping must hold on the incremental path too - both
         # build_index and upsert_source go through _index_source, but verify
         # end-to-end that a publication_ok:false source stays 0 after an upsert.
         sid = 'S-eeeeeeeeee'
@@ -357,7 +357,7 @@ class IndexPublicationOkTests(unittest.TestCase):
 
 class FullRebuildClearsStaleRowsTests(unittest.TestCase):
     """A full rebuild must not leave stale hypotheses/search_log rows behind
-    once an entry is removed from disk — _drop_tables already lists both
+    once an entry is removed from disk - _drop_tables already lists both
     tables, so build_index's drop+rebuild sequence should already cover this;
     this test exercises it end-to-end rather than just trusting the DDL list."""
 

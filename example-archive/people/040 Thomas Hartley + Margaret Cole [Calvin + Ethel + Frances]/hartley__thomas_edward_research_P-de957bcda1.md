@@ -23,6 +23,6 @@ Example research file for the fictional Thomas Hartley.
 - date: 2026-06-12
   question: "[[H-3f2a8c1d04]] Cole family arrival in Fairview"
   repository: example collection
-  collection: "fictional — illustrative entry"
+  collection: "fictional - illustrative entry"
   terms: "Cole, Fairview, 1870"
   result: nil

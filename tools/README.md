@@ -7,6 +7,8 @@ These tools are **generic**: they operate on any spec-conforming archive and con
 They are the "replaceable glue" of the philosophy - disposable, regenerable from the spec, and safe to publish.
 `TOOLING.md` (repo root) is the design document for every tool; consult it before changing any behavior.
 
+Two **out-of-tree companions** live beside this suite, installed into a user's setup rather than vendored by `fha install` and never load-bearing: [`browser-companion/`](../browser-companion/) (web capture) and [`obsidian-templater/`](../obsidian-templater/) (optional Obsidian Templater templates for new person/source notes; see [docs/USING_WITH_OBSIDIAN.md](../docs/USING_WITH_OBSIDIAN.md)).
+
 CLI recovery contract: `fha` prints help on no args; unknown subcommands get a
 "did you mean?" hint; ordinary failures explain the cause and the next command
 to try; tracebacks are hidden by default and shown only with the global
@@ -38,6 +40,7 @@ read the same structured result (TOOLING §1).
 | `fha find <ID>` | `find.py` | ✓ P/S/C/L/H id types; structured index path when present; tree-scan fallback when absent |
 | `fha find --text "…"` | `find.py` | ✓ notes_fts + re.search; photo captions searched when photoindex is fresh (else skip-note); `transcripts_fts` created but not yet populated - transcript search deferred (D7) |
 | `fha find --related <ID> [--date EDTF]` | `find.py` | ✓ BUILD.md M4.3 (D4) - neighborhood query for all five ID types, plus a standalone `--related --date EDTF` time slice. Requires a real index (exit 3 if absent/unreadable - no tree-scan fallback, unlike find_by_id) |
+| `fha relate <P-A> <P-B>` | `relate.py` | ✓ blood relationship (LCA over genetic edges: cousin/removal/lineal/aunt-uncle) + shortest social path (BFS over all edges); `--json`; structured `Result`. Requires a real index (exit 3 if absent/unreadable). ⚑ `--include-hypotheses` deferred (index derives only accepted edges) |
 | `fha id check <ID>` | `fha.py` alias | ✓ re-routed through `find.find_by_id` in fha.py dispatcher |
 
 Views require a fresh `.cache/index.sqlite` (run `fha index` first). `fha find` uses the index when present, warns when it is stale, and falls back to a tree scan only when the index is absent or unreadable; `fha doctor` degrades gracefully without caches. Both `.cache/index.sqlite` and `.cache/photos.sqlite` carry a `meta.schema_version` row plus `PRAGMA user_version`; missing, old, corrupt, or unreadable caches are treated as disposable and rebuilt by `fha index` / `fha photoindex`.
@@ -220,14 +223,14 @@ Automated tests: `tests/test_photoindex.py` (stdlib `unittest`, no new dependenc
 
 | Tool | File | Status |
 |---|---|---|
-| `fha site [--out PATH] [--standalone \| --linked] [--dry-run]` | `site.py`, `templates/` (incl. `templates/vendor/`) | ✓ M8.1-M8.5 - static-HTML explorer: source page (M8.1), curated person page (M8.2), place + discoveries pages (M8.3), home page (surname A-Z + discoveries teaser) + standalone redaction audit (M8.4), interactive descendant/ancestor trees via a vendored renderer (M8.5). See "fha site - implementation status" below |
+| `fha site [--out PATH] [--standalone \| --linked] [--dry-run]` | `site.py`, `templates/` (incl. `templates/vendor/`) | ✓ M8.1-M8.5 - static-HTML explorer: source page (M8.1), curated person page (M8.2), place + discoveries pages (M8.3), home page (surname A-Z + discoveries teaser) + standalone redaction audit (M8.4), interactive descendant/ancestor trees via a vendored renderer (M8.5), with social/adoptive edges drawn distinctly from the genetic line (SPEC §12.2). See "fha site - implementation status" below |
 
 `fha site` reads structured data only from `.cache/index.sqlite` (so the site is
 as fresh as the last `fha index`), reads biography/Stories prose from the curated
 person `.md` and the citation text from the source `.md` frontmatter (neither is
 in the index), and reads the photo strip from `.cache/photos.sqlite` when fresh.
 It writes only to the output directory (default `.cache/site/`), never to the
-archive. **Dependencies:** Jinja2 (required); Pillow (optional — standalone image
+archive. **Dependencies:** Jinja2 (required); Pillow (optional - standalone image
 derivatives use it when present; without it the standalone site omits images
 rather than copying originals, which would leak EXIF). See `tools/requirements.txt`.
 
@@ -235,7 +238,7 @@ rather than copying originals, which would leak EXIF). See `tools/requirements.t
 
 | Tool | File | Status |
 |---|---|---|
-| `fha working-copy on\|off\|status [--root PATH] [--yes]` | `working_copy.py` | ✓ M10.1 — working-copy mode management; see "fha working-copy — implementation status" below |
+| `fha working-copy on\|off\|status [--root PATH] [--yes]` | `working_copy.py` | ✓ M10.1 - working-copy mode management; see "fha working-copy - implementation status" below |
 
 Working-copy mode lets a genealogist git-sync their archive to a second machine
 (laptop, NAS, travel device) without carrying the binary asset files (photos and
@@ -245,7 +248,7 @@ is machine-local and never syncs back. When active:
 - **Lint** suppresses E011 and E012 (asset-on-disk checks); emits one
   `[working copy] N asset file(s) assumed present on the main machine` note
   instead. All other lint rules run normally.
-- **Index** stores `exists_on_disk = NULL` (not 0) for inventory files — callers
+- **Index** stores `exists_on_disk = NULL` (not 0) for inventory files - callers
   can distinguish "unknown" from "missing".
 - **Photoindex scan** and **reconcile** are refused so a working copy cannot
   prune or rewrite the photo cache; read-only photoindex commands (find, triage,
@@ -263,7 +266,7 @@ removing the marker; `--yes` skips the prompt.
 The `archive-template/.gitignore` already lists `WORKING_COPY`, so `fha install`
 gives every new archive the guarantee for free.
 
-Test fixture: `tests/fixtures/working-copy/` — records present, asset roots
+Test fixture: `tests/fixtures/working-copy/` - records present, asset roots
 pointing to absent directories, WORKING_COPY marker present. Lints clean.
 
 ## Implemented tools (milestone 9)
@@ -339,9 +342,9 @@ Writes only to the output directory.
 | Flag / feature | Status | Notes |
 |---|---|---|
 | Source page (M8.1) | ✓ | Citation block (read from the source `.md` frontmatter, title fallback), source metadata, claims table with status badges (all statuses shown; people linked to their pages), and a files list (thumbnails + links). A malformed source record warns plainly and still renders with its title in place of the citation; one bad page never aborts the build |
-| Person page (M8.2) | ✓ | Summary block from accepted vital claims; biography + Stories HTML (stdlib markdown→HTML + token swap, read from the person `.md`); timeline (accepted + needs-review, decade-grouped — same query as `fha views timeline`, suggested excluded); sources index grouped by `source_type` (same two-table UNION as `fha views sources-index`); photo strip (`photo_people`, one entry per variation group); Friends & Family from the `relationships` edges |
-| Token swap | ✓ | `TOKEN_RE` in prose → relative hrefs: `[P-id]` → person page (or "Living Person" when redacted, or plain name for a stub/page-less person); `[S-id]` → source page (or "Restricted — not included in this publication" when redacted); `[L-id]` → place name (place pages are M8.3, no link yet); any unresolved token → `<mark>[X-xxxx]</mark>` |
-| `--standalone` (default) | ✓ | Self-contained, redacted snapshot. Living/unknown persons get **no page** and render as "Living Person"; restricted, DNA, and `rights.publication_ok: false` sources get **no page** and render as "Restricted…"; source pages publish only **accepted + needs-review** claims (`suggested` AI drafts and `rejected`/`superseded` claims are withheld — matching the timeline); image assets become resized (≤1200px), EXIF-stripped derivatives copied into `site/media/` under collision-free names (stem + a hash of the alias path, so two same-stem photos never overwrite each other). A page is linked only if it was generated (no dangling redacted links) |
+| Person page (M8.2) | ✓ | Summary block from accepted vital claims; biography + Stories HTML (stdlib markdown→HTML + token swap, read from the person `.md`); timeline (accepted + needs-review, decade-grouped - same query as `fha views timeline`, suggested excluded); sources index grouped by `source_type` (same two-table UNION as `fha views sources-index`); photo strip (`photo_people`, one entry per variation group); Friends & Family from the `relationships` edges |
+| Token swap | ✓ | `TOKEN_RE` in prose → relative hrefs: `[P-id]` → person page (or "Living Person" when redacted, or plain name for a stub/page-less person); `[S-id]` → source page (or "Restricted - not included in this publication" when redacted); `[L-id]` → place name (place pages are M8.3, no link yet); any unresolved token → `<mark>[X-xxxx]</mark>` |
+| `--standalone` (default) | ✓ | Self-contained, redacted snapshot. Living/unknown persons - and `restricted` persons (any value, read from the person file) - get **no page** and render as "Living Person"; restricted, DNA, and `rights.publication_ok: false` sources get **no page** and render as "Restricted…" (a free-text `restricted: by-request` source type is read from the file beyond the index's 0/1); a single `restricted` claim is withheld from the summary, timeline, source page, and place page even when its source publishes; a restricted name variant (a deadname) resolves internally - `[[prior name]]` still links - but renders the person's unrestricted display name (SPEC §18); source pages publish only **accepted + needs-review** claims (`suggested` AI drafts and `rejected`/`superseded` claims are withheld - matching the timeline); image assets become resized (≤1200px), EXIF-stripped derivatives copied into `site/media/` under collision-free names (stem + a hash of the alias path, so two same-stem photos never overwrite each other). A page is linked only if it was generated (no dangling redacted links) |
 | `--linked` | ✓ | Local developer preview: real archive paths (no copies), no redaction. Mutually exclusive with `--standalone` |
 | `--out PATH` | ✓ | Output directory (default `.cache/site/` under the archive root); absolute or archive-relative |
 | `--dry-run` | ✓ | Reports how many pages would be built; writes nothing |
@@ -351,7 +354,7 @@ Writes only to the output directory.
 | Discoveries page (M8.3) | ✓ | Renders `notes/discoveries.md` through the same prose→HTML + token swap, so `[P-id]`/`[S-id]` mentions link (and living persons redact to "Living Person") for free. Missing/empty file → a plain "nothing logged yet" page |
 | Home page (M8.4) | ✓ | Surname A-Z index (built from `person_pages`, so redacted persons are already excluded), a recent-discoveries teaser (last 5 `##`/`###` sections or top-level bullets of `discoveries.md`, redacted), plus place and source navigation so every generated page is reachable |
 | Standalone redaction audit (M8.4) | ✓ | Enforced structurally: all cross-links resolve against the authoritative `person_pages`/`source_pages`/`place_pages` sets decided once in `prepare()`, so a page is linked only if it was generated. `tests/test_site.py` crawls every emitted standalone page (and every tree JSON node `url`) and asserts no `persons/`/`sources/` link points at a missing page |
-| Interactive tree rendering (M8.5) | ✓ | A vendored, dependency-free renderer (`templates/vendor/fha-tree.js`) + a single adapter seam (`tree-adapter.js`) map the neutral tree JSON contract (TOOLING §7/§14b) to an SVG collapsible tree; no D3, no CDN, works from file://. At build time the home page gets a **descendant** tree seeded from the apex of `root_person`'s line (so the explorer fans forward across the whole family — reconciling BUILD's "root person" with TOOLING's "root ancestor"); each curated person page gets a 3-generation **ancestor** pedigree. JSON is written to `site/data/tree_{P-id}_{mode}.json` (the reusable artifact) **and** embedded inline (read from the DOM, not fetched — file:// has no network). Redaction is applied server-side in the JSON (living/unknown → "Living Person", no vitals, no link), so a published tree file never carries a living person's name or a link to a page that wasn't generated. The home descendant explorer passes a bounded `initialDepth` to the renderer (deeper generations start collapsed) so a large family doesn't paint thousands of nodes at once; the data stays complete and the reader expands forward |
+| Interactive tree rendering (M8.5) | ✓ | A vendored, dependency-free renderer (`templates/vendor/fha-tree.js`) + a single adapter seam (`tree-adapter.js`) map the neutral tree JSON contract (TOOLING §7/§14b) to an SVG collapsible tree; no D3, no CDN, works from file://. At build time the home page gets a **descendant** tree seeded from the apex of `root_person`'s line (so the explorer fans forward across the whole family - reconciling BUILD's "root person" with TOOLING's "root ancestor"); each curated person page gets a 3-generation **ancestor** pedigree. JSON is written to `site/data/tree_{P-id}_{mode}.json` (the reusable artifact) **and** embedded inline (read from the DOM, not fetched - file:// has no network). Redaction is applied server-side in the JSON (living/unknown → "Living Person", no vitals, no link), so a published tree file never carries a living person's name or a link to a page that wasn't generated. The home descendant explorer passes a bounded `initialDepth` to the renderer (deeper generations start collapsed) so a large family doesn't paint thousands of nodes at once; the data stays complete and the reader expands forward |
 | Exit codes | ✓ | 0 clean; 1 if any page warned (missing asset, malformed record, image that couldn't be processed); 3 (`EXIT_FAILURE`, the convention `fha packet` uses for can't-run refusals) for the Jinja2-missing, index-absent, unsafe-output, malformed-`fha.yaml` (bad-config), and output-reset-failure paths, each with a plain hint (install Jinja2 / run `fha index` / pick another folder / fix `fha.yaml`) |
 
 `fha site`'s file is `tools/site.py`, but the module stem `site` collides with
@@ -400,7 +403,11 @@ derivatives (no overwrite); `--standalone` source pages exclude
 `suggested`/`rejected` claims while `--linked` keeps them; the home tree passes a
 bounded `initialDepth` and the pedigree passes null; and an old-schema (v1)
 index is refused, not trusted. Run with `python -m unittest tests.test_site -v`
-from the repo root.
+from the repo root. The generalized `restricted` redaction (a restricted person
+gets no page, a free-text `by-request` source gets no page, a restricted claim is
+withheld from a published source page, and a deadname name variant resolves
+internally but renders the unrestricted display name) is covered by
+`tests/test_privacy_restricted.py`.
 
 ## fha capture - implementation status
 
@@ -469,7 +476,7 @@ AI pass audit block, EDTF/type-heuristic units, the missing-`mining/` error, and
 |---|---|---|
 | Curated/living gate | ✓ | Non-curated/stub persons and unknown P-ids refuse with exit 1 (`not-curated`/`not-found`), distinct from a missing index (exit 3). Packet subjects with `living: true` or `living: unknown` refuse before output is created, matching SPEC's external-output rule until a future explicit packet opt-in exists |
 | Source gathering | ✓ | `claim_persons ∪ source_people` union (same two-table pattern as `views.py`'s sources-index, duplicated per-tool per TOOLING §15 - tools never import tools) |
-| Privacy filtering | ✓ | `restricted: true` sources excluded by default (`--include-restricted` overrides); `source_type: dna` sources excluded even with `--include-restricted` (only `--include-dna` includes them); excluded sources are listed by ID + reason in the README, never silently dropped |
+| Privacy filtering | ✓ | The `restricted` marker (SPEC §19) is honored at the source, claim, and subject level, read from the record files (so a free-text type like `restricted: by-request` is recognized, not just the index's 0/1): plain/free-text restrictions open with `--include-restricted`, `restricted: dna` needs `--include-dna` (only that; `--include-restricted` never opens DNA), `restricted: by-request` never opens under any flag. A restricted subject is refused (`restricted-subject`) - absolutely for `by-request`, otherwise unless `--include-restricted`/`--include-dna`. A single restricted claim inside an otherwise-included source is dropped from the generated timeline. Excluded sources are listed by ID + reason in the README, never silently dropped |
 | Other-living-person caution | ✓ | Any other person named by an included source's claims or `source_people`, with `living` in `('true', 'unknown')`, is listed in a README caution |
 | `profile/` | ✓ | Profile `.md` always; `+research.md` with `--include-research` - if no research file exists for the person, a warning is reported (in messages and exit code) instead of silently omitting it |
 | `timeline.md` | ✓ | Freshly generated for the export, filtered to the packet's *included* sources only (an excluded restricted/DNA source's claims never leak into the timeline) - intentionally simpler than `fha views timeline` (no decade headers, no GENERATED header; this is a one-shot export artifact, not a tracked view file) |
@@ -479,7 +486,7 @@ AI pass audit block, EDTF/type-heuristic units, the missing-`mining/` error, and
 | Output | ✓ | `packet_{surname}_{P-id}_{date}/` under `-o`/`--out` (default `out/` under the archive root), then zipped alongside it; directory and zip are both left on disk. Existing same-name output refuses unless `--overwrite`; `--dry-run` previews without writing |
 | Filesystem-error handling | ✓ | A single file's copy failing (locked file, permission error) is caught, reported in messages/exit code, and skipped - it never aborts the build. A structural failure (can't create the packet dir, zip write fails, disk full) is caught at the top level, the half-built directory is removed on a best-effort basis, and the command returns `write-failed` (exit 3) instead of an unhandled traceback |
 
-Automated tests: `tests/test_packet.py` builds a synthetic `.cache/index.sqlite` (and, where needed, a synthetic `.cache/photos.sqlite`) directly from `index.py`'s/`photoindex.py`'s DDL, covering the curated/living gates, strict stale-index refusal, restricted/DNA source filtering (both directions), the other-living-person caution (`living: true` and `living: unknown`), timeline source filtering, missing asset/photo reporting, `--include-research` with no research file, output conflict/overwrite/dry-run (including `--dry-run --overwrite` together) behavior, external `--out` display, the missing/absent/stale photoindex paths, photo-group expansion (a person tagged on one variant pulls in its siblings), a per-file copy failure (mocked `shutil.copy2`), and a structural build failure (mocked `_zip_directory`).
+Automated tests: `tests/test_packet.py` builds a synthetic `.cache/index.sqlite` (and, where needed, a synthetic `.cache/photos.sqlite`) directly from `index.py`'s/`photoindex.py`'s DDL, covering the curated/living gates, strict stale-index refusal, restricted/DNA source filtering (both directions), the other-living-person caution (`living: true` and `living: unknown`), timeline source filtering, missing asset/photo reporting, `--include-research` with no research file, output conflict/overwrite/dry-run (including `--dry-run --overwrite` together) behavior, external `--out` display, the missing/absent/stale photoindex paths, photo-group expansion (a person tagged on one variant pulls in its siblings), a per-file copy failure (mocked `shutil.copy2`), and a structural build failure (mocked `_zip_directory`). The generalized `restricted` contract (by-request never opens, dna needs `--include-dna`, restricted subject refused, restricted claim dropped from the timeline) is covered by `tests/test_privacy_restricted.py`.
 
 ## fha places - implementation status
 
@@ -503,17 +510,17 @@ Automated tests: `tests/test_places.py` builds a synthetic `.cache/index.sqlite`
 | Dates | ✓ | EDTF → GEDCOM 5.5.1 (`1850`, `ABT 1850`, `MAY 1850`, `20 MAY 1850`, `BET … AND …` for intervals, `ABT` for decades, `BEF` for open `[..Y]` bounds) |
 | Sources | ✓ | Each emitted vital/marriage fact's `source_id` → `2 SOUR @Sn@`; top-level `SOUR` records carry `TITL` + `REFN` (the S-id), emitted only for sources actually cited by a non-redacted fact |
 | Privacy (living redaction) | ✓ | `living: true`/`unknown` → `NAME /Living/`, birth/death and their SOUR withheld, marriage details of any family they belong to withheld, REFN omitted; structural FAMS/FAMC/HUSB/WIFE/CHIL links kept so the tree shape survives. `--include-living` lifts it. A redaction count is reported on stderr |
-| Privacy (restricted/DNA) | ✓ | Restricted and DNA sources are not eligible fact sources for public GEDCOM export; their vital/marriage event details and `SOUR` records are withheld while already-derived relationship edges may still preserve tree shape |
+| Privacy (restricted/DNA) | ✓ | Restricted and DNA sources are not eligible fact sources for public GEDCOM export; their vital/marriage event details and `SOUR` records are withheld while already-derived relationship edges may still preserve tree shape. A free-text restricted type (`restricted: by-request`) the index stored as 0 is read from the source file and excluded too. A `restricted` **person** (any value, read from the person file) has their NAME withheld as `/Restricted/` with no override (`--include-living` lifts only the living redaction), structural FAMS/FAMC/HUSB/WIFE/CHIL links kept so the tree shape survives |
 | Output | ✓ | GEDCOM 5.5.1 with a "do not re-import as truth" HEAD note; CRLF line endings; stdout or `--out FILE`. Never re-imported - GEDCOM is a one-way export bridge. Stable xrefs: persons `I{n}` by id, families `F{n}`, sources `S{n}` |
 
-Automated tests: `tests/test_gedcom.py` (synthetic `.cache/index.sqlite`, relationships inserted directly) covers descendant/ancestor traversal and the generations cap, living-redaction default vs. `--include-living`, restricted/DNA fact exclusion, marriage role handling with witnesses, vitals/marriage/source emission, `--all`, the EDTF→GEDCOM and name-formatting helpers, and the not-found/bad-id/no-index paths.
+Automated tests: `tests/test_gedcom.py` (synthetic `.cache/index.sqlite`, relationships inserted directly) covers descendant/ancestor traversal and the generations cap, living-redaction default vs. `--include-living`, restricted/DNA fact exclusion, marriage role handling with witnesses, vitals/marriage/source emission, `--all`, the EDTF→GEDCOM and name-formatting helpers, and the not-found/bad-id/no-index paths. `tests/test_privacy_restricted.py` additionally covers a `restricted` person redacted as `/Restricted/` with no `--include-living` override and a free-text `by-request` source dropped as a fact source.
 
 ## fha wikitree - implementation status
 
 | Feature | Status | Notes |
 |---|---|---|
 | Subject gating | ✓ | Curated profiles only; `living: true`/`unknown` subjects refused (external-facing output, AGENTS.md privacy rule); invalid/non-P id and missing person handled distinctly from a missing index |
-| Privacy (restricted/DNA) | ✓ | Profile prose that cites restricted or DNA sources is refused before output is written; the exporter fails closed with the blocking S-ids rather than dropping refs and leaving unsupported public facts behind |
+| Privacy (restricted/DNA) | ✓ | Fails closed (public path, no opt-in): a `restricted` **subject** (any value, read from the person file) is refused (`restricted-subject`); profile prose that cites a `restricted` or DNA source is refused (`restricted-sources`, cited sources read from their files so a free-text `by-request` type is caught beyond the index's 0/1); and a `[[P-id]]` link to a `restricted` person is refused (`restricted-people`) - the blocking S-ids/P-ids are named for cleanup rather than dropped. A restricted name variant (a deadname) is excluded from the published name forms so it never folds into output |
 | Named-ref reuse | ✓ | Each `[S-id]` in the body → self-closing `<ref name="S-id"/>` at the use site; full `<ref name="S-id">{citation}</ref>` definitions (citation read from the source record's frontmatter, else its title) gathered once, deduplicated, in first-use order, into the hidden `<div name="references" style="display: none">` block; `== Sources ==` ends with `<references/>` |
 | Person links + name folding | ✓ | `[P-id]` → `[[wikitree_id\|name]]` when `external_ids.wikitree` is recorded (`person_external`), else the plain name. A preceding "Name " in the prose (full name, first given word, or a `name_variant`) is folded into the link so "Margaret A. Cole [P-id]" renders the name once, not twice - and the same detection means an in-dialect "married [P-id]" still emits the name |
 | Spacetime spans | ✓ | A sentence carrying exactly one `[S-id]` whose (subject, source) pair resolves to a single dated+placed claim **and** whose claim year appears in the sentence text is wrapped in `<span class="spacetime" data-loc=… data-date=ISO>`. The single-claim + year-in-sentence guards keep a source cited across several sentences from stamping the wrong (e.g. marriage) date onto an unrelated (e.g. birth) sentence. Sentence splitting skips initials ("Margaret A. Cole") and common abbreviations |
@@ -521,7 +528,7 @@ Automated tests: `tests/test_gedcom.py` (synthetic `.cache/index.sqlite`, relati
 | Template hooks | ✓ | Optional `tools/wikitree_templates.yaml` maps a claim `type` → a WikiTree infobox template (+ field map over `date`/`place`/`value`); each matching accepted claim renders the template near the top. Ships empty (no templates) so the default export emits none; a missing/malformed file disables the feature without breaking the export |
 | Output | ✓ | Heading conversion (`##`→`==`, `###`→`===`, H1 dropped), `*(none yet)*` placeholders removed; stdout or `--out FILE`; never uploads |
 
-Automated tests: `tests/test_wikitree.py` builds a small on-disk archive (profile + source records) with a synthetic index, covering ref dedup/placement and the `<references/>` anchor, `[P-id]` link folding (no doubled name), the spacetime span landing only on the year-matching sentence, the Ancestry-image template, placeholder removal, the living/not-curated/not-found/bad-id gates, restricted/DNA citation refusal, and the URL/heading/sentence-split unit helpers.
+Automated tests: `tests/test_wikitree.py` builds a small on-disk archive (profile + source records) with a synthetic index, covering ref dedup/placement and the `<references/>` anchor, `[P-id]` link folding (no doubled name), the spacetime span landing only on the year-matching sentence, the Ancestry-image template, placeholder removal, the living/not-curated/not-found/bad-id gates, restricted/DNA citation refusal, and the URL/heading/sentence-split unit helpers. `tests/test_privacy_restricted.py` covers the restricted-subject, restricted-person-link, and free-text-restricted-source refusals.
 
 ## fha doctor - implementation status
 
@@ -558,7 +565,7 @@ clone (or unzipped download) and a private archive. Generic glue - touches no fa
 | `fha update-tools` reconcile | ✓ M9.2 | Compares the manifest against `.plaintext-version` and classifies each **operating** file: new → copy; unchanged-from-stock (disk == recorded) → overwrite silently; customized (disk differs from recorded) → move to `.plaintext-backup/{date}/` then install stock; already-current (disk == new stock) → no-op. Retired (recorded but gone from the manifest, still on disk) → move to backup. Never deletes |
 | Skeleton-is-install-once | ✓ M9.2 | `update-tools` reconciles only `category: operating` files. Skeleton seeds (`fha.yaml`, `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, the `.gitkeep`s) are **never touched** - they fill with the human's config/data, so refreshing them would clobber it. The stamp carries their checksums over unchanged. This realizes §13c's governing principle ("never silently overwrites your work") for the two files most certain to be customized; surfaced as a TOOLING §13c clarification |
 | Backup safety | ✓ | `.plaintext-backup/{date}/{path}` preserves the archive subtree; a same-day collision gets a `-2`/`-3` suffix so an earlier backup is never overwritten. Per-file outcome messages and the `Done:` summary counts are emitted **after** each operation succeeds (and count only actual successes), so a per-file copy/move `OSError` never produces a false "backed up / updated" line; the failure is reported on stderr and downgrades the run to exit 1 |
-| Stamp rewrite | ✓ | After an update each operating file's recorded baseline is: its new on-disk hash if installed this run; its on-disk hash (== stock) if it was already current; or — if it **failed** this run — the **prior** recorded baseline, never the failed file's current bytes (recording a failed customized file's edit would make the next run treat it as pristine stock and silently overwrite it). Skeleton entries carry over verbatim; retired files that moved drop out, while a retired file whose move failed stays recorded so the next run retries it. `--dry-run` writes no stamp |
+| Stamp rewrite | ✓ | After an update each operating file's recorded baseline is: its new on-disk hash if installed this run; its on-disk hash (== stock) if it was already current; or - if it **failed** this run - the **prior** recorded baseline, never the failed file's current bytes (recording a failed customized file's edit would make the next run treat it as pristine stock and silently overwrite it). Skeleton entries carry over verbatim; retired files that moved drop out, while a retired file whose move failed stays recorded so the next run retries it. `--dry-run` writes no stamp |
 | No-stamp archive | ✓ | An archive whose tools were hand-copied (no `.plaintext-version`) is handled: every differing existing file is treated as customized (backed up, never overwritten); identical hand-copies match new stock and are left alone |
 | `fha update-tools --dry-run` | ✓ M9.2 | Prints the full plain-English would-do plan and a summary line; writes nothing |
 | `--verbose` | ✓ | Also lists files that are already up to date |
@@ -572,7 +579,7 @@ stamp, dry-run no-op, re-install refusal, missing-source/missing-manifest refusa
 hard stop, exiftool-advisory-only), every update outcome (no-op, stock-overwrite, customized
 backup, retired quarantine, added file, dry-run no-op, no-stamp hand-copied archive), the critical
 **skeleton-never-touched** safety property, the partial-failure paths (a mocked `shutil.move`
-failure: no false-success output, honest summary counts, and — the data-loss regression — a failed
+failure: no false-success output, honest summary counts, and - the data-loss regression - a failed
 customized update keeps the edit safe so the retry backs it up instead of silently overwriting it;
 a failed retired move stays tracked and is retried), the friendly `_cmd_*` error exits (missing
 `--repo`, not-an-archive, **explicit `--root` that isn't an archive**, bad repo), and a
@@ -625,6 +632,7 @@ A code listed in TOOLING must appear here as either ✓ or ⚑ before the tool i
 | Code / flag | Status | Notes |
 |-------------|--------|-------|
 | E001-E010, E013, E015-E017 | ✓ implemented | - |
+| E017 (restricted recognition) | ✓ implemented | The `restricted` marker is open (SPEC §19): a value of `true` or any free-text type (`dna`, `by-request`, `deadname`, …) on a source, claim, person, or name is valid and never an error. E017 fires only when a DNA source has *no* restricting value at all; a free-text `restricted: dna` satisfies it. No new error code. A `{value:, restricted: true}` name variant resolves through the alias surface (its `value` feeds the clash check), so a `[[prior name]]` deadname link does not raise E004. |
 | E004 (place) | ✓ implemented | Forgiving (PR 05): a well-formed `L-id` in `place:` that doesn't resolve is still E004 (broken link). Free text in `place:` is **not** rejected - it emits W109 pointing the human to `place_text:`. |
 | E011 | ✓ implemented | inventory→disk direction; document disk→inventory scan by filename S-id. Photo disk→inventory direction requires `--with-exif`. |
 | E012 | ✓ implemented | Only runs when `--with-exif` is passed (requires exiftool on PATH); silently skipped otherwise. |
@@ -632,9 +640,12 @@ A code listed in TOOLING must appear here as either ✓ or ⚑ before the tool i
 | E018 | ✓ implemented (partial) | Deprecated-command check active. Photo-rename instruction check is a no-op pass - text pattern too ambiguous to assert direction reliably. |
 | W101, W102, W104, W106, W107, W108 | ✓ implemented | - |
 | W109 | ✓ implemented | The catch-all warning: missing `notes` context, unknown `source_type`, `--format-check` file-format issues, **and (PR 05) loose-but-clear dates and free-text `place:` values** - each with an actionable suggestion of the stored form. |
-| W103 | ✓ implemented | Stale couple-folder bracket lists; fires in `fha lint` and `fha views brackets`. |
+| W103 | ✓ implemented | Stale couple-folder bracket lists; fires in `fha lint` and `fha views brackets`. Marks a child who joined other than by birth (`Ruth (adopted)`, `(step)`, …) from the backing claim's `subtype` (SPEC §12.2). ⚑ The cross-link entry for a person who occupies multiple Ahnentafel positions (`Thomas Hartley (also #128 - see 040)`) is **deferred** - the lowest-numbered folder is already the deterministic home (BFS-first), so this is a display-only follow-up. |
 | W105 | ⚑ deferred | Requires mtime comparison against a known-good generated state. |
-| W110 | ✓ implemented | Direct-line person file in wrong Ahnentafel couple folder; fires in `fha lint` (requires `root_person`) and `fha views brackets`. |
+| W110 | ✓ implemented | Direct-line person file in wrong Ahnentafel couple folder; fires in `fha lint` (requires `root_person`) and `fha views brackets`. Numbering walks only **genetic** parent edges (SPEC §12.2): adoptive/step/foster/guardian/surrogate-gestational/social parents are shown in brackets but never numbered; an unset/unknown nature defaults to genetic (legacy archives number unchanged). |
+| W115 | ✓ implemented | Relationship reconciliation drift: a sourced person-doc `relationships:` entry whose backing claim is missing, doesn't record the edge, or disagrees on `subtype` (nature); also an opted-in block that omits an accepted kin claim naming the person. Warning, never a gate. |
+| W116 | ✓ implemented | Missing reciprocal edge: a sourced relationship recorded on one person but not mirrored on the other; `--fix-reciprocal` appends the mirror. |
+| W117 | ✓ implemented | Name-grammar guidance: a person filename with no `__` sort separator (SPEC §13). A surname-less filename that leads with `__` (`__caesar_P-…`) is valid and silent; only a missing-separator name is nudged, never E002. Detecting genuine surname-first *ordering* (`tanaka__hanako`) is left to the human - the check only flags the absent separator. |
 | `--with-exif` | ✓ implemented | Exiftool batch keyword read; drives E012 and photo-side E011. |
 | `--json` | ✓ implemented | - |
 | `--format-check` | ✓ implemented (partial) | Final-newline and CRLF hygiene active. Frontmatter key order, lowercase ID normalization, YAML indentation: ⚑ deferred. |
@@ -642,4 +653,5 @@ A code listed in TOOLING must appear here as either ✓ or ⚑ before the tool i
 | `--dry-run` | ✓ implemented | Each active fix mode prints "Would …" lines without writing. |
 | `--mint-stubs` | ✓ implemented | - |
 | `--spawn-questions` | ✓ implemented | - |
+| `--fix-reciprocal` | ✓ implemented | Appends the missing mirror entry (W116) to the other person's `relationships:` block; additive only, previewed with `--dry-run`, skips a person who has no record yet. |
 | `--fix-inventory` | ⚠ CLI placeholder | Prints a not-yet-implemented warning; `fha process` is the current alternative. |

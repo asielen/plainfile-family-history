@@ -1,7 +1,7 @@
 ---
 id: S-fe5678901f
 aliases: [S-fe5678901f]
-title: Obituary — James Robert Bradford, Fairview Gazette, November 2015
+title: Obituary - James Robert Bradford, Fairview Gazette, November 2015
 source_type: newspaper
 source_date: 2015-11-07
 source_class: original
@@ -35,7 +35,7 @@ created: 2026-06-14
   evidence: direct
   notes: Obituary states date and place of death; secondary source but near-primary for an obituary.
 
-- value: "James Bradford — occupation: history teacher, then principal, Fairview Consolidated High School"
+- value: "James Bradford - occupation: history teacher, then principal, Fairview Consolidated High School"
   id: C-fe0000002b
   type: occupation
   persons: [P-2b3c4d5e6f]
@@ -52,7 +52,7 @@ created: 2026-06-14
     Dates are derived from the obituary narrative; an independent personnel record would
     confirm exact start year.
 
-- value: "James Bradford — education: BA History, Kansas State University, 1977"
+- value: "James Bradford - education: BA History, Kansas State University, 1977"
   id: C-fe0000003c
   type: education
   persons: [P-2b3c4d5e6f]
@@ -67,5 +67,5 @@ created: 2026-06-14
 ```
 
 ## Notes
-Fictional newspaper obituary used to exercise the schema for secondary biographical sources —
+Fictional newspaper obituary used to exercise the schema for secondary biographical sources -
 death, occupation, and education claims derived from published newspaper text.

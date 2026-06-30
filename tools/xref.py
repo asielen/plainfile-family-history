@@ -1,20 +1,22 @@
 #!/usr/bin/env python3
 """
-xref.py — fha xref: cross-reference pass over the claim index.
+xref.py - fha xref: cross-reference pass over the claim index.
 
   fha xref [--root PATH]
 
 Read-only candidate-suggestion tool (TOOLING §14a). Does not write to the
-archive — it only prints candidate pairs for a human (or a future skill
+archive - it only prints candidate pairs for a human (or a future skill
 layer) to confirm. Confirmation, link-writing, and question-spawning are out
 of scope for this tool.
 
 ALGORITHM
 ---------
 For every person, group their accepted/needs-review claims by claim `type`
-(relationship claims are further split by `subtype`, this person's `role`,
-and the other person(s) named in the claim, since a person can be e.g. both
-a child in one `child-of` claim and a parent in another). Within each group,
+(relationship claims are further split by `subtype` - the *nature* of the bond,
+e.g. biological vs. adoptive - this person's `role`, and the other person(s)
+named in the claim, since a person can be e.g. a child in one relationship claim
+and a parent in another, and a biological and an adoptive parent of the same
+child are co-valid edges rather than a contradiction). Within each group,
 every pair of claims from *different* sources that isn't already linked via
 `claim_links` is a candidate:
 
@@ -39,15 +41,15 @@ always overlaps rather than being treated as conflicting.
 
 CODE MAP
 --------
-  DB / root helpers — open_index_db, resolve_root_arg, both shared via _lib.py
+  DB / root helpers - open_index_db, resolve_root_arg, both shared via _lib.py
 
   Classification
-    _place_from_vital_value     — vital-claim place extraction (uses _lib.normalize_place_text)
-    _classify_pair              — corroborates/contradicts for one claim pair
-    run_xref                    — group claims by person+type, pair, classify
+    _place_from_vital_value     - vital-claim place extraction (uses _lib.normalize_place_text)
+    _classify_pair              - corroborates/contradicts for one claim pair
+    run_xref                    - group claims by person+type, pair, classify
 
   CLI
-    _fmt_claim                  — display formatting (uses _lib.fmt_id_display)
+    _fmt_claim                  - display formatting (uses _lib.fmt_id_display)
     _cmd_xref, register, _standalone_main
 """
 
@@ -122,16 +124,16 @@ def _classify_pair(a: dict, b: dict) -> str | None:
         if a['type'] in _VITAL_TYPES:
             return 'contradicts'
         # Substantive types (residence, occupation, ...) are recurring by
-        # design (§8.2) — non-overlapping dates are expected, not a conflict.
+        # design (§8.2) - non-overlapping dates are expected, not a conflict.
         return None
 
     if bool(a['negated']) != bool(b['negated']):
         # One claim asserts the fact happened, the other confirms it never
-        # did, for the same place in time — that's a genuine conflict. (Vital
+        # did, for the same place in time - that's a genuine conflict. (Vital
         # types always reach here: an undated negated claim gets unbounded
         # bounds, so it overlaps any dated positive claim of the same type.)
         # For repeatable substantive types (residence, occupation, ...) the
-        # absence and the presence have to be about the *same* place — a
+        # absence and the presence have to be about the *same* place - a
         # negated "did not reside in Topeka" doesn't conflict with a positive
         # "resided in Boston" the same year, since both can be true at once.
         if a['type'] not in _VITAL_TYPES:
@@ -230,7 +232,7 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
     for person_id, claim_ids in sorted(claims_by_person.items()):
         by_group: dict[tuple, list[str]] = {}
         # A negated marriage/divorce claim ("never married", "no divorce on
-        # record") names no spouse, so it can't be bucketed by counterpart —
+        # record") names no spouse, so it can't be bucketed by counterpart -
         # it has to be compared against every claim of that type for this
         # person instead of just one counterpart's bucket.
         no_counterpart: dict[str, list[str]] = {}
@@ -238,12 +240,14 @@ def _run_xref_queries(conn: sqlite3.Connection) -> dict:
         for cid in claim_ids:
             claim = claims_by_id[cid]
             if claim['type'] == 'relationship':
-                # A person can be e.g. a child in one child-of claim and a
-                # parent in another — only pair claims with the same subtype
-                # and this person's role. A claim can bundle several
+                # A person can be e.g. a child in one relationship claim and a
+                # parent in another - only pair claims with the same subtype
+                # (nature) and this person's role, so a biological and an
+                # adoptive parent of the same child never read as a contradiction.
+                # A claim can bundle several
                 # counterparts at once (e.g. roles: parent: [P2, P3]), so it's
                 # bucketed once per individual counterpart rather than once
-                # per whole counterpart set — otherwise a claim naming {P2, P3}
+                # per whole counterpart set - otherwise a claim naming {P2, P3}
                 # would never compare against one naming only {P2}.
                 role = claim_role.get((cid, person_id))
                 others = [p for p in claim_persons.get(cid, []) if p != person_id]
@@ -322,7 +326,7 @@ def _fmt_claim(c: dict) -> str:
     place = f"  @ {c['place_text']}" if c.get('place_text') else ''
     return (
         f"{fmt_id_display(c['id'])}  [{c['source_title']} / {fmt_id_display(c['source_id'])}]  "
-        f"{date_label}{place} — {c['value']}"
+        f"{date_label}{place} - {c['value']}"
     )
 
 

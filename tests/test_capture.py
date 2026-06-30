@@ -189,13 +189,13 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(stubs, ['same-title-2.notes.md', 'same-title.notes.md'])
 
     def test_cli_reads_utf8_stdin(self) -> None:
-        # The CLI decodes stdin as UTF-8 (not the locale codec) — an en-dash in
+        # The CLI decodes stdin as UTF-8 (not the locale codec) - an en-dash in
         # a piped page must survive into the stub.
         raw = '<html><title>Smith–Jones</title></html>'.encode('utf-8')
 
         class _FakeStdin:
             buffer = io.BytesIO(raw)
-            def isatty(self):  # noqa: D401 — piped, not a terminal
+            def isatty(self):  # noqa: D401 - piped, not a terminal
                 return False
 
         orig = sys.stdin

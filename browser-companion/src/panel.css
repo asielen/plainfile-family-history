@@ -138,6 +138,17 @@ button.ghost { font-size: 14px; min-height: 40px; padding: 8px 12px; }
 .mini { display: block; font-size: 13px; color: var(--muted); margin: 2px 0 4px; }
 .muted-note { font-style: italic; }
 
+/* Ancestry image-viewer auto-fetch note (shown only on a viewer page): the
+   full-res record is saved automatically on Capture, so the URL box is an
+   optional manual fallback rather than the primary path. */
+.ancestry-note {
+  flex: 1 1 100%; font-size: 13.5px; color: var(--fg);
+  background: var(--accent-soft); border: 1px solid var(--accent);
+  border-radius: 8px; padding: 10px 12px; margin: 0 0 4px;
+}
+.ancestry-note strong { color: var(--accent); }
+.ancestry-note .mini { margin-top: 6px; }
+
 .check { display: flex; align-items: flex-start; gap: 8px; font-size: 14px; color: var(--fg); margin: 6px 0 0; flex: 1 1 100%; }
 .check input { width: 20px; height: 20px; flex: none; margin-top: 1px; }
 

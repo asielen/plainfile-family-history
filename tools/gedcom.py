@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 """
-gedcom.py — fha gedcom: derive a GEDCOM 5.5.1 exchange file (TOOLING §13a).
+gedcom.py - fha gedcom: derive a GEDCOM 5.5.1 exchange file (TOOLING §13a).
 
   fha gedcom [<P-id>] [--mode descendants|ancestors|connected]
              [--generations N] [--all] [--include-living] [--out FILE]
              [--root PATH]
 
 GEDCOM is a one-way bridge to other genealogy applications. It is *derived* at
-export time from the index's `relationships` edges and accepted vital claims —
+export time from the index's `relationships` edges and accepted vital claims -
 never stored in the archive, never re-imported as truth (the archive is never
-GEDCOM's corpus — GEDCOM is a one-way bridge to other apps). The header carries an explicit
+GEDCOM's corpus - GEDCOM is a one-way bridge to other apps). The header carries an explicit
 "do not re-import as truth" note to make that contract travel with the file.
 
 SCOPE SELECTION
 ---------------
 Either a starting `<P-id>` with a traversal `--mode`, or `--all` for everyone:
-  - descendants  — BFS down `child` edges from the seed (depth-capped by
+  - descendants  - BFS down `child` edges from the seed (depth-capped by
                    --generations); each person's spouses are pulled in so couples
                    stay whole, but a spouse's own ancestry is not followed.
-  - ancestors    — BFS up `parent` edges from the seed (depth-capped); spouses of
+  - ancestors    - BFS up `parent` edges from the seed (depth-capped); spouses of
                    reached people are added so each ancestral couple is complete.
-  - connected    — the entire connected component reachable from the seed over
+  - connected    - the entire connected component reachable from the seed over
                    parent/child/spouse edges (--generations ignored).
-  - --all        — every (non-merged) person in the index.
+  - --all        - every (non-merged) person in the index.
 
 PRIVACY (TOOLING §13a, SPEC §21)
 --------------------------------
@@ -46,14 +46,14 @@ follows the facts into the other application.
 CODE MAP
 --------
   Date / name formatting
-    _edtf_to_gedcom        — EDTF date string → GEDCOM 5.5.1 date phrase
-    _gedcom_name           — (name, surname) → GEDCOM `Given /Surname/`
-    _escape                — collapse newlines for a single GEDCOM line value
+    _edtf_to_gedcom        - EDTF date string → GEDCOM 5.5.1 date phrase
+    _gedcom_name           - (name, surname) → GEDCOM `Given /Surname/`
+    _escape                - collapse newlines for a single GEDCOM line value
 
   Graph
-    _RelIndex              — adjacency over the relationships table
-    _traverse              — descendants/ancestors/connected person selection
-    _build_families        — couples + children → family records keyed by parent set
+    _RelIndex              - adjacency over the relationships table
+    _traverse              - descendants/ancestors/connected person selection
+    _build_families        - couples + children → family records keyed by parent set
 
   Data gathering
     _load_persons, _load_vitals, _load_marriages
@@ -86,10 +86,27 @@ from _lib import (
     is_valid_id,
     normalize_id,
     open_index_db,
+    read_record,
     resolve_root_arg,
 )
 
 configure_utf8_stdout()
+
+
+# ── The `restricted` marker (SPEC §19, §21) ────────────────────────────────────
+# GEDCOM is a public-export path, so anything `restricted` is withheld wherever
+# it appears. The index stores `restricted` only as 0/1, so a free-text type
+# (`restricted: by-request` on a source or person) is read from the record file.
+# Duplicated per export tool (tools never import tools, TOOLING §15).
+
+def _is_restricted_value(value) -> bool:
+    """True when a `restricted:` value withholds the record from public output.
+
+    The marker is open (SPEC §19): the plain boolean `true` or any free-text
+    type all mean restricted; only absent/false is not. (`read_record` coerces
+    booleans to `'true'`/`'false'`.) For a public path there is no opt-in - even
+    `restricted: by-request` is honored - so a single truthiness test suffices."""
+    return value not in (None, False, '', 'false')
 
 _REQUIRED_TABLES = (
     'persons', 'claims', 'claim_persons', 'relationships', 'places', 'sources',
@@ -113,7 +130,7 @@ def _one_edtf_to_gedcom(s: str) -> str | None:
     if not s:
         return None
 
-    # Open-ended bound like [..1920] — express as a GEDCOM "before" date.
+    # Open-ended bound like [..1920] - express as a GEDCOM "before" date.
     before = re.match(r'^\[\.{2}(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?\]$', s)
     if before:
         y, m, d = before.group(1), before.group(2), before.group(3)
@@ -164,7 +181,7 @@ def _edtf_to_gedcom(edtf: str | None) -> str | None:
         ga = _one_edtf_to_gedcom(a)
         gb = _one_edtf_to_gedcom(b)
         if ga and gb:
-            # Strip ABT/BEF qualifiers inside a range — BET..AND already conveys
+            # Strip ABT/BEF qualifiers inside a range - BET..AND already conveys
             # the span's fuzziness.
             ga_core = ga.split(' ', 1)[-1] if ga.startswith(('ABT ', 'BEF ')) else ga
             gb_core = gb.split(' ', 1)[-1] if gb.startswith(('ABT ', 'BEF ')) else gb
@@ -198,7 +215,7 @@ def _gedcom_name(name: str, surname: str | None) -> str:
         sn = parts[-1]
         given = ' '.join(parts[:-1])
         return f'{given} /{sn}/'
-    # surname recorded but not a suffix of name — append it as the slash field
+    # surname recorded but not a suffix of name - append it as the slash field
     return f'{name} /{sn}/'
 
 
@@ -269,10 +286,10 @@ def _build_families(
     Group included persons into families.
 
     Returns:
-      families      — list of (parent_key, child_ids), parent_key a frozenset of
+      families      - list of (parent_key, child_ids), parent_key a frozenset of
                       1-2 parent ids, in deterministic order.
-      person_fams   — person_id → set of family parent_keys they are a SPOUSE/parent in.
-      child_fam     — person_id → the family parent_key they are a CHILD in (one only;
+      person_fams   - person_id → set of family parent_keys they are a SPOUSE/parent in.
+      child_fam     - person_id → the family parent_key they are a CHILD in (one only;
                       first deterministic parent set wins if data is contradictory).
     """
     fam_children: dict[frozenset[str], set[str]] = {}
@@ -311,10 +328,52 @@ def _build_families(
 
 def _load_persons(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
     rows = conn.execute(
-        "SELECT id, name, surname, sex, living, tier, status FROM persons "
+        "SELECT id, name, surname, sex, living, tier, status, path FROM persons "
         "WHERE status != 'merged'"
     ).fetchall()
     return {r['id']: r for r in rows}
+
+
+def _restricted_person_ids(archive_root: Path, persons: dict[str, sqlite3.Row]) -> set[str]:
+    """Person ids whose record carries a `restricted` marker (any value).
+
+    Read from the person `.md` because the index does not carry a person-level
+    `restricted` column. A restricted person's name is withheld (`/Restricted/`)
+    while their structural family links stay, mirroring living redaction."""
+    out: set[str] = set()
+    for pid, row in persons.items():
+        path = row['path']
+        if not path:
+            continue
+        try:
+            value = read_record(archive_root / path)['meta'].get('restricted')
+        except Exception:
+            continue
+        if _is_restricted_value(value):
+            out.add(pid)
+    return out
+
+
+def _restricted_source_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
+    """Source ids that are restricted by a free-text type the index missed.
+
+    `_public_source_filter_sql` already excludes index `restricted=1`, DNA, and
+    `publication_ok=0`. A source carrying a free-text `restricted: by-request`
+    stores `restricted=0` in the index, so it is read from the record file here
+    and added to the not-eligible set the caller unions into its source filter."""
+    out: set[str] = set()
+    for row in conn.execute('SELECT id, path, restricted FROM sources').fetchall():
+        if row['restricted']:
+            continue   # already caught by the SQL filter
+        if not row['path']:
+            continue
+        try:
+            value = read_record(archive_root / row['path'])['meta'].get('restricted')
+        except Exception:
+            continue
+        if _is_restricted_value(value):
+            out.add(row['id'])
+    return out
 
 
 def _public_source_filter_sql() -> str:
@@ -433,13 +492,27 @@ def _emit_header() -> list[str]:
         f'2 VERS {_GEDCOM_VERSION}',
         '2 FORM LINEAGE-LINKED',
         '1 CHAR UTF-8',
-        '1 NOTE Generated by fha gedcom — do not re-import as truth. GEDCOM is a',
+        '1 NOTE Generated by fha gedcom - do not re-import as truth. GEDCOM is a',
         '2 CONT one-way export bridge; the plain-file archive remains the source of record.',
     ]
 
 
-def _is_redacted(person: sqlite3.Row, include_living: bool) -> bool:
+def _is_redacted(person: sqlite3.Row, include_living: bool,
+                 restricted_persons: set[str] = frozenset()) -> bool:
+    """A person's facts are withheld when living-redacted or restricted.
+
+    Living redaction is lifted by --include-living; a `restricted` person is
+    withheld with NO override (SPEC §21) - GEDCOM is a public path. Either way
+    the structural family links survive so the tree shape is intact."""
+    if person['id'] in restricted_persons:
+        return True
     return (not include_living) and person['living'] in ('true', 'unknown')
+
+
+def _redacted_name(person: sqlite3.Row, restricted_persons: set[str]) -> str:
+    """The NAME line for a withheld person: `/Restricted/` for a restricted
+    person, `/Living/` for a living-redacted one (à la standard GEDCOM privacy)."""
+    return '/Restricted/' if person['id'] in restricted_persons else '/Living/'
 
 
 def _emit_event(tag: str, claim: sqlite3.Row | None, conn: sqlite3.Connection,
@@ -468,14 +541,14 @@ def _emit_individual(
     child_fam: dict[str, frozenset[str]],
     fam_xref: dict[frozenset[str], str],
     src_xref: dict[str, str], place_cache: dict[str, str],
-    include_living: bool,
+    include_living: bool, restricted_persons: set[str] = frozenset(),
 ) -> list[str]:
     pid = person['id']
-    redacted = _is_redacted(person, include_living)
+    redacted = _is_redacted(person, include_living, restricted_persons)
     lines = [f'0 @{xref}@ INDI']
 
     if redacted:
-        lines.append('1 NAME /Living/')
+        lines.append(f'1 NAME {_redacted_name(person, restricted_persons)}')
     else:
         lines.append(f'1 NAME {_gedcom_name(person["name"], person["surname"])}')
 
@@ -503,6 +576,7 @@ def _emit_family(
     persons: dict[str, sqlite3.Row], person_xref: dict[str, str],
     marriages: dict[frozenset[str], sqlite3.Row], conn: sqlite3.Connection,
     src_xref: dict[str, str], place_cache: dict[str, str], include_living: bool,
+    restricted_persons: set[str] = frozenset(),
 ) -> list[str]:
     lines = [f'0 @{xref}@ FAM']
 
@@ -525,7 +599,7 @@ def _emit_family(
     if wife:
         lines.append(f'1 WIFE @{person_xref[wife]}@')
 
-    couple_redacted = any(_is_redacted(persons[p], include_living) for p in key)
+    couple_redacted = any(_is_redacted(persons[p], include_living, restricted_persons) for p in key)
     marriage = marriages.get(key)
     if marriage is not None and not couple_redacted:
         date = _edtf_to_gedcom(marriage['date_edtf'])
@@ -592,14 +666,32 @@ def _gedcom_payload(
             return {'status': 'not-found', 'text': None, 'messages': messages,
                     'person_count': 0, 'family_count': 0}
 
+        # Restricted persons (any value, incl. by-request) and restricted-by-
+        # free-text-type sources are read from the record files: the index
+        # carries no person-level `restricted`, and stores a free-text source
+        # type as 0. The SQL `_public_source_filter_sql` already excludes index
+        # restricted=1 / DNA / publication_ok=0; this catches what it can't see.
+        restricted_persons = _restricted_person_ids(archive_root, persons)
+        restricted_sources = _restricted_source_ids(conn, archive_root)
+
+        def _public_claim_row(row: sqlite3.Row) -> bool:
+            """A vital/marriage row whose source is not a free-text-restricted one."""
+            return not row['source_id'] or row['source_id'] not in restricted_sources
+
         # One load of the relationship graph serves both traversal and family
         # building (it was previously read twice for the non-`--all` path).
-        rel = _RelIndex(conn.execute(
-            f"""SELECT r.person_id, r.rel, r.other_id FROM relationships r
-               LEFT JOIN claims c ON c.id = r.claim_id
-               LEFT JOIN sources s ON s.id = c.source_id
-               WHERE r.claim_id IS NULL OR {_public_source_filter_sql()}"""
-        ).fetchall())
+        # A relationship backed only by a free-text-restricted source is dropped
+        # here (the SQL filter caught the index-restricted/DNA ones already).
+        rel = _RelIndex([
+            r for r in conn.execute(
+                f"""SELECT r.person_id, r.rel, r.other_id, r.claim_id, c.source_id
+                   FROM relationships r
+                   LEFT JOIN claims c ON c.id = r.claim_id
+                   LEFT JOIN sources s ON s.id = c.source_id
+                   WHERE r.claim_id IS NULL OR {_public_source_filter_sql()}"""
+            ).fetchall()
+            if not r['source_id'] or r['source_id'] not in restricted_sources
+        ])
 
         if all_persons:
             included = set(persons.keys())
@@ -622,16 +714,20 @@ def _gedcom_payload(
         person_xref = {pid_: f'I{i}' for i, pid_ in enumerate(sorted(included), start=1)}
         fam_xref = {key: f'F{i}' for i, (key, _ch) in enumerate(families, start=1)}
 
-        vitals = _load_vitals(conn, included)
-        marriages = _load_marriages(conn)
+        # A free-text-restricted source is not an eligible fact source, so its
+        # vital/marriage rows are dropped before emission (the SQL filter in the
+        # loaders already removed index-restricted/DNA/publication_ok=0 ones).
+        vitals = {k: v for k, v in _load_vitals(conn, included).items() if _public_claim_row(v)}
+        marriages = {k: v for k, v in _load_marriages(conn).items() if _public_claim_row(v)}
 
         # Collect the sources actually cited by an emitted, non-redacted fact.
         used_sources: set[str] = set()
         for (vp, _t), claim in vitals.items():
-            if vp in included and claim['source_id'] and not _is_redacted(persons[vp], include_living):
+            if (vp in included and claim['source_id']
+                    and not _is_redacted(persons[vp], include_living, restricted_persons)):
                 used_sources.add(claim['source_id'])
         for key, _children in families:
-            if any(_is_redacted(persons[p], include_living) for p in key):
+            if any(_is_redacted(persons[p], include_living, restricted_persons) for p in key):
                 continue
             m = marriages.get(key)
             if m is not None and m['source_id']:
@@ -654,22 +750,33 @@ def _gedcom_payload(
             lines += _emit_individual(
                 persons[pid_], person_xref[pid_], conn, vitals, person_fams,
                 child_fam, fam_xref, src_xref, place_cache, include_living,
+                restricted_persons,
             )
         for key, children in families:
             lines += _emit_family(
                 key, children, fam_xref[key], persons, person_xref, marriages,
-                conn, src_xref, place_cache, include_living,
+                conn, src_xref, place_cache, include_living, restricted_persons,
             )
         for sid in sorted(used_sources):
             lines += _emit_source(sid, src_titles.get(sid, ''), src_xref[sid])
 
         lines.append('0 TRLR')
 
-        redacted_count = sum(1 for p in included if _is_redacted(persons[p], include_living))
-        if redacted_count and not include_living:
+        living_redacted = sum(
+            1 for p in included
+            if p not in restricted_persons and not include_living
+            and persons[p]['living'] in ('true', 'unknown')
+        )
+        if living_redacted:
             messages.append(
-                f'{redacted_count} living/unknown person(s) redacted as /Living/ '
+                f'{living_redacted} living/unknown person(s) redacted as /Living/ '
                 '(pass --include-living to export their details).'
+            )
+        restricted_redacted = sum(1 for p in included if p in restricted_persons)
+        if restricted_redacted:
+            messages.append(
+                f'{restricted_redacted} restricted person(s) redacted as /Restricted/ '
+                '(no override - SPEC §21).'
             )
 
         # GEDCOM 5.5.1 lines are CR/LF-terminated; emit the file with a trailing newline.
@@ -770,7 +877,7 @@ def _cmd_gedcom(args: argparse.Namespace) -> int:
     else:
         sys.stdout.write(result['text'])
 
-    # A successful export is clean even when it redacted living persons —
+    # A successful export is clean even when it redacted living persons -
     # redaction is the documented default, an informational stderr note, not a
     # warning condition (cf. `--include-living` to suppress it).
     return EXIT_CLEAN

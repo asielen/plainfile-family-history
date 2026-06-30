@@ -1,4 +1,4 @@
-# Place registry — single file per SPEC §15 (one record per physical location; coords anchor identity)
+# Place registry - single file per SPEC §15 (one record per physical location; coords anchor identity)
 - id: L-7c1a9f4e22
   name: Fairview
   coords: [39.8000, -95.6000]

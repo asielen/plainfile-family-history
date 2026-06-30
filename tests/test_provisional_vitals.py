@@ -1,5 +1,5 @@
 """
-test_provisional_vitals.py — forgiving the hand-author (wikilink-native step 04).
+test_provisional_vitals.py - forgiving the hand-author (wikilink-native step 04).
 
 Three forgiving-input behaviours, none of which ever blocks:
   - provisional `birth:`/`death:` fields → an informational needs-sourcing
@@ -171,7 +171,7 @@ class UnfencedClaimsTests(_LintBase):
         self.assertEqual(len(read_record(src)['claims']), 1)
 
     def test_prose_under_claims_not_misread(self):
-        self._source('Nothing structured yet — will add claims later.')
+        self._source('Nothing structured yet - will add claims later.')
         rec = read_record(self.root / 'sources' / 'a_S-1111111111.md')
         self.assertFalse(rec['unfenced_claims'])
         self.assertEqual(rec['claims'], [])

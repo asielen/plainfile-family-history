@@ -1,5 +1,5 @@
 """
-test_templates.py — the copy-paste template suite (wikilink-native step 05).
+test_templates.py - the copy-paste template suite (wikilink-native step 05).
 
 The five `archive-template/` templates make the "usable by hand, no software"
 path real (SPEC §5.2). These tests prove they are spec-valid, not just

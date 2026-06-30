@@ -11,7 +11,7 @@ tier: curated
 
 # James Robert Bradford (1955–2015)
 
-**Born:** 15 March 1955 — [[L-7c1a9f4e22|Fairview]], Kansas [[S-fd4567890e]] **Died:** 3 November 2015 — Topeka, Kansas [[S-fe5678901f]] **Married:** [[P-3c4d5e6f7g|Carol Anne Simmons]] — 14 June 1979, Fairview, Kansas [[S-fc3456789d]] **Parents:** [[P-4d5e6f7g8h|George Arthur Bradford]] · [[P-5e6f7g8h9j|Edith Louise Hartley]] [[S-fc3456789d]] **Children:** [[P-0a1b2c3d4e|Alex James Bradford]] [[S-fc3456789d]]
+**Born:** 15 March 1955 - [[L-7c1a9f4e22|Fairview]], Kansas [[S-fd4567890e]] **Died:** 3 November 2015 - Topeka, Kansas [[S-fe5678901f]] **Married:** [[P-3c4d5e6f7g|Carol Anne Simmons]] - 14 June 1979, Fairview, Kansas [[S-fc3456789d]] **Parents:** [[P-4d5e6f7g8h|George Arthur Bradford]] · [[P-5e6f7g8h9j|Edith Louise Hartley]] [[S-fc3456789d]] **Children:** [[P-0a1b2c3d4e|Alex James Bradford]] [[S-fc3456789d]]
 
 ## Biography
 
@@ -23,7 +23,7 @@ James was appointed principal of Fairview Consolidated High School in 1998, a po
 
 He died on 3 November 2015 in Topeka, Kansas [[S-fe5678901f]].
 
-<!-- AI-DRAFT 2026-06-14 claude-sonnet-4-6 — biography drafted from fictional source material; all biographical details are inventions for the example archive -->
+<!-- AI-DRAFT 2026-06-14 claude-sonnet-4-6 - biography drafted from fictional source material; all biographical details are inventions for the example archive -->
 
 ## Stories
 

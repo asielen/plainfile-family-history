@@ -16,6 +16,6 @@ Example curated research file for the fictional James Robert Bradford.
 - date: 2026-06-14
   question: "parentage of Edith Louise Hartley (née Hartley, married Bradford)"
   repository: example collection
-  collection: "fictional — illustrative entry"
+  collection: "fictional - illustrative entry"
   terms: "Hartley, Warren, Edith, Fairview, Kansas"
   result: "Bradford family genealogy notes (S-fc3456789d) confirm parentage; Warren Calvin Hartley father, Clara Mabel Frost mother"

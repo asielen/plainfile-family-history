@@ -105,17 +105,21 @@
               <span class="opt-desc">Provide the direct url, or download the file and drop it
                 here, to package it for your records.</span>
               <span class="opt-controls">
+                <span id="ancestry-note" class="ancestry-note" style="display:none">
+                  <strong>Save the full record image (Ancestry).</strong>
+                  On Capture this pulls the same full-resolution scan Ancestry’s own
+                  Download button would, in your session, one record at a time. No
+                  address needed.
+                  <span class="mini">Not signed in, or downloads disabled for this
+                    collection? Use Ancestry’s Download button and drop the file in
+                    below.</span>
+                </span>
                 <label class="mini" for="f-asset-url">File address on the page
                   <span class="muted-note">(best guess, edit if it's wrong)</span></label>
                 <input id="f-asset-url" type="text" placeholder="image or PDF address" />
                 <span class="or-divider"><span>or</span></span>
                 <span id="dropzone" class="dropzone" tabindex="0" role="button"
                   aria-label="Drop a file here, or click to choose">Drop a file here, or click to choose</span>
-                <label class="check">
-                  <input id="f-provisional" type="checkbox" />
-                  <span>The file I'm providing is a screen capture, not the original document
-                    <span class="mini">(so reviewers know to look for a clearer original later)</span></span>
-                </label>
               </span>
             </label>
 

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-capture.py — fha capture: the web-record intake on-ramp (TOOLING §13b).
+capture.py - fha capture: the web-record intake on-ramp (TOOLING §13b).
 
   fha capture [--url URL] [--title "…"] [--type TYPE] [--date DATE] [--asset FILE]
 
 Capture turns *an open web record page* into a **source stub** in `inbox/`
-(SPEC §12.1) — never a finished Source. It reads the page HTML the human already
+(SPEC §12.1) - never a finished Source. It reads the page HTML the human already
 has in front of them (piped on stdin, or read from `--asset` when that file is
 the saved page) and writes a `{slug}.notes.md` stub whose light frontmatter holds
 the citation fields a recipe could recover and whose body is the page's visible
 text. A later `fha process` session (the `process-source` skill) mints the S-id,
-drafts claims, and promotes the stub into a real record — capture only *stages*.
+drafts claims, and promotes the stub into a real record - capture only *stages*.
 
 This is the paste-fallback delivery form: it needs no browser extension, reads
 only what is handed to it, and never logs in or fetches behind auth (the §13b
@@ -18,50 +18,50 @@ boundary). The browser companion is a thinner front-end onto this same backend.
 
 Two extraction layers:
 
-  * **Site recipes** (`tools/capture_recipes/`, M7.6/M7.7) — Ancestry,
+  * **Site recipes** (`tools/capture_recipes/`, M7.6/M7.7) - Ancestry,
     FamilySearch, Newspapers.com, FindAGrave each know where that site keeps the
     title, date, collection, repository, image URL, and the persons it lists.
     Recipes are *data*: a module exposing `detect(html, url)` and
     `extract(html, url)`, discovered at runtime and tried in priority order.
-  * **Generic recipe** (this file) — the universal fallback for an unknown
+  * **Generic recipe** (this file) - the universal fallback for an unknown
     site: page title, canonical/`--url`, accessed-date, and visible text as the
     citation basis. Any page is capturable, just with more to fix in review.
 
 `--title` / `--type` / `--date` always override whatever a recipe (or the
-generic pass) inferred — the human's explicit word wins. Capture also writes a
+generic pass) inferred - the human's explicit word wins. Capture also writes a
 research-log entry (capture is itself a logged search, closing the §16 loop):
 into the live index's `search_log` when an index exists, else appended to
 `.cache/capture_log.jsonl`.
 
-Stdlib only — the page is parsed with `html.parser`, never a third-party HTML
+Stdlib only - the page is parsed with `html.parser`, never a third-party HTML
 library (the project adds no dependency before Jinja2 in M8).
 """
 
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
-#  HTML parsing (stdlib html.parser — shared with the recipes)
-#    _PageParser               — one pass: title / first h1 / base / canonical / meta / text
-#    parse_html                — _PageParser → a ParsedPage of the fields recipes read
-#    _TableParser, extract_tables — table rows as text grids (household/index tables)
-#    visible_text, domain_of, meta_content, first_nonempty — recipe-facing helpers
+#  HTML parsing (stdlib html.parser - shared with the recipes)
+#    _PageParser               - one pass: title / first h1 / base / canonical / meta / text
+#    parse_html                - _PageParser → a ParsedPage of the fields recipes read
+#    _TableParser, extract_tables - table rows as text grids (household/index tables)
+#    visible_text, domain_of, meta_content, first_nonempty - recipe-facing helpers
 #
 #  Recipe layer
-#    RecipeResult              — the normalized citation fields a recipe returns
-#    generic_extract           — the universal fallback recipe
-#    _load_site_recipes        — discover capture_recipes/*.py, sorted by PRIORITY
-#    choose_recipe             — first recipe whose detect() matches, else generic
+#    RecipeResult              - the normalized citation fields a recipe returns
+#    generic_extract           - the universal fallback recipe
+#    _load_site_recipes        - discover capture_recipes/*.py, sorted by PRIORITY
+#    choose_recipe             - first recipe whose detect() matches, else generic
 #
 #  Stub assembly
-#    _slugify / _yaml_inline   — slug + safe single-line YAML scalar
-#    _render_stub              — RecipeResult + body → the inbox notes.md text
-#    _unique_stub_stem         — collision-free {stem} for the stub (+ its asset)
+#    _slugify / _yaml_inline   - slug + safe single-line YAML scalar
+#    _render_stub              - RecipeResult + body → the inbox notes.md text
+#    _unique_stub_stem         - collision-free {stem} for the stub (+ its asset)
 #
 #  Research log
-#    _write_capture_log        — search_log row (index present) or capture_log.jsonl
+#    _write_capture_log        - search_log row (index present) or capture_log.jsonl
 #
 #  Top-level + CLI
-#    run_capture               — read HTML, choose recipe, write stub + asset + log
-#    run_ingest                — sweep staged bundles (§6) → run_capture per bundle
+#    run_capture               - read HTML, choose recipe, write stub + asset + log
+#    run_ingest                - sweep staged bundles (§6) → run_capture per bundle
 #    _resolve_staging_dir / _iter_bundles / _read_bundle / _park_ingested
 #    register / _run_capture / _standalone_main
 #
@@ -109,33 +109,33 @@ configure_utf8_stdout()
 
 # The generic fallback's source_type. SPEC §14 / _lib.SOURCE_TYPES spell the
 # web vocabulary term `website` (BUILD.md M7.5 writes the shorthand `web`); we
-# emit the controlled-vocabulary value so the staged stub processes cleanly —
+# emit the controlled-vocabulary value so the staged stub processes cleanly -
 # `fha process` refuses an out-of-vocabulary source_type hint.
 _GENERIC_SOURCE_TYPE = 'website'
 
-# Visible-text body is a citation *basis*, not the whole page — cap it so a long
+# Visible-text body is a citation *basis*, not the whole page - cap it so a long
 # article doesn't bloat every stub (BUILD.md M7.5: "visible text … ~2000 chars").
 _BODY_CHAR_CAP = 2000
 
 # Staged-bundle `capture.json` schema version (TOOLING_INGESTION §3). Bump only on
 # an INCOMPATIBLE shape change. Ingest is forgiving: an absent `schema` is treated
 # as current (legacy/hand-authored bundles), and a NEWER schema is read for the
-# fields it shares with a one-line warning — never refused. So a companion can add
+# fields it shares with a one-line warning - never refused. So a companion can add
 # fields without breaking older tools, and newer tools read older bundles as-is.
 #
 # Schema 2 replaced the single `asset_mode`/`asset_file` pair with an
 # `assets: [{file, role, mode, provisional?}]` LIST so one capture can carry BOTH
 # a self-contained page copy (role `webpage`) AND a separate evidence file (role
-# `record`) — the "both" case. Ingest reads BOTH shapes: schema 1's flat pair is
+# `record`) - the "both" case. Ingest reads BOTH shapes: schema 1's flat pair is
 # still honored, so older bundles keep filing unchanged (`_read_bundle`).
 #
 # How each lands in the inbox follows SPEC §12.1's stub grammar:
 #   • zero or one asset → the lone-sidecar stub `{stem}.notes.md` (+ same-stem
-#     asset, or pointer-only) — `run_capture`, unchanged.
+#     asset, or pointer-only) - `run_capture`, unchanged.
 #   • two or more assets → a §12.1 BUNDLE FOLDER `inbox/<slug>/` holding a single
 #     `notes.md` (freeform body + light frontmatter hints, incl. per-file `files:`
 #     role hints) plus every asset, exactly the shape `fha process` dissolves into
-#     one source with a populated `files:` inventory — `_ingest_bundle_folder`.
+#     one source with a populated `files:` inventory - `_ingest_bundle_folder`.
 _CAPTURE_JSON_SCHEMA = 2
 
 # Role given to a staged asset that carries no explicit role: it is the record
@@ -358,7 +358,7 @@ class RecipeResult:
     A recipe may fill any subset; `run_capture` supplies defaults, stamps the
     accessed-date on every `external_links` entry, and lets the explicit
     `--title`/`--type`/`--date` flags override. `collection`/`terms` are not
-    written to the stub — they feed the research-log entry (§16).
+    written to the stub - they feed the research-log entry (§16).
     """
     title: str | None = None
     source_type: str = _GENERIC_SOURCE_TYPE
@@ -376,7 +376,7 @@ def generic_extract(html: str, url: str | None) -> RecipeResult:
     """The universal fallback: title, URL, accessed-date, visible text.
 
     Used for any page no site recipe claims. Everything it produces is a
-    citation *basis* the reviewer refines — the source_type is the generic
+    citation *basis* the reviewer refines - the source_type is the generic
     `website` and the citation is assembled from whatever the page exposed.
     """
     page = parse_html(html)
@@ -417,7 +417,7 @@ def _load_site_recipes() -> list:
     promise), not sibling tools, so importing them here does not breach the
     tools-never-import-tools rule. A module missing the recipe interface, or one
     that fails to import, is skipped with a warning rather than taking the whole
-    command down — an unknown page still captures via the generic fallback.
+    command down - an unknown page still captures via the generic fallback.
     Discovery is cached per process because batch/test runs may call
     `run_capture` many times while the recipe set itself is static.
     """
@@ -430,7 +430,7 @@ def _load_site_recipes() -> list:
             continue
         try:
             mod = importlib.import_module(f'capture_recipes.{info.name}')
-        except Exception as e:  # noqa: BLE001 — a broken recipe must not abort capture
+        except Exception as e:  # noqa: BLE001 - a broken recipe must not abort capture
             print(f'WARNING: skipping capture recipe {info.name!r}: {e}', file=sys.stderr)
             continue
         if not (hasattr(mod, 'detect') and hasattr(mod, 'extract')):
@@ -498,7 +498,7 @@ def _yaml_inline(value: str) -> str:
     The same discipline `process.py` uses: free-form citation/title/URL text can
     carry YAML-significant characters (`: `, a leading `-`), so each scalar is
     round-tripped through the emitter and quoted exactly when the parser needs
-    it — otherwise the stub's frontmatter would not re-parse on `fha process`.
+    it - otherwise the stub's frontmatter would not re-parse on `fha process`.
     """
     rendered = yaml.safe_dump(
         value, default_flow_style=True, allow_unicode=True, width=10 ** 9,
@@ -512,11 +512,11 @@ def _render_stub(result: RecipeResult, *, accessed: str, has_asset: bool) -> str
     """Render the inbox `*.notes.md` source stub (SPEC §12.1) as text.
 
     Light, optional frontmatter (the recipe's citation fields) over a freeform
-    body — never a §14 record. `people:` lists the *names* the page showed, a
+    body - never a §14 record. `people:` lists the *names* the page showed, a
     hint the processing pass reconciles against the index; it is not the §14
     P-id `people:` list (a stub has no resolved P-ids yet).
 
-    `has_asset` is False for TOOLING §13b case (c) — the page only points
+    `has_asset` is False for TOOLING §13b case (c) - the page only points
     elsewhere, no downloadable image/document and no HTML snapshot. That
     pointer-only case is flagged `asset_elsewhere: true` so `fha process`
     knows the missing companion is deliberate, not an oversight (the explicit
@@ -551,7 +551,7 @@ def _render_stub(result: RecipeResult, *, accessed: str, has_asset: bool) -> str
     lines.append('---')
     lines.append('')
     body = result.body.strip()
-    lines.append(body if body else '*(captured page — no visible text extracted)*')
+    lines.append(body if body else '*(captured page - no visible text extracted)*')
     lines.append('')
     return '\n'.join(lines)
 
@@ -560,7 +560,7 @@ def _unique_stub_stem(inbox: Path, slug: str, asset_suffix: str | None = None) -
     """Return a `{stem}` (slug, else slug-2, slug-3 …) free of a `.notes.md` clash.
 
     The stub and its optional asset share this stem so they pair by basename
-    (SPEC §12.1 lone-sidecar rule) — so the collision check looks at the stub
+    (SPEC §12.1 lone-sidecar rule) - so the collision check looks at the stub
     name and the optional asset name. `shutil.copy2` overwrites by default, so
     the asset collision check is part of the safety contract, not decoration.
     """
@@ -599,12 +599,12 @@ def _write_capture_log(
 
     Capture is itself a logged search, so `fha report`'s "already searched"
     annotation can see it the moment it lands. The row always appends to
-    `.cache/capture_log.jsonl` first — that file is the durable record `fha
+    `.cache/capture_log.jsonl` first - that file is the durable record `fha
     index` re-ingests into `search_log` on every full rebuild (which drops and
     recreates that table from scratch), so a capture survives a reindex even
     though the table itself doesn't persist it. When `.cache/index.sqlite`
     already exists, the row is *also* written straight into its `search_log`
-    table (`person_id`/`source_id` are null — a stub has no resolved person
+    table (`person_id`/`source_id` are null - a stub has no resolved person
     and no S-id yet) so `fha report` sees it immediately, without waiting for
     the next rebuild. Returns 'index' or 'jsonl' for the caller's status line
     (favoring 'index' when both succeed); a logging failure is reported but
@@ -670,8 +670,8 @@ class BundleError(Exception):
     """A staged bundle that `--ingest` cannot read (TOOLING_INGESTION §6).
 
     A malformed bundle (missing `page.html`, unreadable/invalid `capture.json`)
-    is reported and left in place — never half-ingested, never silently dropped
-    — and must not abort the sweep of its sibling bundles.
+    is reported and left in place - never half-ingested, never silently dropped
+    - and must not abort the sweep of its sibling bundles.
     """
 
 
@@ -681,7 +681,7 @@ def _read_html(asset: Path | None) -> str:
     The paste-fallback path pipes the page on stdin (`… | fha capture`); when no
     stdin is piped, an `--asset` that is itself the saved page is read as the
     HTML (BUILD.md M7.5: "Read HTML from stdin or `--asset`"). A binary asset
-    (an image download) yields no usable HTML — the generic recipe then works
+    (an image download) yields no usable HTML - the generic recipe then works
     from `--url`/`--title` alone.
     """
     data = ''
@@ -790,15 +790,15 @@ def run_capture(
 
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
     keep working).  The capture narration is printed inline as the stub/asset are
-    staged — those side effects and their progress lines stay here per the
-    structured-result contract — and the staged stub/asset are listed in
+    staged - those side effects and their progress lines stay here per the
+    structured-result contract - and the staged stub/asset are listed in
     `changed` (empty under --dry-run).  Raises CaptureError/CaptureWriteError for
     the `_run_capture` bridge to translate into exit codes.
 
     `accessed`/`notes`/`people` are the staged-bundle override seam (the
     `--ingest` sweep, TOOLING_INGESTION §6): they default to inert (`None`), so
     the paste-fallback path is byte-identical.  When supplied they win over the
-    scrape the same way `--title`/`--type`/`--date` do — `accessed` is the date
+    scrape the same way `--title`/`--type`/`--date` do - `accessed` is the date
     the human actually viewed the page, `notes` is their free-text body, and
     `people` are their curated name hints (unioned ahead of any recipe-found
     names, deduplicated).
@@ -952,7 +952,7 @@ def _render_bundle_notes(
     lines.append('---')
     lines.append('')
     body = result.body.strip()
-    lines.append(body if body else '*(captured page — no visible text extracted)*')
+    lines.append(body if body else '*(captured page - no visible text extracted)*')
     lines.append('')
     return '\n'.join(lines)
 
@@ -1079,7 +1079,7 @@ def _ingest_bundle_folder(
 
 # Where the browser companion (and the bookmarklet / native host) drop staged
 # bundles when nothing reroutes the browser's downloads. `--ingest` sweeps from
-# here into the archive's real `inbox/` — the one sanctioned move at intake.
+# here into the archive's real `inbox/` - the one sanctioned move at intake.
 _DEFAULT_STAGING = '~/Downloads/fha-inbox'
 # Swept bundles are *parked* here, never hard-deleted (never-lose-the-human's-work).
 _INGESTED_DIRNAME = '.ingested'
@@ -1090,7 +1090,7 @@ def _resolve_staging_dir(staging_arg: str | None, fha_config: dict) -> Path:
 
     `capture_staging` is *not* an archive root (it lives under the browser's
     Downloads tree, outside the archive), so it is read straight off the config
-    and `~`-expanded — never routed through `resolve_path`, which would anchor it
+    and `~`-expanded - never routed through `resolve_path`, which would anchor it
     under the archive root.
     """
     if staging_arg:
@@ -1135,7 +1135,7 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
     `(path, role)` pairs in capture.json order (empty for a pointer-only
     capture). Both capture.json schemas are read:
 
-      • schema 2: an `assets: [{file, role, mode, provisional?}]` list — one entry
+      • schema 2: an `assets: [{file, role, mode, provisional?}]` list - one entry
         per staged file, each with its role (`webpage` for the page copy,
         `record`/`front` for the evidence).
       • schema 1: the flat `asset_mode` / `asset_file` pair (one asset, or none),
@@ -1146,7 +1146,7 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
 
     The scrape source is `page.html` (the always-saved raw DOM, §3) when present;
     if a bundle omits it, the `webpage`-role HTML asset (the single-file snapshot)
-    is parsed instead — the recipe reads title/canonical/meta/JSON-LD/tables, all
+    is parsed instead - the recipe reads title/canonical/meta/JSON-LD/tables, all
     of which a JSON-LD-preserving snapshot still carries. This keeps ingest
     working for a snapshot-only bundle without dropping the §3 page.html contract
     for the bundles that ship it.
@@ -1160,7 +1160,7 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
         raise BundleError("missing capture.json")
     try:
         # ValueError catches BOTH json.JSONDecodeError (a ValueError) and a
-        # UnicodeDecodeError from non-UTF-8 bytes — the latter is NOT an OSError,
+        # UnicodeDecodeError from non-UTF-8 bytes - the latter is NOT an OSError,
         # so a mis-encoded capture.json must be converted to BundleError here or
         # it escapes uncaught and aborts the whole sweep.
         cap = json.loads(cap_path.read_text(encoding='utf-8'))
@@ -1170,7 +1170,7 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
         raise BundleError("capture.json is not a JSON object")
 
     # Forgiving schema check (never refuse): a newer companion may add fields a
-    # current tool doesn't know — read what we share, nudge the human to update.
+    # current tool doesn't know - read what we share, nudge the human to update.
     # Accept int OR float (`2.0`) since JSON numbers often deserialize as float.
     schema = cap.get('schema')
     if isinstance(schema, (int, float)) and not isinstance(schema, bool) \
@@ -1182,7 +1182,7 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
 
     # Normalize the fields that flow into run_capture so a type-malformed-but-
     # JSON-valid value (a number `title`, a `null` in `people`) can't crash the
-    # engine mid-sweep — that would abort sibling bundles, breaking the resilient
+    # engine mid-sweep - that would abort sibling bundles, breaking the resilient
     # contract. Scalars are str()-coerced (forgiving: `1880` → "1880"); a
     # list/dict where text belongs is structurally wrong → reported BundleError.
     for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes'):
@@ -1240,7 +1240,7 @@ def _bundle_file(bundle: Path, named) -> Path | None:
     Names are taken as relative to the bundle and confined to it (a `..` or
     absolute path that escapes the bundle is ignored), since a staged bundle's
     asset must live inside the bundle the sweep is reading. `page.html` and
-    `capture.json` are never returned as assets — they are the bundle scaffolding.
+    `capture.json` are never returned as assets - they are the bundle scaffolding.
     """
     if not named:
         return None
@@ -1281,7 +1281,7 @@ def _resolve_bundle_assets(bundle: Path, cap: dict) -> list[tuple[Path, str]]:
     asset = _bundle_file(bundle, cap.get('asset_file'))
     if asset is None:
         # Fall back to any file named `asset.<ext>` (asset.jpg/.pdf/.html, and
-        # multi-extension like asset.tar.gz — `startswith` catches what a
+        # multi-extension like asset.tar.gz - `startswith` catches what a
         # `stem == 'asset'` test would miss; a bare extensionless `asset` is
         # skipped since it can't be staged with a suffix).
         for p in sorted(bundle.iterdir()):
@@ -1306,16 +1306,16 @@ def run_ingest(
 ) -> Result:
     """Sweep staged capture bundles into the inbox (TOOLING_INGESTION §6).
 
-    Each `<slug>-<timestamp>/` bundle is fed through `run_capture` wholesale —
+    Each `<slug>-<timestamp>/` bundle is fed through `run_capture` wholesale -
     `page.html` as the HTML, the asset as `--asset`, the `capture.json` fields as
-    explicit overrides — so the stub is byte-identical to the paste-fallback's.
+    explicit overrides - so the stub is byte-identical to the paste-fallback's.
     On success the bundle is parked in `.ingested/`. The sweep is idempotent
     (a name already parked is skipped) and resilient (a malformed bundle is
     reported and left in place, never aborting its siblings).
     """
     staging = _resolve_staging_dir(staging_dir, fha_config)
     if not staging.is_dir():
-        print(f'No staging folder at {staging} — nothing to ingest.')
+        print(f'No staging folder at {staging} - nothing to ingest.')
         print('Capture bundles land there from the browser companion; '
               'point --ingest at a folder or set capture_staging: in fha.yaml.')
         return Result(exit_code=EXIT_CLEAN, data={'status': 'no-staging', 'ingested': 0})
@@ -1336,7 +1336,7 @@ def run_ingest(
     for bundle in bundles:
         name = bundle.name
         if (ingested_dir / name).exists():
-            print(f'Skipping {name} — already ingested (in {_INGESTED_DIRNAME}/).')
+            print(f'Skipping {name} - already ingested (in {_INGESTED_DIRNAME}/).')
             skipped += 1
             outcomes.append({'bundle': name, 'status': 'skipped'})
             continue
@@ -1393,7 +1393,7 @@ def run_ingest(
         except Exception as e:  # noqa: BLE001
             # Resilient-ingest contract: one bundle must never abort the batch.
             # _read_bundle normalizes known fields, but a recipe or an unforeseen
-            # input could still raise — report this bundle and keep sweeping
+            # input could still raise - report this bundle and keep sweeping
             # rather than crashing out of the loop (and past the CLI guard).
             print(f'WARNING: could not ingest {name}: unexpected error: {e}',
                   file=sys.stderr)
@@ -1409,7 +1409,7 @@ def run_ingest(
                              'stub': result.data.get('stub')})
             continue
         # The stub is now filed. A failed park does NOT un-file it, so the bundle
-        # counts as ingested — but warn, because the un-parked bundle would be
+        # counts as ingested - but warn, because the un-parked bundle would be
         # re-swept (and duplicated) on the next run until moved by hand.
         parked_ok = True
         try:
@@ -1419,7 +1419,7 @@ def run_ingest(
             park_failed += 1
             print(f'WARNING: filed {name} into the inbox but could not park the '
                   f'bundle in {_INGESTED_DIRNAME}/: {e}', file=sys.stderr)
-            print(f'         the stub IS filed — move or delete {bundle} by hand '
+            print(f'         the stub IS filed - move or delete {bundle} by hand '
                   f'so a re-run does not ingest it again.', file=sys.stderr)
         ingested += 1
         outcomes.append({'bundle': name,

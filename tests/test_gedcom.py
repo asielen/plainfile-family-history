@@ -146,7 +146,7 @@ class GedcomExportTests(unittest.TestCase):
 
     def test_generations_cap(self):
         r = gedcom.run_gedcom(self.root, 'p-0000000001', mode='descendants', generations=1)
-        # John, Mary (spouse), Sam (child), Liz (Sam's spouse) — not Kid (depth 2)
+        # John, Mary (spouse), Sam (child), Liz (Sam's spouse) - not Kid (depth 2)
         self.assertEqual(r['person_count'], 4)
 
     def test_living_redacted_by_default(self):

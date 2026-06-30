@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-wikitree.py — fha wikitree: render a curated profile to the WikiTree dialect.
+wikitree.py - fha wikitree: render a curated profile to the WikiTree dialect.
 
   fha wikitree <P-id> [--out FILE] [--root PATH]
 
 Renders one curated person's profile prose into the user's extended **WikiTree
-dialect** (TOOLING §13) — the markup family-tree wikis expect, not vanilla
+dialect** (TOOLING §13) - the markup family-tree wikis expect, not vanilla
 markdown. The profile `.md` body is the input; the structured index supplies
 source citations, person links, and the place/date behind each cited claim.
 
@@ -19,7 +19,7 @@ WHAT IT EMITS
   renders them.
 - **Spacetime spans.** A factual sentence carrying exactly one `[S-id]` whose
   (subject, source) pair resolves to a single dated+placed claim is wrapped in
-  `<span class="spacetime" data-loc="{place}" data-date="{ISO}">…</span>` — the
+  `<span class="spacetime" data-loc="{place}" data-date="{ISO}">…</span>` - the
   dialect's machine-readable annotation, emitted from claims instead of by hand.
   Sentences with several citations (e.g. the summary block) are left unwrapped:
   one span can only carry one place/date, so a multi-fact sentence is not forced
@@ -40,17 +40,17 @@ goes to stdout, or `--out FILE`; it is never uploaded.
 CODE MAP
 --------
   Source data
-    _load_templates                  — parse tools/wikitree_templates.yaml
-    _ancestry_image_template         — Ancestry URL → {{Ancestry Image|db|id}}
-    _source_reference                — one source's citation text + image templates
-    _person_link                     — [P-id] → wiki link or plain name
-    _spacetime_index                 — (subject, source) → single dated+placed claim
+    _load_templates                  - parse tools/wikitree_templates.yaml
+    _ancestry_image_template         - Ancestry URL → {{Ancestry Image|db|id}}
+    _source_reference                - one source's citation text + image templates
+    _person_link                     - [P-id] → wiki link or plain name
+    _spacetime_index                 - (subject, source) → single dated+placed claim
 
   Rendering
-    _convert_heading                 — markdown ## / ### → == / ===
+    _convert_heading                 - markdown ## / ### → == / ===
     _render_token, _transform_line, _split_sentences
-    _render_templates                — infobox templates from the hooks file
-    run_wikitree                     — assemble the full document
+    _render_templates                - infobox templates from the hooks file
+    run_wikitree                     - assemble the full document
 
   CLI
     _cmd_wikitree, register, _standalone_main
@@ -92,6 +92,22 @@ _REQUIRED_TABLES = (
     'persons', 'person_variants', 'person_external', 'sources', 'claims',
     'claim_persons', 'places',
 )
+
+
+# ── The `restricted` marker (SPEC §19, §21) ────────────────────────────────────
+# WikiTree is a public-publication path, so it fails closed on anything
+# `restricted` - a source, a claim, a person, or a name - with no opt-in. The
+# index carries no person/name-level `restricted`, so those are read from the
+# record file. Duplicated per export tool (tools never import tools, TOOLING §15).
+
+def _is_restricted_value(value) -> bool:
+    """True when a `restricted:` value withholds a record from public output.
+
+    The marker is open (SPEC §19): the plain boolean `true` or any free-text
+    type all mean restricted; only absent/false is not. (`read_record` coerces
+    booleans to `'true'`/`'false'`.) A public path has no opt-in - even
+    `restricted: by-request` is honored - so one truthiness test suffices."""
+    return value not in (None, False, '', 'false')
 
 _TEMPLATES_FILE = Path(__file__).parent / 'wikitree_templates.yaml'
 
@@ -186,7 +202,7 @@ def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str |
 
     name-forms are the strings that, if they already appear in the prose right
     before the cross-ref token, identify a "Name [P-id]" pattern: the full name,
-    its first given word, and any recorded name variants — longest first so the
+    its first given word, and any recorded name variants - longest first so the
     fullest match wins.
     """
     if pid in cache:
@@ -208,8 +224,14 @@ def _person_info(conn: sqlite3.Connection, pid: str, cache: dict) -> tuple[str |
         for v in conn.execute(
             'SELECT variant FROM person_variants WHERE person_id = ?', (pid,)
         ).fetchall():
-            if v['variant']:
-                forms.append(v['variant'])
+            variant = v['variant']
+            # A restricted name variant (a deadname, SPEC §18) is recorded as a
+            # `{value:, restricted: true}` mapping; the index stores it as the
+            # stringified mapping. Such a value must never become a published
+            # name form, so skip any variant that is a serialized mapping rather
+            # than a plain name string - the unrestricted display name links instead.
+            if variant and not variant.lstrip().startswith('{'):
+                forms.append(variant)
     # Deduplicate, longest first so 'Margaret A. Cole' beats 'Margaret'.
     forms = sorted({f for f in forms if f}, key=len, reverse=True)
     result = (name, forms, wikitree_id, living)
@@ -309,14 +331,16 @@ def _spacetime_index(conn: sqlite3.Connection, pid: str) -> dict[str, tuple[str,
     return out
 
 
-def _restricted_source_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3.Row]:
+def _restricted_source_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[sqlite3.Row]:
     """Non-publishable source tokens cited in the profile body.
 
     SPEC §21 bars restricted, DNA, and publication_ok=false sources from
     public output. The WikiTree exporter works from curated prose, so
     deleting just the `<ref>` would leave an unsupported public fact behind.
     Failing closed gives the human a precise cleanup list and avoids silent
-    leakage.
+    leakage. A free-text restricted type (`restricted: by-request`) stores
+    `restricted=0` in the index, so cited sources are also read from their
+    record files to catch it.
     """
     source_ids = sorted({
         t for t in extract_token_ids(text) if id_type_of(t) == 'S'
@@ -324,16 +348,60 @@ def _restricted_source_refs(conn: sqlite3.Connection, text: str) -> list[sqlite3
     if not source_ids:
         return []
     placeholders = ','.join('?' * len(source_ids))
-    return conn.execute(
+    rows = conn.execute(
         f"""
-        SELECT id, title, source_type, restricted, publication_ok
+        SELECT id, title, source_type, restricted, publication_ok, path
         FROM sources
         WHERE id IN ({placeholders})
-          AND (COALESCE(restricted, 0) != 0 OR COALESCE(source_type, '') = 'dna' OR COALESCE(publication_ok, 1) = 0)
         ORDER BY id
         """,
         source_ids,
     ).fetchall()
+    flagged: list[sqlite3.Row] = []
+    for row in rows:
+        bad = (
+            (row['restricted'] or 0) != 0
+            or (row['source_type'] or '') == 'dna'
+            or (row['publication_ok'] is not None and int(row['publication_ok']) == 0)
+        )
+        if not bad and row['path']:
+            try:
+                bad = _is_restricted_value(read_record(archive_root / row['path'])['meta'].get('restricted'))
+            except Exception:
+                bad = False
+        if bad:
+            flagged.append(row)
+    return flagged
+
+
+def _restricted_person_refs(conn: sqlite3.Connection, archive_root: Path, text: str) -> list[sqlite3.Row]:
+    """Restricted person tokens linked in the profile body.
+
+    A `[[P-id]]` link to a person whose record carries a `restricted` marker
+    (any value) can't appear in public WikiTree output. The index has no
+    person-level `restricted` column, so each linked person's record file is
+    read. Returns the offending persons (id + name) for the cleanup message."""
+    person_ids = sorted({
+        t for t in extract_token_ids(text) if id_type_of(t) == 'P'
+    })
+    if not person_ids:
+        return []
+    placeholders = ','.join('?' * len(person_ids))
+    rows = conn.execute(
+        f'SELECT id, name, path FROM persons WHERE id IN ({placeholders}) ORDER BY id',
+        person_ids,
+    ).fetchall()
+    flagged: list[sqlite3.Row] = []
+    for row in rows:
+        if not row['path']:
+            continue
+        try:
+            value = read_record(archive_root / row['path'])['meta'].get('restricted')
+        except Exception:
+            continue
+        if _is_restricted_value(value):
+            flagged.append(row)
+    return flagged
 
 
 # ── Rendering ────────────────────────────────────────────────────────────────────
@@ -363,7 +431,7 @@ def _render_tokens(
     twice); `[[L-id]]` → place name; anything else → the display id.
 
     When the human wrote the display *inside* the token (`[[P-id|Margaret Cole]]`),
-    that display is explicit — use it as the link text and suppress the
+    that display is explicit - use it as the link text and suppress the
     preceding-name folding (the fold exists only to avoid printing an
     already-present name twice, which doesn't apply when the name is in-token).
     Both bracket forms and the legacy single-bracket `[P-id]` flow through here."""
@@ -521,7 +589,8 @@ def _render_templates(conn: sqlite3.Connection, pid: str, templates: dict) -> li
 def _wikitree_payload(archive_root: Path, pid: str) -> dict:
     """
     Render the WikiTree-dialect markup for one curated person. Returns:
-      {'status': 'ok'|'not-found'|'not-curated'|'living-subject'|'restricted-sources'|'no-index'|'bad-args',
+      {'status': 'ok'|'not-found'|'not-curated'|'living-subject'|'restricted-subject'|
+       'restricted-sources'|'restricted-people'|'no-index'|'bad-args',
        'text': str|None, 'messages': [str, ...]}
     """
     if not is_valid_id(pid) or id_type_of(pid) != 'P':
@@ -540,10 +609,10 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
             return {'status': 'not-found', 'text': None, 'messages': []}
         if person['status'] == 'merged':
             return {'status': 'merged', 'text': None,
-                    'messages': [f'{fmt_id_display(pid)} is a merged record — export the active identity instead.']}
+                    'messages': [f'{fmt_id_display(pid)} is a merged record - export the active identity instead.']}
         if person['tier'] != 'curated':
             return {'status': 'not-curated', 'text': None,
-                    'messages': [f'{fmt_id_display(pid)} is not curated — wikitree exports curated profiles only.']}
+                    'messages': [f'{fmt_id_display(pid)} is not curated - wikitree exports curated profiles only.']}
         if person['living'] in ('true', 'unknown'):
             return {'status': 'living-subject', 'text': None,
                     'messages': [
@@ -553,7 +622,17 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
 
         rec = read_record(archive_root / person['path'])
         body = rec['body']
-        restricted_refs = _restricted_source_refs(conn, body)
+
+        # A restricted subject (any value, including by-request) is refused
+        # outright - WikiTree is public-facing, no opt-in (SPEC §21).
+        if _is_restricted_value(rec['meta'].get('restricted')):
+            return {'status': 'restricted-subject', 'text': None,
+                    'messages': [
+                        f'{fmt_id_display(pid)} is restricted; WikiTree is public-facing and '
+                        'has no opt-in. Remove the restriction or export a different person.'
+                    ]}
+
+        restricted_refs = _restricted_source_refs(conn, archive_root, body)
         if restricted_refs:
             items = ', '.join(
                 f'{fmt_id_display(r["id"])} ({r["title"] or "untitled"})'
@@ -563,6 +642,21 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
                     'messages': [
                         'WikiTree output is public-facing; remove or rewrite citations '
                         f'to restricted/DNA sources before export: {items}.'
+                    ]}
+
+        # A restricted PERSON linked in the prose can't be published either;
+        # fail closed with the offending P-ids named for cleanup (same posture
+        # as restricted sources), rather than silently dropping the link.
+        restricted_people = _restricted_person_refs(conn, archive_root, body)
+        if restricted_people:
+            items = ', '.join(
+                f'{fmt_id_display(r["id"])} ({r["name"] or "unnamed"})'
+                for r in restricted_people
+            )
+            return {'status': 'restricted-people', 'text': None,
+                    'messages': [
+                        'WikiTree output is public-facing; remove or rewrite links '
+                        f'to restricted people before export: {items}.'
                     ]}
         spacetime = _spacetime_index(conn, pid)
         templates = _load_templates()
@@ -634,7 +728,7 @@ def _wikitree_payload(archive_root: Path, pid: str) -> dict:
         text = '\n'.join(out) + '\n'
         messages = []
         if not used_sources:
-            messages.append('Note: the profile body cites no sources — references block is empty.')
+            messages.append('Note: the profile body cites no sources - references block is empty.')
         return {'status': 'ok', 'text': text, 'messages': messages}
     finally:
         conn.close()
@@ -656,7 +750,8 @@ def run_wikitree(archive_root: Path, pid: str) -> Result:
         exit_code = EXIT_WARNINGS if payload.get('messages') else EXIT_CLEAN
     elif status in ('not-found', 'not-curated'):
         exit_code = EXIT_WARNINGS
-    else:  # bad-args, no-index, merged, living-subject, restricted-sources
+    else:  # bad-args, no-index, merged, living-subject, restricted-subject,
+           # restricted-sources, restricted-people
         exit_code = EXIT_FAILURE
     return Result(ok=(status == 'ok'), exit_code=exit_code, data=payload)
 
@@ -686,7 +781,11 @@ def _cmd_wikitree(args: argparse.Namespace) -> int:
         return EXIT_FAILURE
     if status == 'living-subject':
         return EXIT_FAILURE
+    if status == 'restricted-subject':
+        return EXIT_FAILURE
     if status == 'restricted-sources':
+        return EXIT_FAILURE
+    if status == 'restricted-people':
         return EXIT_FAILURE
     if status == 'not-found':
         print(f'{fmt_id_display(pid)}: not found in index.', file=sys.stderr)

@@ -1,5 +1,5 @@
 """
-test_claim.py — fha claim: human-directed claim review write-back.
+test_claim.py - fha claim: human-directed claim review write-back.
 
 Covers the surgical `## Claims` edit (`_apply_claim_review`), the `run_claim`
 contract (accept/dispute/reject/needs-review round-trip, default-today on accept,
@@ -257,7 +257,7 @@ class RunClaimTests(unittest.TestCase):
 
 class ClaimIndexLintIntegrationTests(unittest.TestCase):
     """A real archive: demoting an accepted vital reopens its W101 gap, and
-    re-accepting it through the tool relieves the gap again — proving fha index
+    re-accepting it through the tool relieves the gap again - proving fha index
     and fha lint pick up what `fha claim` wrote."""
 
     BIRTH_CLAIM = 'C-fd0000001a'           # James Bradford's accepted birth

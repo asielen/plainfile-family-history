@@ -1,7 +1,7 @@
 ---
 id: S-fd4567890e
 aliases: [S-fd4567890e]
-title: Birth certificate — James Robert Bradford, 1955
+title: Birth certificate - James Robert Bradford, 1955
 source_type: vital-record
 source_date: 1955-03-15
 source_class: original

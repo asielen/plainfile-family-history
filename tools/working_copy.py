@@ -1,4 +1,4 @@
-"""fha working-copy — manage working-copy mode for a synced archive.
+"""fha working-copy - manage working-copy mode for a synced archive.
 
 A working copy is a git-synced clone of the archive that contains all records
 (sources, people, places, notes) but no binary asset files (photos, documents).
@@ -10,7 +10,7 @@ The marker is listed in .gitignore so it is machine-local and never syncs back
 to the main archive.
 
 Sub-commands
-  on      Write the WORKING_COPY marker (safe — only withholds asset features).
+  on      Write the WORKING_COPY marker (safe - only withholds asset features).
   off     Remove the WORKING_COPY marker (prompts for confirmation by default).
   status  Report whether this archive is in working-copy mode.
 """
@@ -47,7 +47,7 @@ assumed-present-elsewhere (not missing or lost) and skip asset-mutating
 operations (scan, process, packet, tag-person) that would make no sense
 without the originals.
 
-Read-only operations — lint, index, report — work normally.
+Read-only operations - lint, index, report - work normally.
 
 To re-enable full asset features on this machine (e.g. because you have copied
 the assets here), run:
@@ -58,7 +58,7 @@ Delete this file manually or run that command to turn working-copy mode off.
 See SPEC.md §12.4 for the design rationale.
 """
 
-_GITIGNORE_ENTRY = '# Machine-local working-copy marker (git-ignored by design — see SPEC.md §12).\nWORKING_COPY\n'
+_GITIGNORE_ENTRY = '# Machine-local working-copy marker (git-ignored by design - see SPEC.md §12).\nWORKING_COPY\n'
 
 _OFF_CONFIRM_TEXT = """\
 You are about to turn OFF working-copy mode.
@@ -84,7 +84,7 @@ def _ensure_gitignore_entry(archive_root: Path) -> None:
     gi = archive_root / '.gitignore'
     if gi.exists():
         text = gi.read_text(encoding='utf-8')
-        # Only count a real ignore rule — skip comment and negation lines so
+        # Only count a real ignore rule - skip comment and negation lines so
         # "# remember WORKING_COPY" or "!WORKING_COPY" don't suppress the append.
         for line in text.splitlines():
             stripped = line.strip()
@@ -171,7 +171,7 @@ def run_working_copy_on(archive_root: Path) -> Result:
                 next_step='Check folder permissions, then run `fha working-copy on` again.',
             )
 
-    # Always ensure .gitignore is updated — even when the marker was hand-created
+    # Always ensure .gitignore is updated - even when the marker was hand-created
     # or a previous run wrote the marker but failed to update .gitignore.
     try:
         _ensure_gitignore_entry(archive_root)
@@ -253,7 +253,7 @@ def _cmd_on(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
     archive_root = resolve_root_arg(args)
     if archive_root is None:
-        print('error: cannot find archive root — pass --root or run from inside the archive.',
+        print('error: cannot find archive root - pass --root or run from inside the archive.',
               file=sys.stderr)
         return EXIT_ERRORS
     if not (archive_root / 'fha.yaml').exists():
@@ -293,7 +293,7 @@ def _cmd_off(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
     archive_root = resolve_root_arg(args)
     if archive_root is None:
-        print('error: cannot find archive root — pass --root or run from inside the archive.',
+        print('error: cannot find archive root - pass --root or run from inside the archive.',
               file=sys.stderr)
         return EXIT_ERRORS
     if not (archive_root / 'fha.yaml').exists():
@@ -303,7 +303,7 @@ def _cmd_off(args: argparse.Namespace) -> int:
 
     from _lib import is_working_copy
     if not is_working_copy(archive_root):
-        print('Working-copy mode is already off — nothing to do.')
+        print('Working-copy mode is already off - nothing to do.')
         return EXIT_CLEAN
 
     if not args.yes:
@@ -322,7 +322,7 @@ def _cmd_off(args: argparse.Namespace) -> int:
             print('\nAborted.')
             return EXIT_CLEAN
         if answer != 'y':
-            print('Aborted — working-copy mode remains active.')
+            print('Aborted - working-copy mode remains active.')
             return EXIT_CLEAN
 
     result = run_working_copy_off(archive_root)
@@ -345,7 +345,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     configure_utf8_stdout()
     archive_root = resolve_root_arg(args)
     if archive_root is None:
-        print('error: cannot find archive root — pass --root or run from inside the archive.',
+        print('error: cannot find archive root - pass --root or run from inside the archive.',
               file=sys.stderr)
         return EXIT_ERRORS
     if not (archive_root / 'fha.yaml').exists():
@@ -362,7 +362,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     else:
         print('Working-copy mode: OFF')
         print(f'No WORKING_COPY marker found at {archive_root}')
-        print('This is a full archive — all features are active.')
+        print('This is a full archive - all features are active.')
     return result.exit_code
 
 

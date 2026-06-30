@@ -60,7 +60,7 @@ class PhotoindexTests(unittest.TestCase):
             self.assertEqual(scan.exit_code, EXIT_WARNINGS)
 
     def test_keyword_to_edtf_preserves_component_approximation(self) -> None:
-        # SPEC §20 date-mapping table — a per-component best-guess marker must
+        # SPEC §20 date-mapping table - a per-component best-guess marker must
         # land on the right component (1960!-05~ -> 1960-~05), not collapse to a
         # trailing '~' or get dropped when a confident component follows.
         self.assertEqual(photoindex._keyword_to_edtf('1942!-11!-25!'), '1942-11-25')
@@ -277,7 +277,7 @@ class PhotoindexTests(unittest.TestCase):
 
     def test_underscore_letter_suffix_is_not_a_copy_variant(self) -> None:
         # TOOLING §6 only documents '-b' (dash) or a bare letter right after a
-        # digit ('034b') as copy-variant grammar — 'scan_a'/'scan_b' must stay
+        # digit ('034b') as copy-variant grammar - 'scan_a'/'scan_b' must stay
         # distinct base_ids instead of collapsing into variants of 'scan'.
         scan_a = parse_media_filename('scan_a')
         self.assertEqual(scan_a.base_id, 'scan_a')
@@ -653,7 +653,7 @@ class PhotoindexTests(unittest.TestCase):
             # Tagging an unrelated photo (portrait_1880.jpg) with a different
             # P-id triggers apply_tag_person's _rebuild_photo_people while the
             # index is stale. That must not wipe out family_reunion.jpg's
-            # already-screened weak match for Grandma — tag-person bulk work
+            # already-screened weak match for Grandma - tag-person bulk work
             # is incremental, and most of the archive starts out resolved only
             # via these weaker tiers.
             photoindex._run_exiftool_write = lambda paths, kw: {p: None for p in paths}
@@ -890,7 +890,7 @@ class PhotoindexTests(unittest.TestCase):
                 # Target only the explicit `p.stat()` call run_scan's loop
                 # makes to read mtime/size, not whatever stat-like check
                 # is_file() does during file discovery (`_iter_photo_files`)
-                # — on some platforms/pathlib versions is_file() resolves
+                # - on some platforms/pathlib versions is_file() resolves
                 # to a C-level syscall that never reaches Path.stat() at
                 # all, so counting total calls to this file is not
                 # portable; identifying run_scan's own frame is.
@@ -1466,7 +1466,7 @@ class PhotoindexTests(unittest.TestCase):
 
             self.assertEqual(result['status'], 'fresh')
             paths = [c['path'] for c in result['candidates']]
-            # wedding_1902.jpg already carries a SOURCE: keyword (processed) — excluded.
+            # wedding_1902.jpg already carries a SOURCE: keyword (processed) - excluded.
             self.assertNotIn('photos/wedding_1902.jpg', paths)
             self.assertEqual(
                 sorted(paths),
@@ -1491,7 +1491,7 @@ class PhotoindexTests(unittest.TestCase):
             photoindex.run_reconcile(archive, {'roots': {'photos': 'photos'}})
 
             # family_reunion's group now contains only a 'MISSING:'-prefixed
-            # row (no on-disk file survives in it) — triage must not suggest
+            # row (no on-disk file survives in it) - triage must not suggest
             # `fha process` on a synthetic path nothing can actually process.
             result = photoindex.run_triage(archive, {'roots': {'photos': 'photos'}})
             paths = [c['path'] for c in result['candidates']]
@@ -1884,7 +1884,7 @@ class PhotoindexTests(unittest.TestCase):
             self.assertEqual(result['missing'], ['MISSING:photos/portrait_1880.jpg'])
 
             # An ordinary scan run between a no-exif reconcile and a later
-            # --with-exif retry must not purge the MISSING: row — that key
+            # --with-exif retry must not purge the MISSING: row - that key
             # never matches a real on-disk alias, so a naive cache-removal
             # pass would otherwise erase the source_id/path history the
             # later rematch needs.
@@ -1915,7 +1915,7 @@ class PhotoindexTests(unittest.TestCase):
             # The file reappears at the exact alias the MISSING: row
             # remembers. An ordinary scan re-discovers it as a fresh,
             # untracked file and must also drop the now-superseded MISSING:
-            # row — otherwise the two rows fight over the same group/primary
+            # row - otherwise the two rows fight over the same group/primary
             # path and `find`/triage can keep surfacing the dead row.
             photo.write_bytes(saved)
             photoindex.run_scan(archive, fha_config)
@@ -1995,7 +1995,7 @@ class PhotoindexTests(unittest.TestCase):
 
             # Even though nothing is left untracked, a rematched file whose
             # content may have changed must keep the catalog 'stale' until an
-            # ordinary scan re-scrapes it — otherwise find/doctor would report
+            # ordinary scan re-scrapes it - otherwise find/doctor would report
             # a fresh index pointing at outdated caption/date metadata.
             status, _lag = photoindex.photoindex_status(archive, fha_config)
             self.assertEqual(status, 'stale')
@@ -2566,7 +2566,7 @@ class PhotoindexTests(unittest.TestCase):
         """`tagged` must reflect every file whose exiftool write succeeded
         before its own cache insert is attempted, so a cache failure on a
         later candidate's insert still names every already-written file in
-        the RuntimeError's recovery list — not just the earlier ones whose
+        the RuntimeError's recovery list - not just the earlier ones whose
         insert also happened to succeed first."""
         with tempfile.TemporaryDirectory() as d:
             archive = _copy_fixture(Path(d))
@@ -2717,7 +2717,7 @@ class PhotoindexTests(unittest.TestCase):
                 encoding='utf-8',
             )
 
-            # Re-run scan — photos unchanged (mtime), but _rebuild_photo_people re-reads source files.
+            # Re-run scan - photos unchanged (mtime), but _rebuild_photo_people re-reads source files.
             photoindex.run_scan(archive, fha_config, full=True)
 
             conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
@@ -2739,7 +2739,7 @@ class PhotoindexTests(unittest.TestCase):
             fha_config = {'roots': {'photos': 'photos'}}
 
             def fake_exiftool(paths: list[Path]) -> list[dict]:
-                # wedding has no RegionInfo — no face regions at all
+                # wedding has no RegionInfo - no face regions at all
                 rows = {
                     'portrait_1880.jpg': {},
                     'portrait_1880-back.jpg': {},
@@ -2815,7 +2815,7 @@ class PhotoindexTests(unittest.TestCase):
                     "SELECT person_ref, via FROM photo_people "
                     "WHERE path LIKE '%wedding_1902.jpg'"
                 ).fetchall()
-                # Only one row — pid-keyword wins (same priority, deduped by _resolve)
+                # Only one row - pid-keyword wins (same priority, deduped by _resolve)
                 person_refs = [row[0] for row in rows]
                 self.assertEqual(person_refs.count('p-de957bcda1'), 1)
                 # The pid-keyword tier wins (not source-people) since pid-keyword is resolved first

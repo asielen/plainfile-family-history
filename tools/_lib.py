@@ -1,8 +1,8 @@
 """
-_lib.py — shared library for all fha tools.
+_lib.py - shared library for all fha tools.
 
 This is the foundation every other tool builds on.  Tools never import each
-other — _lib.py is the only shared dependency (TOOLING §15 build rule).
+other - _lib.py is the only shared dependency (TOOLING §15 build rule).
 
 What lives here:
   - ID grammar and validation  (Crockford Base32, SPEC §10)
@@ -18,7 +18,7 @@ THE STRUCTURED-RESULT CONTRACT (the rule every `run_*` follows)
 --------------------------------------------------------------
 Every operation a tool performs is split in two:
 
-  - `run_*` **computes** and **returns a `Result`** — a small, JSON-serializable
+  - `run_*` **computes** and **returns a `Result`** - a small, JSON-serializable
     record of what happened.  It does NOT print human-facing report text and does
     NOT call `sys.exit`.  (File side effects and interactive prompts are out of
     scope for this rule: a tool that must write `report_2026.md` or ask the human
@@ -28,14 +28,14 @@ Every operation a tool performs is split in two:
     returns the process exit code.
 
 A `Result` carries:
-  - `ok`        — did the operation succeed (no error-level messages)?
-  - `exit_code` — the process exit code the CLI should return (EXIT_* constants).
-  - `data`      — the structured payload: whatever a consumer would want as data
+  - `ok`        - did the operation succeed (no error-level messages)?
+  - `exit_code` - the process exit code the CLI should return (EXIT_* constants).
+  - `data`      - the structured payload: whatever a consumer would want as data
                   (matched records, per-check rows, counts, a rendered string …).
-  - `messages`  — human-facing lines, each a `Message{level, text, next_step,
+  - `messages`  - human-facing lines, each a `Message{level, text, next_step,
                   code, path}`.  A lint `Finding` folds into one of these:
                   severity → level, its E/W code → code, the file → path.
-  - `changed`   — paths this operation created, wrote, renamed, or embedded into
+  - `changed`   - paths this operation created, wrote, renamed, or embedded into
                   (empty under --dry-run).
 
 `lint` is the reference implementation: `run_lint` returns a `Result`; `_cmd_lint`
@@ -64,85 +64,85 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Constants and patterns
-#    CROCKFORD_ALPHA           — the 32-char ID alphabet (i l o u omitted)
-#    ID_RE                     — bare ID pattern (SPEC §10)
-#    TOKEN_RE, LEGACY_TOKEN_RE — [[ID]] / [[ID|display]] / [[ID#frag]] citation
+#    CROCKFORD_ALPHA           - the 32-char ID alphabet (i l o u omitted)
+#    ID_RE                     - bare ID pattern (SPEC §10)
+#    TOKEN_RE, LEGACY_TOKEN_RE - [[ID]] / [[ID|display]] / [[ID#frag]] citation
 #                                 tokens (superset incl. legacy [ID]) (SPEC §10)
-#    FRONT_RE, CLAIMS_RE       — frontmatter and fenced claims block patterns
-#    SIGNIFICANCE              — claim type → 'vital'/'substantive'/'incidental'
-#    CLAIM_TYPES, VITAL_TYPES  — frozensets derived from SIGNIFICANCE
-#    SOURCE_TYPES              — controlled vocabulary for source_type field
-#    PHOTO_EXTENSIONS          — recognised photo/scan file extensions (photoindex + process)
-#    COMPANION_KINDS           — generated file kinds that share a P-id with their profile
+#    FRONT_RE, CLAIMS_RE       - frontmatter and fenced claims block patterns
+#    SIGNIFICANCE              - claim type → 'vital'/'substantive'/'incidental'
+#    CLAIM_TYPES, VITAL_TYPES  - frozensets derived from SIGNIFICANCE
+#    SOURCE_TYPES              - controlled vocabulary for source_type field
+#    PHOTO_EXTENSIONS          - recognised photo/scan file extensions (photoindex + process)
+#    COMPANION_KINDS           - generated file kinds that share a P-id with their profile
 #
 #  Archive configuration
-#    find_archive_root         — walk up from CWD to find fha.yaml
-#    archive_root_missing_message — one plain recovery message for missing roots
-#    resolve_root_arg          — CLI --root flag, else find_archive_root(), with the
+#    find_archive_root         - walk up from CWD to find fha.yaml
+#    archive_root_missing_message - one plain recovery message for missing roots
+#    resolve_root_arg          - CLI --root flag, else find_archive_root(), with the
 #                                 shared "cannot find archive root" error message
-#    load_fha_yaml             — parse fha.yaml into a dict
-#    format_*_error            — shared teaching messages for CLI refusals
-#    get_roots                 — extract roots mapping from config
-#    resolve_path              — alias path ('photos/…') → absolute Path via fha.yaml
-#    path_to_alias             — absolute Path → alias path ('photos/…'), the inverse
+#    load_fha_yaml             - parse fha.yaml into a dict
+#    format_*_error            - shared teaching messages for CLI refusals
+#    get_roots                 - extract roots mapping from config
+#    resolve_path              - alias path ('photos/…') → absolute Path via fha.yaml
+#    path_to_alias             - absolute Path → alias path ('photos/…'), the inverse
 #
 #  Index database access
-#    db_mtime                  — mtime of a cache db file, or None if absent/unreadable
-#    probe_sqlite              — does this db open and run this one probe query?
-#    open_index_db             — open .cache/index.sqlite with the freshness check +
+#    db_mtime                  - mtime of a cache db file, or None if absent/unreadable
+#    probe_sqlite              - does this db open and run this one probe query?
+#    open_index_db             - open .cache/index.sqlite with the freshness check +
 #                                 required-table probe every index-reading tool needs
-#    photoindex_status         — classify .cache/photos.sqlite freshness for find/doctor
+#    photoindex_status         - classify .cache/photos.sqlite freshness for find/doctor
 #
 #  Record parsing
-#    _coerce_yaml              — normalise YAML scalar types for consistent comparisons
-#    read_record               — parse frontmatter + claims + body from a .md file
-#    parse_filename            — decompose filename into {id_str, kind, is_companion}
-#    ParsedName, parse_media_filename — decompose an unprocessed photo/scan filename
+#    _coerce_yaml              - normalise YAML scalar types for consistent comparisons
+#    read_record               - parse frontmatter + claims + body from a .md file
+#    parse_filename            - decompose filename into {id_str, kind, is_companion}
+#    ParsedName, parse_media_filename - decompose an unprocessed photo/scan filename
 #                                 into base_id + variant/part-kind/page/crop (TOOLING §6/§9)
 #
 #  EDTF handling
-#    is_valid_edtf             — validate an EDTF string against this project's subset
-#    normalize_date            — loose human date ("circa 1870", "1870s") → canonical EDTF
-#    edtf_bounds               — compute (date_min, date_max) ISO strings
-#    _pad_date, _last_day      — internal date-padding helpers
+#    is_valid_edtf             - validate an EDTF string against this project's subset
+#    normalize_date            - loose human date ("circa 1870", "1870s") → canonical EDTF
+#    edtf_bounds               - compute (date_min, date_max) ISO strings
+#    _pad_date, _last_day      - internal date-padding helpers
 #
 #  ID utilities
-#    mint_ids                  — mint collision-checked Crockford IDs
-#    normalize_id              — lowercase for consistent set/dict keying
-#    is_valid_id               — syntactic validity check
-#    id_type_of                — extract P/S/C/L/H type prefix
-#    fmt_id_display            — uppercase the type prefix for display (p-xxx → P-xxx)
-#    scan_ids_in_tree          — full-tree scan used by id mint for collision checking
+#    mint_ids                  - mint collision-checked Crockford IDs
+#    normalize_id              - lowercase for consistent set/dict keying
+#    is_valid_id               - syntactic validity check
+#    id_type_of                - extract P/S/C/L/H type prefix
+#    fmt_id_display            - uppercase the type prefix for display (p-xxx → P-xxx)
+#    scan_ids_in_tree          - full-tree scan used by id mint for collision checking
 #
 #  Filename / path helpers
-#    is_working_copy           — WORKING_COPY marker present at archive root?
-#    is_fixture_path           — path under example-archive/ or tests/fixtures/?
-#    extract_tokens            — (id, display, fragment, span) per citation token
-#    extract_token_ids         — the IDs of all citation tokens in a text block
-#    extract_bare_ids          — all bare IDs from a text block
-#    normalize_place_text      — lowercase/collapse-whitespace key for comparing
+#    is_working_copy           - WORKING_COPY marker present at archive root?
+#    is_fixture_path           - path under example-archive/ or tests/fixtures/?
+#    extract_tokens            - (id, display, fragment, span) per citation token
+#    extract_token_ids         - the IDs of all citation tokens in a text block
+#    extract_bare_ids          - all bare IDs from a text block
+#    normalize_place_text      - lowercase/collapse-whitespace key for comparing
 #                                 free-text place names without a shared place_id
 #
 #  Archive freshness
-#    newest_record_mtime       — max mtime of sources/people/notes .md + places.yaml
-#    newest_source_record_mtime — max mtime of source .md records only
-#    newest_person_record_mtime — max mtime of people/*.md only
-#    configure_utf8_stdout     — reconfigure stdout to UTF-8 (Windows cp1252 compat)
+#    newest_record_mtime       - max mtime of sources/people/notes .md + places.yaml
+#    newest_source_record_mtime - max mtime of source .md records only
+#    newest_person_record_mtime - max mtime of people/*.md only
+#    configure_utf8_stdout     - reconfigure stdout to UTF-8 (Windows cp1252 compat)
 #
 #  Output helpers
-#    EXIT_CLEAN / EXIT_WARNINGS / EXIT_ERRORS / EXIT_FAILURE  — shared exit codes
-#    Finding                   — one lint finding: severity + code + path + message
-#    emit_findings             — print findings list and return exit code
-#    Message                   — one human-facing line: level/text/next_step (+code/path)
-#    Result                    — the structured-result contract every run_* returns
-#    finding_to_message        — fold a lint Finding into a Result Message
+#    EXIT_CLEAN / EXIT_WARNINGS / EXIT_ERRORS / EXIT_FAILURE  - shared exit codes
+#    Finding                   - one lint finding: severity + code + path + message
+#    emit_findings             - print findings list and return exit code
+#    Message                   - one human-facing line: level/text/next_step (+code/path)
+#    Result                    - the structured-result contract every run_* returns
+#    finding_to_message        - fold a lint Finding into a Result Message
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 # ── Regex patterns (TOOLING.md §1) ───────────────────────────────────────────
 
-# Crockford Base32 alphabet — lowercase, omitting i l o u
+# Crockford Base32 alphabet - lowercase, omitting i l o u
 CROCKFORD_ALPHA = '0123456789abcdefghjkmnpqrstvwxyz'
 
 # Matches any bare ID in text (case-insensitive)
@@ -163,7 +163,7 @@ _TOKEN_ID = r'[PSCLH]-[0-9a-hjkmnp-tv-z]{10}'
 #   [[C-…#^x|note]]         …with a #^block fragment and a display alias
 #   [S-…]                   legacy single-bracket form (still resolved, forgivingly)
 #
-# Exactly ONE capturing group — the load-bearing ID — so the historical
+# Exactly ONE capturing group - the load-bearing ID - so the historical
 # `TOKEN_RE.findall(text)` / `m.group(1)` consumers keep returning the ID and
 # nothing else.  The |display and #fragment are matched but NOT captured here;
 # the renderers that must re-emit display text use `extract_tokens()` instead.
@@ -202,12 +202,12 @@ LEGACY_TOKEN_RE = re.compile(
 
 # Any double-bracket Obsidian wikilink, whose target may be an ID *or* a human
 # name/stem (`[[Ken Smith]]`, `[[grandmas-album]]`, `[[P-…|Ken Smith]]`). Looser
-# than TOKEN_RE — it does not require an ID body — so the citation indexer and
+# than TOKEN_RE - it does not require an ID body - so the citation indexer and
 # `fha normalize-links` can find name/stem links that resolve through the alias
 # map. Captures: 1 target, 2 #fragment, 3 |display.
 WIKILINK_RE = re.compile(
     r'\[\['
-    r'([^\[\]|#]+?)'        # 1: target (id, name, or stem) — no brackets/pipe/hash
+    r'([^\[\]|#]+?)'        # 1: target (id, name, or stem) - no brackets/pipe/hash
     r'(?:#([^\[\]|]*))?'    # 2: optional #heading / #^block fragment
     r'(?:\|([^\[\]]*))?'    # 3: optional |display alias
     r'\]\]'
@@ -240,11 +240,50 @@ VITAL_TYPES: frozenset[str] = frozenset(
 
 # Optional, UNSOURCED person-record fields: an honest estimate of current
 # knowledge ("Grandpa, b. 1923") a hand-author may jot down long before any
-# source exists. They are explicitly non-load-bearing — like the §8.6 convenience
-# flags — and a real `birth`/`death` claim supersedes them the moment it exists.
+# source exists. They are explicitly non-load-bearing - like the §8.6 convenience
+# flags - and a real `birth`/`death` claim supersedes them the moment it exists.
 # Tools must never count a provisional date as a satisfied vital for completeness
 # scoring; the linter only *tracks* it on a gentle needs-sourcing worklist.
 PROVISIONAL_VITAL_FIELDS: frozenset[str] = frozenset({'birth', 'death'})
+
+# Bloodline-aware Ahnentafel (SPEC §12.2). A parent/child relationship carries a
+# `subtype` naming the *nature* of the bond (§8.2). The pedigree NUMBERING follows
+# only the genetic edges; the social/legal kinds below are shown in the bracket
+# lists and relationship views but never numbered into the pedigree.
+GENETIC_PARENT_SUBTYPES: frozenset[str] = frozenset({
+    'biological', 'surrogate-genetic', 'donor-sperm', 'donor-egg',
+})
+SOCIAL_PARENT_SUBTYPES: frozenset[str] = frozenset({
+    'adoptive', 'step', 'foster', 'guardian', 'surrogate-gestational', 'social',
+})
+# How a non-birth child reads in a couple-folder bracket list (`Ruth (adopted)`).
+_NONBIRTH_BRACKET_LABEL: dict[str, str] = {
+    'adoptive': 'adopted', 'step': 'step', 'foster': 'foster',
+    'guardian': 'guardian', 'surrogate-gestational': 'surrogate', 'social': 'social',
+}
+
+
+def is_genetic_parent_subtype(subtype: Any) -> bool:
+    """Does a parent edge of this nature count toward the genetic pedigree?
+
+    Genetic UNLESS the nature is an explicit social/legal kind (adoptive, step,
+    foster, guardian, surrogate-gestational, social). An unset, legacy (`child-of`),
+    or unrecognised subtype defaults to genetic, so a legacy archive numbers
+    exactly as it did before bloodline awareness (SPEC §12.2 back-compat)."""
+    return str(subtype or '').strip().lower() not in SOCIAL_PARENT_SUBTYPES
+
+
+def nonbirth_bracket_label(subtype: Any) -> str | None:
+    """The bracket annotation for a non-birth child ('adopted', 'step', …), or
+    None for a genetic/birth edge that needs no mark."""
+    return _NONBIRTH_BRACKET_LABEL.get(str(subtype or '').strip().lower())
+
+
+def format_bracket_child(given_name: str, label: str | None) -> str:
+    """One child's bracket entry: a bare given name, or `Given (label)` when the
+    child joined other than by birth. Shared by lint (W103) and views (W103) so
+    both derive byte-identical bracket lists (SPEC §12.2, TOOLING §7)."""
+    return f'{given_name} ({label})' if label else given_name
 
 # The keys that mark a YAML mapping as a claim, used to recognise hand-written
 # claims a human typed under `## Claims` but forgot to fence (read_record reads
@@ -288,7 +327,7 @@ def format_edtf_error(value: object, *, field: str = 'date') -> str:
 
     EDTF is the archive's compact date form. As of PR 05 the tools first try to
     READ loose human input (`normalize_date`: "circa 1870" → "1870~", "1870s" →
-    "187X") and only fall back to this hard message when no clear reading exists —
+    "187X") and only fall back to this hard message when no clear reading exists -
     so this is reserved for genuinely ambiguous values, and it teaches the
     accepted shapes (including the natural phrasings now understood) rather than
     stopping at the acronym.
@@ -338,7 +377,7 @@ def archive_root_missing_message() -> str:
 # Common raster and camera-raw extensions a personal photo library mixes in.
 # Canonical home for the set so that `photoindex` (cataloguing) and `process`
 # (document-vs-photo intake detection) agree on what counts as a photo without
-# either tool importing the other (tools never import tools — TOOLING §15).
+# either tool importing the other (tools never import tools - TOOLING §15).
 PHOTO_EXTENSIONS: frozenset[str] = frozenset({
     '.jpg', '.jpeg', '.png', '.tif', '.tiff', '.bmp', '.gif', '.heic', '.heif',
     '.cr2', '.nef', '.dng', '.arw', '.orf', '.rw2',
@@ -347,7 +386,7 @@ PHOTO_EXTENSIONS: frozenset[str] = frozenset({
 # Companion file kinds: generated view files that share a P-id with their profile
 # and live in the same folder.  Enumerated here so that parse_filename (kind
 # detection) and index.py (person_files.kind column) stay in sync when new view
-# types are added — add the kind here, and both consumers pick it up automatically.
+# types are added - add the kind here, and both consumers pick it up automatically.
 COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-index', 'draft-queue'})
 
 # Disposable cache schema versions. These are deliberately small integers stored
@@ -355,15 +394,15 @@ COMPANION_KINDS: frozenset[str] = frozenset({'research', 'timeline', 'sources-in
 # which cache shape a file was built with.
 # v2: rights.publication_ok is now stored three-state (1/0/NULL) instead of
 # folding explicit false to NULL. Exporters redact on `COALESCE(publication_ok,
-# 1) = 0`, which only fires on a stored 0 — so a v1 index (false → NULL) would
+# 1) = 0`, which only fires on a stored 0 - so a v1 index (false → NULL) would
 # silently under-redact publication_ok:false sources. Bumping forces `fha index`
 # to rebuild before the redaction-critical consumers (site/gedcom/wikitree) trust it.
-# v3: adds the `aliases` table (the resolution surface — record IDs, human
+# v3: adds the `aliases` table (the resolution surface - record IDs, human
 # stems, on-demand C-ids, person/place names) and the `source_places` edge.
 # A v2 index lacks both, so name-first cross-links and stem citations would
 # silently fail to resolve until a rebuild; bumping forces `fha index` to run.
 # v4: adds the provisional `birth`/`death` person columns (unsourced estimates
-# the needs-sourcing backlog reads) — a v3 index lacks them, so bump to rebuild.
+# the needs-sourcing backlog reads) - a v3 index lacks them, so bump to rebuild.
 INDEX_SCHEMA_VERSION = 4
 PHOTOINDEX_SCHEMA_VERSION = 1
 CACHE_SCHEMA_KEY = 'schema_version'
@@ -387,7 +426,7 @@ def resolve_root_arg(args: Any) -> Path | None:
     Resolve the archive root from a parsed CLI namespace: its own `--root`
     flag if given, else walk up from CWD via `find_archive_root()`.
 
-    Every subcommand defines its own `--root` (TOOLING §1 — argparse doesn't
+    Every subcommand defines its own `--root` (TOOLING §1 - argparse doesn't
     propagate parent-parser flags into subparsers), so every tool used to
     re-implement this same five-line lookup. Centralized here so there's one
     error message and one behavior to keep correct.
@@ -410,7 +449,7 @@ class FhaConfigError(Exception):
 
     A silent empty-dict fallback can make tools ignore external documents/photos
     roots without telling the user, quietly changing which files are considered
-    truth — strict mode surfaces that instead.
+    truth - strict mode surfaces that instead.
     """
 
 
@@ -564,7 +603,7 @@ def resolve_path(
 def path_to_alias(path: str | Path, alias: str, fha_config: dict, archive_root: str | Path) -> str:
     """
     Inverse of resolve_path: turn an absolute Path under `alias`'s root back into
-    the stored alias-form path ('photos/1880/foo.jpg', forward slashes — TOOLING
+    the stored alias-form path ('photos/1880/foo.jpg', forward slashes - TOOLING
     "All stored paths are alias-form with forward slashes").
 
     Falls back to the absolute path's forward-slash form if `path` isn't under the
@@ -679,7 +718,7 @@ def open_index_db(
     Returns None (after printing an explanatory message to stderr) when:
       - the file doesn't exist (run `fha index` first)
       - it's stale and `strict=True` (generating/mutating commands can't
-        safely act on stale data; strict=False — read-only commands — only
+        safely act on stale data; strict=False - read-only commands - only
         warns and still returns the connection, since a slightly stale
         answer beats no answer)
       - it exists but fails the table probe (corrupt or pre-this-schema)
@@ -690,7 +729,7 @@ def open_index_db(
     rather than raising mid-query.
 
     The connection opened during the probe is always closed before
-    returning None — a probe failure used to leak the connection in three
+    returning None - a probe failure used to leak the connection in three
     different copies of this function across the tool files.
     """
     archive_root = Path(archive_root)
@@ -726,7 +765,7 @@ def open_index_db(
             )
             return None
         print(
-            'WARNING: index may be stale — a record file is newer than '
+            'WARNING: index may be stale - a record file is newer than '
             '.cache/index.sqlite. Run `fha index` to refresh.',
             file=sys.stderr,
         )
@@ -734,7 +773,7 @@ def open_index_db(
     conn: sqlite3.Connection | None = None
     try:
         # sqlite3.connect() itself can raise (path is a directory, permission
-        # denied, locked, etc.) — keep it inside the guard so callers see the
+        # denied, locked, etc.) - keep it inside the guard so callers see the
         # documented unreadable-index error and exit 3 instead of a traceback.
         conn = sqlite3.connect(str(db_path))
         conn.row_factory = sqlite3.Row
@@ -757,7 +796,7 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
 
     Returns (status, lag_seconds):
       'absent'     → no photos.sqlite               (lag 0.0)
-      'unreadable' → exists but fails a basic schema query — corrupt/incompatible (lag 0.0)
+      'unreadable' → exists but fails a basic schema query - corrupt/incompatible (lag 0.0)
       'stale'      → older than the newest file in the photos root (lag = seconds behind)
       'fresh'      → schema OK and not older than the photos root (lag 0.0)
 
@@ -796,7 +835,7 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     # folded into a rebuilt index. If a profile's face_tags/name_variants changed
     # but `fha index` has NOT been rerun, index.sqlite (and the photo_people rows
     # derived from it) is stale even though its mtime looks current. Fold the
-    # person-record watermark in directly — mirroring photoindex._index_is_fresh —
+    # person-record watermark in directly - mirroring photoindex._index_is_fresh -
     # so find/doctor flag the cache stale instead of serving outdated weak matches.
     record_mtime = newest_person_record_mtime(archive_root)
     if record_mtime > max_mtime:
@@ -808,8 +847,8 @@ def photoindex_status(archive_root: str | Path, fha_config: dict) -> tuple[str, 
     photos_root = resolve_path('photos', fha_config, archive_root)
     if photos_root.is_dir():
         # Directory mtimes are included (not just file mtimes) so that a deletion
-        # or rename — which bumps the parent directory's mtime but touches no
-        # remaining file — still makes the index look stale instead of silently
+        # or rename - which bumps the parent directory's mtime but touches no
+        # remaining file - still makes the index look stale instead of silently
         # staying 'fresh' with photo_fts rows pointing at files that no longer exist.
         for p in photos_root.rglob('*'):
             if p.is_file() or p.is_dir():
@@ -914,7 +953,7 @@ def read_record(path: str | Path) -> dict:
     # UNMISTAKABLY parses as a YAML list of claim-like mappings. Conservative:
     # arbitrary prose under the heading is never force-read as claims.
     # Guard: only check for unfenced claims when there was no fenced block at all
-    # (cm_match is None) — not when the fenced block merely had malformed YAML,
+    # (cm_match is None) - not when the fenced block merely had malformed YAML,
     # which would leave claims=[] and trigger a false W114 + double-wrap.
     if not claims and cm_match is None:
         unfenced = _read_unfenced_claims(body)
@@ -1009,7 +1048,7 @@ def parse_filename(path: str | Path) -> dict | None:
     }
 
     if id_type == 'P' and ext == '.md':
-        # Person file — check for companion kind suffix
+        # Person file - check for companion kind suffix
         # pattern: {surname}__{given}[_{kind}]_{P-id}
         # kind is one of: research, timeline, sources-index
         for kind in sorted(COMPANION_KINDS, key=len, reverse=True):
@@ -1022,7 +1061,7 @@ def parse_filename(path: str | Path) -> dict | None:
             result['kind'] = 'profile'
         # Verify double-underscore surname separator
         if '__' not in before_id.split('_research')[0].split('_timeline')[0].split('_sources-index')[0]:
-            # May be a source file accidentally named with P-id — not valid person filename
+            # May be a source file accidentally named with P-id - not valid person filename
             pass
 
     return result
@@ -1041,12 +1080,12 @@ def parse_filename(path: str | Path) -> dict | None:
 class ParsedName:
     """One filename stem decomposed per the TOOLING §6 suffix grammar.
 
-    base_id    — the stem with all recognised suffixes stripped; the grouping key.
-    variant_id — trailing copy letter ('a', 'b', 'c', …) if present, else None.
-    part_kind  — 'front' | 'back' | 'page' | 'negative' | 'bw' | 'freeform' | 'none'.
-    page_num   — integer page number when part_kind == 'page', else None.
-    freeform_role — unrecognised suffix kept as a role, per TOOLING §6.
-    is_crop    — True if a '-crop' derivative-detail suffix was stripped.
+    base_id    - the stem with all recognised suffixes stripped; the grouping key.
+    variant_id - trailing copy letter ('a', 'b', 'c', …) if present, else None.
+    part_kind  - 'front' | 'back' | 'page' | 'negative' | 'bw' | 'freeform' | 'none'.
+    page_num   - integer page number when part_kind == 'page', else None.
+    freeform_role - unrecognised suffix kept as a role, per TOOLING §6.
+    is_crop    - True if a '-crop' derivative-detail suffix was stripped.
     """
     base_id: str
     variant_id: str | None
@@ -1072,7 +1111,7 @@ def parse_media_filename(stem: str) -> ParsedName:
     Decompose a photo/scan filename stem into base_id + variation metadata.
 
     Suffixes are stripped in a fixed priority order (TOOLING §6) because the
-    grammar is ambiguous if read in any other sequence — e.g. 'portrait_1880b'
+    grammar is ambiguous if read in any other sequence - e.g. 'portrait_1880b'
     must lose the bare trailing letter only after confirming no dash-suffix
     role applies first:
       1. '-crop'                         (stacks on any other suffix)
@@ -1081,11 +1120,11 @@ def parse_media_filename(stem: str) -> ParsedName:
       4. whatever remains is base_id.
 
     A '-negative' filename may still carry a variant letter (e.g.
-    'portrait_1880b-negative') — the parser records it in variant_id, but
+    'portrait_1880b-negative') - the parser records it in variant_id, but
     TOOLING §9 directs the *grouper* to file negatives at the stem level
     regardless of that letter, since a negative is source material for the
     root image, not an A/B print variant. That grouping decision lives in
-    photoindex.py, not here — this function only reports what the filename
+    photoindex.py, not here - this function only reports what the filename
     literally encodes.
     """
     remaining = stem
@@ -1115,7 +1154,7 @@ def parse_media_filename(stem: str) -> ParsedName:
         remaining = _BW_SUFFIX_RE.sub('', remaining)
     else:
         freeform_m = _FREEFORM_ROLE_RE.search(remaining)
-        # A single trailing letter is never a freeform role — it's either a
+        # A single trailing letter is never a freeform role - it's either a
         # documented copy variant ('-b', '034b') or, for an undocumented form
         # like '_a', not a suffix at all (TOOLING §6: only dash or
         # bare-after-digit is copy-variant grammar; underscore-letter must
@@ -1167,7 +1206,7 @@ def grouping_stem(parsed: ParsedName) -> str:
 def variant_role(parsed: ParsedName) -> str | None:
     """Compound role string for a non-primary variation member (TOOLING §6/§9).
 
-    Returns None for a plain scan (no recognised suffix) — the caller treats a
+    Returns None for a plain scan (no recognised suffix) - the caller treats a
     None role as the primary. 'page' carries its number ('page-3'); a freeform
     suffix becomes the role verbatim; '-crop' stacks onto whatever part-kind it
     accompanies ('back-crop') or stands alone ('crop'). Shared by `fha
@@ -1254,7 +1293,7 @@ def is_valid_edtf(s: str | None) -> bool:
 # Loose human date forms the archive understands and the canonical EDTF they map
 # to.  The agent is taught to write canonical EDTF directly (AGENTS.md), so these
 # exist for the OTHER path: a human hand-edits a claim and types "circa 1870" or
-# "1870s".  That is the normal condition of this work, not an error — so the tools
+# "1870s".  That is the normal condition of this work, not an error - so the tools
 # translate the meaning instead of refusing it ("forgiving, not fussy").
 #
 # Each prefix must be followed by whitespace so a bare word never swallows a year
@@ -1288,7 +1327,7 @@ def normalize_date(s: str | None) -> str | None:
 
     Returns the input unchanged when it is ALREADY valid EDTF (the common case),
     so callers can use this as a cheap "is this fine, and if not what did they
-    mean?" check.  Returns None only when no clear reading exists — that is the
+    mean?" check.  Returns None only when no clear reading exists - that is the
     one case a tool should fall back to asking the human a plain question.
 
     Recognised loose forms (everything else → None):
@@ -1564,7 +1603,7 @@ def normalize_place_text(text: str | None) -> str:
     internal whitespace collapsed to single spaces.
 
     Used wherever two claims' `place_text` values need to be compared for
-    "same place" without a shared `place_id` — e.g. "Topeka,  Kansas" and
+    "same place" without a shared `place_id` - e.g. "Topeka,  Kansas" and
     "topeka, kansas" should match.
     """
     return ' '.join((text or '').strip().lower().split())
@@ -1606,7 +1645,7 @@ def is_fixture_path(path: str | Path) -> bool:
     Return True if the path is under example-archive/ or tests/fixtures/.
     Files there may use status: missing-fixture (W-level, not E-level).
 
-    Only an actual `tests/fixtures/` prefix qualifies — an arbitrary directory
+    Only an actual `tests/fixtures/` prefix qualifies - an arbitrary directory
     named `tests` elsewhere in a real archive is NOT fixture space.
     """
     parts = Path(path).parts
@@ -1623,7 +1662,7 @@ def is_template_file(path: str | Path) -> bool:
     archive to teach the by-hand record forms (SPEC §5.2).
 
     Templates live alongside real records (`sources/_TEMPLATE.source.md`,
-    `people/_TEMPLATE.person.md`, …) but are NOT records — they carry placeholder
+    `people/_TEMPLATE.person.md`, …) but are NOT records - they carry placeholder
     IDs and commented examples. Every record walk (lint, index, views, normalize)
     skips them so a template is never parsed as a malformed record or indexed."""
     return Path(path).name.startswith('_TEMPLATE')
@@ -1632,9 +1671,9 @@ def is_template_file(path: str | Path) -> bool:
 def extract_tokens(text: str) -> list[tuple[str, str | None, str | None, tuple[int, int]]]:
     """Return one (id, display, fragment, span) tuple per citation token.
 
-    Recognises every form the grammar accepts — canonical `[[ID]]`,
+    Recognises every form the grammar accepts - canonical `[[ID]]`,
     `[[ID|display]]`, `[[ID#fragment]]`, `[[ID#^block|display]]`, and the legacy
-    single-bracket `[ID]` — in document order, non-overlapping.
+    single-bracket `[ID]` - in document order, non-overlapping.
 
       - `id`        the resolved ID, lowercased.  This is the only load-bearing
                     value; display and fragment NEVER alter it.
@@ -1665,7 +1704,7 @@ def extract_token_ids(text: str) -> list[str]:
     """Return the canonical ID of every citation token in text (lowercased).
 
     One entry per token occurrence, in document order, regardless of bracket
-    count, `|display`, or `#fragment` — `[[S-…|Name]]`, `[[S-…#Claims]]`, and a
+    count, `|display`, or `#fragment` - `[[S-…|Name]]`, `[[S-…#Claims]]`, and a
     legacy `[S-…]` all reduce to the same `s-…`.
     """
     return [tok[0] for tok in extract_tokens(text)]
@@ -1681,13 +1720,13 @@ def extract_bare_ids(text: str) -> list[str]:
 # The `aliases:` field on every record is the universal resolution surface: it
 # carries the record's own canonical ID (so a bare `[[S-…]]` clicks through in
 # Obsidian), any human stem the owner typed (`grandmas-album`), on-demand C-ids,
-# and — for people and places — the display `name` and its variants, so a
+# and - for people and places - the display `name` and its variants, so a
 # hand-typed `[[Ken Smith]]` or `[[Fairview]]` resolves to the right record.
 #
 # These helpers are the read-time, NON-mutating resolver every front door shares.
 # Resolution order is: exact canonical ID → alias string → unresolved (None). An
 # alias that names ≥2 distinct records is a CLASH: it is kept out of the resolve
-# map entirely (so a bare ambiguous name never silently picks a record — a
+# map entirely (so a bare ambiguous name never silently picks a record - a
 # data-integrity rule, SPEC §7) and surfaced separately for the linter to flag.
 
 # A wikilink wrapper around a reference, with optional #fragment and |display.
@@ -1785,7 +1824,7 @@ def build_alias_map(records: Any) -> dict[str, str]:
     """Build the resolve map `alias_lower → canonical_id` from record dicts.
 
     Each record is a dict with at least `id`; optional `aliases`, `name`,
-    `name_variants`, `alt_names`. Only UNAMBIGUOUS aliases are included — a
+    `name_variants`, `alt_names`. Only UNAMBIGUOUS aliases are included - a
     string naming ≥2 records (two "John Smith"s, or a stem colliding with another
     record) is omitted so `resolve_ref` returns None rather than guessing. Use
     `alias_clashes` to enumerate the omitted ambiguous strings."""
@@ -1807,7 +1846,7 @@ def resolve_ref(ref: str, alias_map: dict[str, str]) -> str | None:
     `ref` may carry a wikilink wrapper, a `|display`, or a `#fragment`; all are
     stripped before lookup. Returns the canonical ID, or None when the reference
     matches no alias OR is ambiguous (clashing aliases are absent from the map by
-    construction). Always read-only — never mutates anything."""
+    construction). Always read-only - never mutates anything."""
     key = strip_link_wrapper(ref).lower()
     if not key:
         return None
@@ -1818,7 +1857,7 @@ def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tupl
     """Return one (target, display, fragment, span) tuple per `[[ ]]` wikilink.
 
     Unlike `extract_tokens` (ID tokens only), this also yields name/stem links
-    like `[[Ken Smith]]` whose target is not an ID — the citation indexer and
+    like `[[Ken Smith]]` whose target is not an ID - the citation indexer and
     `fha normalize-links` resolve those through the alias map. `target` is
     returned trimmed but with original case (a name lookup lowercases itself)."""
     out: list[tuple[str, str | None, str | None, tuple[int, int]]] = []
@@ -1930,7 +1969,7 @@ def scan_person_record_ids(archive_root: str | Path) -> set[str]:
     body text elsewhere in the archive.
 
     Narrower than `scan_ids_in_tree`, which matches any bare ID-shaped token
-    anywhere under .md/.yaml/.yml/.txt — fine for `id mint` collision checks,
+    anywhere under .md/.yaml/.yml/.txt - fine for `id mint` collision checks,
     but too permissive for validating that an ID a mutating command is about
     to write actually names a person record (a typo'd or placeholder P-id
     mentioned in a note would otherwise pass).
@@ -1957,7 +1996,7 @@ def find_source_record(archive_root: str | Path, source_id: str) -> dict | None:
 
     Globs `sources/**/*.md` for a file whose `_{S-id}.md` suffix matches
     `source_id` (case-insensitive). The slug and subdirectory are mutable and
-    are not matched — only the suffix carries identity. Used by `fha photoindex`
+    are not matched - only the suffix carries identity. Used by `fha photoindex`
     to resolve `source-people` person references for photos that carry a matching
     `source_id` keyword: the source record's `people:` list is the human-maintained
     statement "this source shows these people," authoritative even when no bare
@@ -2066,7 +2105,7 @@ LEVEL_TO_SEVERITY: dict[str, str] = {'error': 'E', 'warning': 'W'}
 class Message:
     """One human-facing line a Result carries.
 
-    `level` is the severity bucket — 'error', 'warning', or 'info' — so a renderer
+    `level` is the severity bucket - 'error', 'warning', or 'info' - so a renderer
     can count or color without parsing prose.  `text` is the plain-language body.
     `next_step` is the exact command or action that resolves it (AGENTS.md's
     "next-step rule"); it is None for purely informational lines, and for lint
@@ -2155,7 +2194,7 @@ class Result:
     # return a plain payload dict (e.g. `run_report` → {'status', 'markdown', …});
     # exposing `result['markdown']` / `result.get('rows')` lets those callers (and
     # their tests) keep reading the payload by key while run_* now returns a
-    # Result.  Read-only on purpose — building a Result is done through its fields.
+    # Result.  Read-only on purpose - building a Result is done through its fields.
     def __getitem__(self, key: str) -> Any:
         return self.data[key]
 
@@ -2188,7 +2227,7 @@ def _jsonify(value: Any) -> Any:
     `Path`s become slash-normalized strings, objects exposing `as_dict()` (e.g.
     `Finding`) are expanded, and mappings/sequences are coerced element-wise.
     Anything else unrecognized falls back to `str()` so serialization never
-    raises — a best-effort machine-readable view beats a `TypeError` for
+    raises - a best-effort machine-readable view beats a `TypeError` for
     headless callers.
     """
     if value is None or isinstance(value, (bool, int, float, str)):

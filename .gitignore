@@ -5,20 +5,20 @@
 /private/
 private/
 
-# Rebuildable cache — regenerated from the files, never committed
+# Rebuildable cache - regenerated from the files, never committed
 .cache/
 *.sqlite
 *.sqlite-journal
 
-# fha packet output — disposable export copies, never the archive's truth.
-# Anchored to root only — a record tree's own 'out' subdirectory (sources/out/,
+# fha packet output - disposable export copies, never the archive's truth.
+# Anchored to root only - a record tree's own 'out' subdirectory (sources/out/,
 # …) is real archive content and must stay trackable.
 /out/
 
-# fha install / update-tools footprints — these belong inside a *real archive*,
+# fha install / update-tools footprints - these belong inside a *real archive*,
 # never in the public spec repo. Ignored so a stray local test of `fha install`
 # against a checked-out folder can't accidentally commit them. (manifest.json,
-# the committed packing list, is NOT ignored — it is tracked on purpose.)
+# the committed packing list, is NOT ignored - it is tracked on purpose.)
 .plaintext-version
 .plaintext-backup/
 
@@ -38,7 +38,7 @@ dist/
 build/
 *.egg-info/
 
-# Local Claude Code state — machine-specific permissions, never shared.
+# Local Claude Code state - machine-specific permissions, never shared.
 # (Tracked .claude/ content such as .claude/skills/ stays committed.)
 .claude/settings.local.json
 

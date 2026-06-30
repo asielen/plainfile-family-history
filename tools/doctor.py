@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-doctor.py — fha doctor: archive health check.
+doctor.py - fha doctor: archive health check.
 
   fha doctor [--root PATH]
 
 Runs a structured suite of checks and prints a health report.  Safe to run on
-a fresh archive before any indexes are built — absent caches contribute exit
+a fresh archive before any indexes are built - absent caches contribute exit
 code 1 (warning), not 2 (error).  Design decision D5, TOOLING §3a.
 
 Checks (in order):
@@ -40,7 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 try:
-    import yaml  # noqa: F401 — imported for side-effect check; _lib also uses it
+    import yaml  # noqa: F401 - imported for side-effect check; _lib also uses it
 except ImportError:
     print(
         'ERROR: PyYAML is required but not installed. '
@@ -79,20 +79,20 @@ configure_utf8_stdout()
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Freshness helpers (newest_record_mtime imported from _lib)
-#    _fmt_delta                — format a timedelta as a readable lag string
-#    _index_freshness          — .cache/index.sqlite age vs newest record
-#    _photoindex_freshness     — .cache/photos.sqlite age vs photos root
+#    _fmt_delta                - format a timedelta as a readable lag string
+#    _index_freshness          - .cache/index.sqlite age vs newest record
+#    _photoindex_freshness     - .cache/photos.sqlite age vs photos root
 #
 #  Count helpers
-#    _counts_from_index        — SQL queries against the fresh index
-#    _counts_from_scan         — quick file walk when index is absent or stale
+#    _counts_from_index        - SQL queries against the fresh index
+#    _counts_from_scan         - quick file walk when index is absent or stale
 #
 #  Top-level
-#    run_doctor                — orchestrate all checks; return a Result (no printing)
-#    _cmd_doctor               — render a doctor Result to stdout → exit code
-#    register                  — attach 'doctor' to the main fha parser
-#    _run_doctor               — argparse → run_doctor → _cmd_doctor bridge
-#    _standalone_main          — for `python tools/doctor.py` direct invocation
+#    run_doctor                - orchestrate all checks; return a Result (no printing)
+#    _cmd_doctor               - render a doctor Result to stdout → exit code
+#    register                  - attach 'doctor' to the main fha parser
+#    _run_doctor               - argparse → run_doctor → _cmd_doctor bridge
+#    _standalone_main          - for `python tools/doctor.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -139,7 +139,7 @@ def _index_freshness(archive_root: Path) -> tuple[str, str]:
 
     record_mtime = newest_record_mtime(archive_root)
     if record_mtime == 0.0:
-        return ('fresh', '')   # no records yet — trivially up-to-date
+        return ('fresh', '')   # no records yet - trivially up-to-date
 
     if mtime < record_mtime:
         return ('stale', _fmt_delta(record_mtime - mtime))
@@ -315,7 +315,7 @@ def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config:
 
     # ── 2. Mapped roots reachable ───────────────────────────────────────────
     # Fixture archives (example-archive/, tests/) may legitimately have missing
-    # roots (no photos dir yet, missing-fixture assets) — same grace given to
+    # roots (no photos dir yet, missing-fixture assets) - same grace given to
     # E011 in lint.  Missing roots in fixture context → warning, not error.
     roots = get_roots(fha_config)
     is_fixture = is_fixture_path(archive_root)
@@ -326,7 +326,7 @@ def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config:
             if os.path.isdir(resolved):
                 print(f'  {alias} → {resolved}  {_OK}')
             else:
-                suffix = '  (fixture — expected)' if is_fixture else '  not reachable'
+                suffix = '  (fixture - expected)' if is_fixture else '  not reachable'
                 print(f'  {alias} → {resolved}  {_BAD}{suffix}')
                 worst = max(worst, EXIT_WARNINGS if is_fixture else EXIT_ERRORS)
         print()
@@ -349,10 +349,10 @@ def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config:
     if idx_status == 'fresh':
         print(f'index: {_OK} fresh')
     elif idx_status == 'stale':
-        print(f'index: {_WARN} stale by {idx_delta} — run fha index')
+        print(f'index: {_WARN} stale by {idx_delta} - run fha index')
         worst = max(worst, EXIT_WARNINGS)
     else:
-        print('index: not yet built — run fha index')
+        print('index: not yet built - run fha index')
         worst = max(worst, EXIT_WARNINGS)
 
     # ── 6. Photoindex freshness ─────────────────────────────────────────────
@@ -360,13 +360,13 @@ def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config:
     if photo_status == 'fresh':
         print(f'photoindex: {_OK} fresh')
     elif photo_status == 'stale':
-        print(f'photoindex: {_WARN} stale by {photo_delta} — run fha photoindex')
+        print(f'photoindex: {_WARN} stale by {photo_delta} - run fha photoindex')
         worst = max(worst, EXIT_WARNINGS)
     elif photo_status == 'unreadable':
-        print(f'photoindex: {_BAD} unreadable/corrupt — rebuild with fha photoindex')
+        print(f'photoindex: {_BAD} unreadable/corrupt - rebuild with fha photoindex')
         worst = max(worst, EXIT_WARNINGS)
     else:
-        print('photoindex: not yet built — run fha photoindex')
+        print('photoindex: not yet built - run fha photoindex')
         worst = max(worst, EXIT_WARNINGS)
     print()
 
@@ -415,12 +415,12 @@ def _legacy_doctor_report_before_next_step_audit(archive_root: Path, fha_config:
         counts = _counts_from_index(archive_root)
         if counts is None:
             counts = _counts_from_scan(archive_root)
-            label = 'counts (scanned — index unreadable):'
+            label = 'counts (scanned - index unreadable):'
         else:
             label = 'counts (from index):'
     else:
         counts = _counts_from_scan(archive_root)
-        label = 'counts (scanned — index not fresh):'
+        label = 'counts (scanned - index not fresh):'
 
     print(label)
     print(f'  sources restricted:  {counts["restricted"]}')
@@ -457,7 +457,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     things and returns them in the Result for `_cmd_doctor` to render:
       - data['lines']:  the exact report text, one entry per output line (a blank
         entry is a blank line), so the human report renders byte-for-byte as
-        before — the worst-code ladder and the one-next-step-per-line voice are
+        before - the worst-code ladder and the one-next-step-per-line voice are
         unchanged.
       - data['checks']: each check as {id, status, detail, next_step}, so a
         headless consumer can read the health report as data instead of parsing
@@ -480,7 +480,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
 
     if wc_mode:
         lines.append(
-            '[working copy] photos and documents live on the main machine — '
+            '[working copy] photos and documents live on the main machine - '
             'asset features are paused here'
         )
         lines.append('')
@@ -502,10 +502,10 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
                 checks.append({'id': f'root:{alias}', 'status': 'ok', 'detail': str(resolved), 'next_step': None})
             elif wc_mode and alias in ('photos', 'documents'):
                 lines.append(
-                    f'  {alias} -> {resolved}  (not present — assumed on main machine)'
+                    f'  {alias} -> {resolved}  (not present - assumed on main machine)'
                 )
                 checks.append({'id': f'root:{alias}', 'status': 'info',
-                               'detail': f'{resolved} absent — working-copy mode', 'next_step': None})
+                               'detail': f'{resolved} absent - working-copy mode', 'next_step': None})
             elif is_fixture:
                 lines.append(
                     f'  {alias} -> {resolved}  {_WARN} fixture path is missing  '
@@ -540,7 +540,7 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
     checks.append({'id': 'pyyaml', 'status': 'ok', 'detail': 'installed', 'next_step': None})
 
     # Publication deps (fha site). Jinja2 is required for `fha site`, like
-    # exiftool is for photos — its absence is a warning, not a hard error,
+    # exiftool is for photos - its absence is a warning, not a hard error,
     # because the rest of the suite runs without it. Pillow is purely optional
     # (standalone-site image derivatives) so its absence is informational only.
     import importlib.util as _ilu
@@ -608,10 +608,10 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         worst = max(worst, EXIT_WARNINGS)
     elif wc_mode:
         lines.append(
-            f'photoindex: (paused in working-copy mode — run `{photoindex_cmd}` on the main machine)'
+            f'photoindex: (paused in working-copy mode - run `{photoindex_cmd}` on the main machine)'
         )
         checks.append({'id': 'photoindex', 'status': 'info',
-                       'detail': 'paused — working-copy mode', 'next_step': None})
+                       'detail': 'paused - working-copy mode', 'next_step': None})
     elif photo_status == 'fresh':
         lines.append(f'photoindex: {_OK} fresh at {photo_path}  next: no action needed')
         checks.append({'id': 'photoindex', 'status': 'ok', 'detail': 'fresh', 'next_step': None})
@@ -774,7 +774,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     """Register 'doctor' onto the main fha parser."""
     p = subparsers.add_parser(
         'doctor',
-        help='Archive health check — what is wrong with this archive?',
+        help='Archive health check - what is wrong with this archive?',
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -790,7 +790,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
     fha_yaml_path = archive_root / 'fha.yaml'
     if not fha_yaml_path.exists():
-        print(f'ERROR: {archive_root}/fha.yaml not found — is this an archive root?',
+        print(f'ERROR: {archive_root}/fha.yaml not found - is this an archive root?',
               file=sys.stderr)
         return EXIT_ERRORS
 

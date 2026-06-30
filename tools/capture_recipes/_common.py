@@ -28,7 +28,7 @@ _NAME_RE = re.compile(r"^[A-Za-z][A-Za-z.'\-]*(?:\s+[A-Za-z.'\-]+)+$")
 _YEAR_RE = re.compile(r'\b(1[5-9]\d{2}|20\d{2})\b')
 
 # A label cell ending in "name" (e.g. "Father's Name", "Spouse's Name") marks a
-# label/value row, not a person row — the value cell holds the actual name.
+# label/value row, not a person row - the value cell holds the actual name.
 _NAME_LABEL_RE = re.compile(r'\bname\b', re.IGNORECASE)
 
 
@@ -50,7 +50,7 @@ def people_from_table(rows: list[list[str]], *, name_col: int = 0, limit: int = 
 
     A row shaped as a label/value pair (`["Father's Name", "William Smith"]`,
     as in FamilySearch's record-detail fact tables) is detected by its label
-    cell ending in "name" and the value cell is read instead — otherwise the
+    cell ending in "name" and the value cell is read instead - otherwise the
     label itself would pass `looks_like_name` and be mistaken for a person.
     """
     people: list[str] = []

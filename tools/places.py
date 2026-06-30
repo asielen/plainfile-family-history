@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-places.py — fha places lint / fha places candidates: place registry hygiene
+places.py - fha places lint / fha places candidates: place registry hygiene
 and recurrence detection (TOOLING §10, SPEC §15).
 
   fha places lint [--root PATH]
@@ -14,7 +14,7 @@ hygiene:
   - duplicate place names (case-folded across `name` + `alt_names`)
   - dangling `within:` links (target L-id not in the registry)
   - cyclic `within:` chains
-  - a `within:` link whose source is itself a settlement — i.e. it is already
+  - a `within:` link whose source is itself a settlement - i.e. it is already
     the target of some other place's `within:` link, so it cannot also point
     further up the containment chain (SPEC §15: settlement-to-jurisdiction
     links live only in dated `history:` strings, never in `within:`)
@@ -33,7 +33,7 @@ for registry places that lack coordinates, using a one-time **offline GeoNames**
 dump (`cities15000.txt`, downloaded into `.cache/geonames/` unless `--offline`):
 no live API. A place's `name` + `hierarchy` tokens are matched against the
 gazetteer; only a *single* high-confidence candidate is proposed (place identity
-is a research judgment, not a string match — ambiguous matches are skipped, not
+is a research judgment, not a string match - ambiguous matches are skipped, not
 guessed), and **every write requires interactive `[y/N]` confirmation**. Writes
 edit `places/places.yaml` surgically (the matched block only) so the file's hand
 comments and unrelated entries are preserved without needing `ruamel.yaml`.
@@ -46,18 +46,18 @@ CODE MAP
     run_lint
 
   Candidates
-    _expand_abbreviations, _candidate_key  — normalization for clustering
-    _place_text_candidates                 — unlinked place_text clusters
-    _haversine_meters, _gps_clusters        — photo-GPS clusters
+    _expand_abbreviations, _candidate_key  - normalization for clustering
+    _place_text_candidates                 - unlinked place_text clusters
+    _haversine_meters, _gps_clusters        - photo-GPS clusters
     run_candidates
 
   Geocode
-    _US_STATE_CODES, _country_code_of      — hierarchy-token → code helpers
-    GeoRow, _load_gazetteer                — parse the GeoNames dump
-    _download_gazetteer                    — one-time offline-dump fetch
-    _match_place                           — name+hierarchy → unique hit / ambiguous / none
-    _apply_geocode_to_yaml                 — surgical places.yaml block edit
-    run_geocode                            — gather candidates, match, (confirm) write
+    _US_STATE_CODES, _country_code_of      - hierarchy-token → code helpers
+    GeoRow, _load_gazetteer                - parse the GeoNames dump
+    _download_gazetteer                    - one-time offline-dump fetch
+    _match_place                           - name+hierarchy → unique hit / ambiguous / none
+    _apply_geocode_to_yaml                 - surgical places.yaml block edit
+    run_geocode                            - gather candidates, match, (confirm) write
 
   CLI
     _cmd_places_lint, _cmd_places_candidates, _cmd_places_geocode,
@@ -165,7 +165,7 @@ def _within_map(conn: sqlite3.Connection) -> tuple[dict[str, str | None], list[F
         else:
             findings.append(Finding(
                 'E', 'PL006', 'places/places.yaml',
-                f'{fmt_id_display(row["id"])} has a non-string within: value ({raw!r}) — within: must be an L-id string',
+                f'{fmt_id_display(row["id"])} has a non-string within: value ({raw!r}) - within: must be an L-id string',
             ))
             rows[row['id']] = None
     return rows, findings
@@ -223,7 +223,7 @@ def _lint_within_on_settlement(rows: dict[str, str | None]) -> list[Finding]:
             findings.append(Finding(
                 'E', 'PL005', 'places/places.yaml',
                 f'{fmt_id_display(pid)} is itself a within: target (a settlement) but also '
-                f'links within: {fmt_id_display(target)} — settlement-to-jurisdiction containment '
+                f'links within: {fmt_id_display(target)} - settlement-to-jurisdiction containment '
                 'belongs in history:, not within:',
             ))
     return findings
@@ -353,7 +353,7 @@ def _gps_clusters(
     """
     Cluster geotagged photos (>= threshold within ~150m of each other) that
     have no known place within that same radius. Returns [] when the photo
-    index is absent/unreadable/corrupt — this is an optional, best-effort
+    index is absent/unreadable/corrupt - this is an optional, best-effort
     detector, not a hard dependency (mirrors `fha packet --no-photos`'s
     treatment of an unusable photoindex as "skip", not "fail").
     """
@@ -362,7 +362,7 @@ def _gps_clusters(
         return []
     if status == 'stale':
         print(
-            'WARNING: photo index may be stale — skipping GPS cluster detection. '
+            'WARNING: photo index may be stale - skipping GPS cluster detection. '
             'Run `fha photoindex` to refresh.',
             file=sys.stderr,
         )
@@ -388,7 +388,7 @@ def _gps_clusters(
     finally:
         conn.close()
 
-    # Drop points already near a known place — only "no known L-id coords
+    # Drop points already near a known place - only "no known L-id coords
     # nearby" photos are candidates for a *new* place.
     far_points = []
     for path, lat, lon in points:
@@ -436,7 +436,7 @@ def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> 
 
     `data` is {'status': 'ok'|'failed', 'groups': [str, ...],
     'place_text_groups': [dict, ...], 'gps_clusters': [dict, ...]}.  `groups` is a
-    flat list of pre-formatted summary strings — the shape `fha report`'s §6b
+    flat list of pre-formatted summary strings - the shape `fha report`'s §6b
     section expects (it just prints `f"- {g}"` for each).  Result exposes
     dict-style access (_lib.py), so callers keep reading `result['groups']`.
     """
@@ -469,10 +469,10 @@ def run_candidates(archive_root: Path, fha_config: dict, threshold: int = 3) -> 
     groups = []
     for g in place_text_groups:
         spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
-        groups.append(f"{g['label']} — {g['claim_count']} claim(s), {spread}")
+        groups.append(f"{g['label']} - {g['claim_count']} claim(s), {spread}")
     for c in gps_clusters:
         groups.append(
-            f"GPS cluster near {c['lat']:.4f},{c['lon']:.4f} — {c['photo_count']} photo(s), no known place nearby"
+            f"GPS cluster near {c['lat']:.4f},{c['lon']:.4f} - {c['photo_count']} photo(s), no known place nearby"
         )
 
     return Result(exit_code=EXIT_CLEAN, data={
@@ -490,7 +490,7 @@ _GEONAMES_MEMBER = 'cities15000.txt'
 
 # US state name → GeoNames admin1 code (the two-letter postal code used in the
 # cities dump). Lets "Fairview, Kansas" narrow to admin1 KS when several
-# Fairviews share a name — without this, multi-state name collisions stay
+# Fairviews share a name - without this, multi-state name collisions stay
 # (correctly) ambiguous and are skipped rather than guessed.
 _US_STATE_CODES = {
     'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR',
@@ -541,7 +541,7 @@ def _load_gazetteer(path: Path) -> list[GeoRow]:
     """Parse a GeoNames cities dump (tab-separated) into GeoRow records.
 
     Malformed lines (short column count, non-numeric coords) are skipped rather
-    than aborting the load — the dump is a disposable cache, not archive truth.
+    than aborting the load - the dump is a disposable cache, not archive truth.
     """
     rows: list[GeoRow] = []
     try:
@@ -575,7 +575,7 @@ def _load_gazetteer(path: Path) -> list[GeoRow]:
 def _download_gazetteer(dest_dir: Path) -> tuple[Path | None, str | None]:
     """Download + unzip the GeoNames cities dump into dest_dir.
 
-    Returns (path, None) on success or (None, error_message) on any failure —
+    Returns (path, None) on success or (None, error_message) on any failure -
     no exception escapes, so an offline run or a network hiccup degrades to a
     clear message instead of a traceback.
     """
@@ -596,9 +596,9 @@ def _match_place(name: str, hierarchy: str | None, gazetteer: list[GeoRow]):
     """Match a registry place against the gazetteer.
 
     Returns:
-      GeoRow       — a single high-confidence hit, OK to propose
-      'ambiguous'  — more than one plausible hit; a human must decide
-      None         — no plausible hit
+      GeoRow       - a single high-confidence hit, OK to propose
+      'ambiguous'  - more than one plausible hit; a human must decide
+      None         - no plausible hit
     """
     name_norm = normalize_place_text(name)
     if not name_norm:
@@ -805,7 +805,7 @@ def run_geocode(
     if not gaz_path.exists():
         if offline:
             messages.append(
-                'No GeoNames data cached and --offline set — nothing to match against. '
+                'No GeoNames data cached and --offline set - nothing to match against. '
                 'Re-run without --offline to download the gazetteer once.'
             )
             return _geo_result('no-gazetteer', 0, messages)
@@ -827,11 +827,11 @@ def run_geocode(
         pid = r['id']
         result = _match_place(r['name'], r['hierarchy'], gazetteer)
         if result is None:
-            messages.append(f'{fmt_id_display(pid)} ({r["name"]}): no gazetteer match — skipped.')
+            messages.append(f'{fmt_id_display(pid)} ({r["name"]}): no gazetteer match - skipped.')
             continue
         if result == 'ambiguous':
             messages.append(
-                f'{fmt_id_display(pid)} ({r["name"]}): multiple gazetteer candidates — '
+                f'{fmt_id_display(pid)} ({r["name"]}): multiple gazetteer candidates - '
                 'skipped (resolve by hand).'
             )
             continue
@@ -855,7 +855,7 @@ def run_geocode(
             written += 1
             continue
         if not confirm(prompt):
-            messages.append(f'{fmt_id_display(pid)}: declined — not written.')
+            messages.append(f'{fmt_id_display(pid)}: declined - not written.')
             continue
 
         try:
@@ -866,7 +866,7 @@ def run_geocode(
         new_text, block_changed = _apply_geocode_to_yaml(text, pid, geo.lat, geo.lon, alt_names)
         if not block_changed:
             messages.append(
-                f'{fmt_id_display(pid)}: block not found in places.yaml — skipped.'
+                f'{fmt_id_display(pid)}: block not found in places.yaml - skipped.'
             )
             continue
         try:
@@ -944,7 +944,7 @@ def _cmd_places_candidates(args: argparse.Namespace) -> int:
         print(f'Found {len(place_text_groups)} candidate place-text cluster(s):')
         for g in place_text_groups:
             spread = f"{g['date_min']}/{g['date_max']}" if g['date_min'] or g['date_max'] else 'no dates'
-            print(f"  {g['label']} — {g['claim_count']} claim(s), {spread}")
+            print(f"  {g['label']} - {g['claim_count']} claim(s), {spread}")
             for cid in g['claim_ids']:
                 print(f"    {fmt_id_display(cid)}")
     else:
@@ -954,7 +954,7 @@ def _cmd_places_candidates(args: argparse.Namespace) -> int:
     if gps_clusters:
         print(f'\nFound {len(gps_clusters)} candidate GPS cluster(s):')
         for c in gps_clusters:
-            print(f"  {c['lat']:.4f},{c['lon']:.4f} — {c['photo_count']} photo(s)")
+            print(f"  {c['lat']:.4f},{c['lon']:.4f} - {c['photo_count']} photo(s)")
             for p in c['paths']:
                 print(f"    {p}")
     else:

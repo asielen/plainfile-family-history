@@ -111,6 +111,12 @@ genealogist (AGENTS.md → "Who you serve"). Hold every line he can see to this 
 Complex things expressed plainly - not plain things dressed up to seem complex.
 A reader picking up the file cold should feel the code is on their side.
 
+**No em dashes in code files (owner preference).** Never write an em dash (-) anywhere in a
+source file - not in comments, docstrings, string literals, or generated output. Use a single
+hyphen with surrounding spaces ( - ) instead. This applies to every file under `tools/` and
+`tests/`. Existing em dashes are legacy; convert them to ` - ` when you edit the line they sit
+on, but do not churn files solely to replace them.
+
 *Module docstrings:* every file gets an architecture overview: what this file is for,
 how it fits into the larger system, and the shape of data flowing through it.
 For files with ≥5 non-trivial functions, include a code-map comment block that lists

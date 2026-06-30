@@ -23,6 +23,11 @@ discontinued. Here's the whole thing, drawer by drawer.
 > cabinet - they're the big, heavy items. `fha.yaml` is the note that says where they went. The
 > light, durable paper - `sources/`, `people/`, `places/`, `notes/` - stays in the cabinet.
 
+A couple divider's label also lists that couple's children, and it quietly flags anything worth
+seeing at a glance - a child who joined by adoption rather than birth (`Ruth (adopted)`), or a
+person who belongs to more than one branch and is filed under another divider (`Thomas Hartley
+(also #128 - see 040)`). The assistant keeps these labels fresh; you never edit them by hand.
+
 ---
 
 ## The two habits that make it work

@@ -1,9 +1,9 @@
 """
-Tests for tools/scaffold.py — `fha install` and `fha update-tools` (BUILD.md M9).
+Tests for tools/scaffold.py - `fha install` and `fha update-tools` (BUILD.md M9).
 
 Two layers:
   1. A manifest-sync guard that recomputes the operating-layer manifest from the
-     real repo and asserts the committed manifest.json still matches it — so a PR
+     real repo and asserts the committed manifest.json still matches it - so a PR
      that changes a tool/doc/skeleton file but forgets to regenerate fails here.
   2. Behavior tests against a small, hand-built FAKE repo (no .git/, proving the
      git-free / zip install path) and throwaway archives, exercising install,
@@ -40,7 +40,7 @@ def _make_fake_repo(repo: Path) -> Path:
     """Build a minimal public-repo clone: 3 operating files + 3 skeleton seeds.
 
     Deliberately tiny so the tests are fast and every file's role is obvious. No
-    .git/ is created anywhere — install/update working against this directory is
+    .git/ is created anywhere - install/update working against this directory is
     itself the proof of the zip-based, git-free path (BUILD.md M9.1).
     """
     _write(repo / 'SPEC.md', '# SPEC\n\n**Version 9.9 - 2026-01-01**\n\nbody\n')
@@ -52,7 +52,7 @@ def _make_fake_repo(repo: Path) -> Path:
     _write(repo / 'archive-template' / 'fha.yaml', 'roots:\n  photos: photos\n')
     _write(repo / 'archive-template' / 'places' / 'places.yaml', '# places\n')
     _write(repo / 'archive-template' / 'sources' / '.gitkeep', '')
-    _write(repo / 'archive-template' / 'README.md', 'template readme — excluded\n')
+    _write(repo / 'archive-template' / 'README.md', 'template readme - excluded\n')
     scaffold._write_manifest(repo)
     return repo
 
@@ -69,7 +69,7 @@ class ManifestSyncTest(unittest.TestCase):
         self.assertEqual(committed['spec_version'], regenerated['spec_version'])
         self.assertEqual(
             committed['files'], regenerated['files'],
-            'manifest.json is out of date — run '
+            'manifest.json is out of date - run '
             '`python tools/scaffold.py write-manifest --repo .` and commit the result.',
         )
 
@@ -228,7 +228,7 @@ class UpdateToolsTest(unittest.TestCase):
 
     def test_skeleton_files_are_never_touched(self):
         # The critical safety property: a user's fha.yaml/places.yaml is data, not
-        # operating layer — update-tools must leave it exactly as-is, even if
+        # operating layer - update-tools must leave it exactly as-is, even if
         # upstream's template changed.
         _write(self.archive / 'fha.yaml', 'roots:\n  photos: D:/MyPhotos\n')
         _write(self.archive / 'places' / 'places.yaml', '- id: L-abc\n  name: MyTown\n')
@@ -383,7 +383,7 @@ class CmdErrorPathTest(unittest.TestCase):
         empty = self.tmp / 'not-an-archive'
         empty.mkdir()
         # find_archive_root walks up from CWD; force the no-root branch by passing
-        # a root that exists but isn't an archive — _cmd uses the explicit root, so
+        # a root that exists but isn't an archive - _cmd uses the explicit root, so
         # update runs and fails to find a manifest? No: it runs against that root.
         # Instead drop --root and patch find_archive_root to None.
         with mock.patch('scaffold.find_archive_root', return_value=None):

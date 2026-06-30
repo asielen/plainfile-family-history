@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-process.py — fha process: Stage A of the intake pipeline.
+process.py - fha process: Stage A of the intake pipeline.
 
   fha process <file> [--type TYPE] [--title "…"] [--date DATE] [--slug SLUG]
                                                                  Process one asset
@@ -11,15 +11,15 @@ This is the *deterministic* stage of processing an original into a Source
 (SPEC §12.1, TOOLING §6): it mints an S-id, marks the file's identity, and
 scaffolds the §14 source record with an empty `## Claims` block. The AI draft
 pass (read the file, resolve names/places, draft `suggested` claims) and the
-human review pass are Stages B and C — the `process-source` and `review-claims`
-skills — not this tool.
+human review pass are Stages B and C - the `process-source` and `review-claims`
+skills - not this tool.
 
 Two roots, two identity rules (the spine of SPEC §12.1):
 
-  * Documents root — the file is RENAMED in place to `{slug}_{S-id}.{ext}`;
+  * Documents root - the file is RENAMED in place to `{slug}_{S-id}.{ext}`;
     its prior name is preserved as `original_filename` provenance. Filename
     only; never content, never location.
-  * Photos root — files are NEVER renamed (a rename breaks the Lightroom
+  * Photos root - files are NEVER renamed (a rename breaks the Lightroom
     catalog). Identity travels in the embedded `SOURCE: S-xxxx` keyword
     (written via exiftool) plus the record's `files:` inventory.
 
@@ -33,19 +33,19 @@ state (AGENTS.md contract). `--dry-run` performs no effect at all.
 
 Passing a *directory* selects one of two folder modes:
 
-  * Bundle folder (M7.4) — a folder containing a bare `notes.md`. It is a
+  * Bundle folder (M7.4) - a folder containing a bare `notes.md`. It is a
     source-stub *bundle* (SPEC §12.1): one S-id covers every asset inside, each
     filed to its proper root (documents renamed, photos moved but never
     renamed), one record scaffolded from the notes, and the now-empty folder
     deleted. The whole bundle becomes one source.
-  * Triage folder (M7.3) — any other folder (typically a `photos/` subfolder).
+  * Triage folder (M7.3) - any other folder (typically a `photos/` subfolder).
     Its unprocessed photos are grouped into variation sets, ranked by the same
     evidence signals `fha photoindex triage` uses, and offered for selection;
     the chosen sets are processed one by one.
 
 **Tier-1 variation detection** also runs when a single photo is processed: its
 directory is scanned for siblings sharing a filename base_id (front/back, copy
-letters, crops, negatives, booklet pages — the TOOLING §6 grammar), and if any
+letters, crops, negatives, booklet pages - the TOOLING §6 grammar), and if any
 are found the user is asked whether they are *one* source (shared S-id) or
 *separate* ones. The grouping grammar is shared with `fha photoindex` through
 `_lib` so both tools agree on what counts as a variation set.
@@ -54,49 +54,49 @@ are found the user is asked whether they are *one* source (shared S-id) or
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Slug / type derivation
-#    _slugify                  — text → lowercase-hyphenated slug
-#    _derive_slug              — pick the slug from --slug / --title / filename stem
+#    _slugify                  - text → lowercase-hyphenated slug
+#    _derive_slug              - pick the slug from --slug / --title / filename stem
 #
 #  Asset classification
-#    _is_under                 — is a path inside a (resolved) root directory?
-#    classify_asset            — 'photo' | 'document' for a file + fha.yaml
-#    _filename_has_source_id   — does a filename already carry _{S-id}? (refuse)
+#    _is_under                 - is a path inside a (resolved) root directory?
+#    classify_asset            - 'photo' | 'document' for a file + fha.yaml
+#    _filename_has_source_id   - does a filename already carry _{S-id}? (refuse)
 #
-#  exiftool seams (monkeypatched in tests — process never imports photoindex)
-#    _run_exiftool_read_keywords — read embedded Keywords/Subject of one file
-#    _run_exiftool_embed_source  — write `SOURCE: {S-id}` into one file
-#    _run_exiftool_remove_source — remove a just-written `SOURCE: {S-id}`
-#    _read_source_keyword        — the S-id embedded in a photo, or None
+#  exiftool seams (monkeypatched in tests - process never imports photoindex)
+#    _run_exiftool_read_keywords - read embedded Keywords/Subject of one file
+#    _run_exiftool_embed_source  - write `SOURCE: {S-id}` into one file
+#    _run_exiftool_remove_source - remove a just-written `SOURCE: {S-id}`
+#    _read_source_keyword        - the S-id embedded in a photo, or None
 #
 #  Record scaffolding
-#    _scaffold_text            — the §14 source-record template as text
-#    _render_scaffold_file_entry — one files: list item (file/role/copy/…) as lines
-#    _find_record_for_sid      — locate sources/**/*_{S-id}.md
-#    _append_file_entry        — surgically add a files: list item to a record
+#    _scaffold_text            - the §14 source-record template as text
+#    _render_scaffold_file_entry - one files: list item (file/role/copy/…) as lines
+#    _find_record_for_sid      - locate sources/**/*_{S-id}.md
+#    _append_file_entry        - surgically add a files: list item to a record
 #
 #  Source-stub sidecar (*.notes.md) + bundle notes.md
-#    _find_sidecar             — the {stem}.notes.md beside an asset, if any
-#    _companion_for_sidecar    — resolve direct sidecar input to its asset
-#    _read_sidecar             — its hint frontmatter + prose body
+#    _find_sidecar             - the {stem}.notes.md beside an asset, if any
+#    _companion_for_sidecar    - resolve direct sidecar input to its asset
+#    _read_sidecar             - its hint frontmatter + prose body
 #    _bundle_file_hints        - bundle notes per-file role/copy/primary hints
 #
 #  Variation detection (M7.3, shared grammar via _lib)
-#    _photo_variation_siblings — photos in a dir sharing one base_id
-#    _variation_role_copy      — (role, copy) annotation for a grouped member
-#    _batch_type               — A–D label for a multi-image set (informational)
-#    _run_exiftool_read_meta   — caption/date/keyword signals for triage scoring
-#    _score_photo_group        — TOOLING §15b evidence score (mirrors photoindex)
+#    _photo_variation_siblings - photos in a dir sharing one base_id
+#    _variation_role_copy      - (role, copy) annotation for a grouped member
+#    _batch_type               - A–D label for a multi-image set (informational)
+#    _run_exiftool_read_meta   - caption/date/keyword signals for triage scoring
+#    _score_photo_group        - TOOLING §15b evidence score (mirrors photoindex)
 #
 #  Top-level operations
-#    process_document          — M7.1: rename + scaffold (transactional)
-#    process_photo             — M7.2: keyword + scaffold (transactional)
-#    process_photo_group       — M7.3: one S-id over a variation set (transactional)
-#    process_folder            — M7.3: triage a folder, process selected groups
-#    process_bundle            — M7.4: dissolve a notes.md bundle into one source
-#    attach_more               — M7.2: attach a file to an existing source
+#    process_document          - M7.1: rename + scaffold (transactional)
+#    process_photo             - M7.2: keyword + scaffold (transactional)
+#    process_photo_group       - M7.3: one S-id over a variation set (transactional)
+#    process_folder            - M7.3: triage a folder, process selected groups
+#    process_bundle            - M7.4: dissolve a notes.md bundle into one source
+#    attach_more               - M7.2: attach a file to an existing source
 #
 #  CLI
-#    _prompt                   — interactive input seam (monkeypatched in tests)
+#    _prompt                   - interactive input seam (monkeypatched in tests)
 #    register / _run_process / _standalone_main
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ configure_utf8_stdout()
 _DEFAULT_DOCUMENT_TYPE = 'other'
 
 # Photos always scaffold to sources/photos/ with source_type 'photo' regardless
-# of any --type — the directory is plural by SPEC convention, the type singular.
+# of any --type - the directory is plural by SPEC convention, the type singular.
 _PHOTO_DIR = 'photos'
 _PHOTO_SOURCE_TYPE = 'photo'
 
@@ -231,10 +231,10 @@ def classify_asset(file_path: Path, fha_config: dict, archive_root: Path) -> str
     """Return 'photo' or 'document' for an asset file (TOOLING §6).
 
     The documents root takes precedence: a file filed there is a document even
-    if it has a photo extension (a scanned record saved as `.jpg`) — the
+    if it has a photo extension (a scanned record saved as `.jpg`) - the
     documents-root identity rule (rename + provenance) applies to whatever was
     deliberately filed there. Otherwise a file is a photo if it has a known
-    photo extension OR lives under the resolved photos root — the latter
+    photo extension OR lives under the resolved photos root - the latter
     catches odd-extension scans filed in the photo library. Everything else is
     a document.
     """
@@ -262,14 +262,14 @@ def _filename_has_source_id(file_path: Path) -> str | None:
 # ── exiftool seams ────────────────────────────────────────────────────────────
 #
 # process.py keeps its own thin exiftool wrappers rather than importing
-# photoindex's (tools never import tools — TOOLING §15). Tests monkeypatch these
+# photoindex's (tools never import tools - TOOLING §15). Tests monkeypatch these
 # two functions to exercise the photo paths without exiftool on PATH.
 
 def _run_exiftool_read_keywords(file_path: Path) -> list[str]:
     """Return the embedded Keywords/Subject of one file (union, order-preserving).
 
     Used only to detect an already-embedded `SOURCE:` keyword before processing
-    a photo. Raises RuntimeError if exiftool is missing — that is an environment
+    a photo. Raises RuntimeError if exiftool is missing - that is an environment
     problem the caller surfaces, distinct from "no keyword present".
     """
     cmd = ['exiftool', '-j', '-Keywords', '-Subject', str(file_path)]
@@ -304,7 +304,7 @@ def _run_exiftool_embed_source(
     """Append `SOURCE: {s_id}` (and any extra keywords) to a photo's Keywords.
 
     Uses exiftool's `+=` list-append so existing keywords (DATE:, P-ids) are
-    preserved — the only sanctioned write to a photo original (AGENTS.md: photos
+    preserved - the only sanctioned write to a photo original (AGENTS.md: photos
     are never renamed, but spec'd keyword writes through fha tools are allowed).
     `extra_keywords` carries bare P-id strings (e.g. `['P-de957bcda1']`) added
     in the same call so SOURCE: and people are atomic: one exiftool invocation
@@ -360,8 +360,8 @@ def _yaml_inline(value: str) -> str:
 
     The scaffold is built as text (not `yaml.safe_dump` on the whole record) to
     keep the SPEC §14 field order and the literal ```yaml fence a human reads.
-    But free-form values — a `--title`, a filename preserved as
-    `original_filename`, a `--more` role, an alias path — can carry
+    But free-form values - a `--title`, a filename preserved as
+    `original_filename`, a `--more` role, an alias path - can carry
     YAML-significant characters (`: `, a leading `-`, ` #`) that would make the
     frontmatter unparseable, so each is round-tripped through the YAML emitter
     and quoted exactly when the parser needs it. Without this, a title like
@@ -380,7 +380,7 @@ def _render_scaffold_file_entry(entry: dict) -> list[str]:
 
     `entry` keys: `file` (alias path, required), `role` (required), and the
     optional `copy`, `is_primary` (bool), and `original_filename`. The field
-    order — file, role, copy, is_primary, original_filename — is fixed so a
+    order - file, role, copy, is_primary, original_filename - is fixed so a
     single-photo record (file/role/is_primary), a renamed document
     (file/role/original_filename), and a grouped variation member (which may
     carry all of them) all read consistently.
@@ -418,7 +418,7 @@ def _scaffold_text(
 
     Built by hand (not yaml.safe_dump) so the field order matches the SPEC §14
     template a human reads, and so the `## Claims` fenced block is emitted
-    verbatim — `read_record` requires the literal ```yaml fence under the
+    verbatim - `read_record` requires the literal ```yaml fence under the
     heading, and an empty body parses to an empty claims list. The inventory
     lists every file the source covers: a single document or photo is one
     entry; a variation group or dissolved bundle is many, with the primary
@@ -429,7 +429,7 @@ def _scaffold_text(
 
     `restricted`/`citation`/`repository`/`source_date`/`provenance`/
     `external_links` are §14 fields a source-stub sidecar may hint (or, for
-    `restricted`, that a `dna` source_type always forces) — without passing
+    `restricted`, that a `dna` source_type always forces) - without passing
     them through, capture-written metadata in the stub would be silently
     dropped when the stub is consumed.
 
@@ -438,9 +438,9 @@ def _scaffold_text(
     and `fha find --related P-xxx` surfaces the photo source without requiring
     any face-region placement (the "photos, no photo manager" path, TOOLING §FAQ).
 
-    `aliases:` ships from birth carrying the canonical S-id — the one line that
+    `aliases:` ships from birth carrying the canonical S-id - the one line that
     makes a bare `[[S-…]]` cite click through in Obsidian. A `stem` (a human tag
-    the source was known by before it had an ID — the inbox basename or a notes
+    the source was known by before it had an ID - the inbox basename or a notes
     hint) is preserved as a second alias so old `[[stem]]` references keep
     resolving after processing.
     """
@@ -502,7 +502,7 @@ def _scaffold_text(
     if notes_body:
         lines.append(notes_body.rstrip())
     else:
-        lines.append('*(none yet — drafted in the AI pass)*')
+        lines.append('*(none yet - drafted in the AI pass)*')
     lines.append('')
     return '\n'.join(lines)
 
@@ -568,7 +568,7 @@ def _append_file_entry(record_text: str, entry_lines: list[str]) -> str:
             break
 
     if files_idx is None:
-        # No inventory yet — create the block immediately before the closing ---.
+        # No inventory yet - create the block immediately before the closing ---.
         insert_at = end
         block = ['files:'] + entry_lines
         return '\n'.join(lines[:insert_at] + block + lines[insert_at:])
@@ -626,7 +626,7 @@ def _companion_for_sidecar(sidecar: Path) -> Path | None:
     tool from minting a source for the wrong file.
 
     Returns None, rather than raising, when the stub explicitly flags
-    `asset_elsewhere: true` — TOOLING §13b case (c), the "pointer-only" source
+    `asset_elsewhere: true` - TOOLING §13b case (c), the "pointer-only" source
     (no asset, citation + `external_links` only, flagged for later retrieval).
     Any other no-companion case still refuses: an unflagged missing asset is
     far more likely a mistake than a deliberate pointer-only capture.
@@ -662,12 +662,12 @@ def _relocate_from_inbox(
 
     `fha capture --asset` (and a hand-dropped file) stage in `inbox/`, but
     `process_document`/`process_photo` require the asset already under the
-    configured root — that's the whole point of an inbox: every fha process
+    configured root - that's the whole point of an inbox: every fha process
     entrypoint should know how to file something out of it rather than making
     the user move it by hand first. A no-op (returns the inputs unchanged, undo
     `None`) when `file_path` isn't under the resolved inbox root.
 
-    The move is flat (same filename, no rename) into documents/ or photos/ —
+    The move is flat (same filename, no rename) into documents/ or photos/ -
     `process_document` mints its own `{slug}_{S-id}` rename afterward; photos
     are never renamed at all. Real moves happen with `Path.rename`, which is
     atomic on the same filesystem; on `dry_run` nothing is touched and a
@@ -762,7 +762,7 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
 
 
 def _sidecar_str(sidecar_meta: dict, key: str) -> str | None:
-    """A sidecar hint field as a string, or None — feeds an optional §14 field."""
+    """A sidecar hint field as a string, or None - feeds an optional §14 field."""
     val = sidecar_meta.get(key)
     return str(val) if val not in (None, '') else None
 
@@ -787,7 +787,7 @@ def _sidecar_source_date(sidecar_meta: dict, sidecar_name: str) -> str | None:
 
 
 def _sidecar_flag(sidecar_meta: dict, key: str) -> bool:
-    """A sidecar hint field as a bool — feeds an optional §14 flag field."""
+    """A sidecar hint field as a bool - feeds an optional §14 flag field."""
     return sidecar_meta.get(key) in (True, 'true')
 
 
@@ -879,7 +879,7 @@ def _bundle_file_hints(sidecar_meta: dict) -> dict[str, dict]:
 # Variation siblings (front/back, copy letters, crops, negatives, booklet
 # pages) share a filename base_id. The grouping grammar (`grouping_stem`,
 # `variant_role`, `select_variation_primary`) lives in _lib so this tool and
-# `fha photoindex` agree on what counts as one physical photo — a folder must
+# `fha photoindex` agree on what counts as one physical photo - a folder must
 # group identically no matter which tool looks at it. Tools never import tools.
 
 def _is_photo_ext(file_path: Path) -> bool:
@@ -891,11 +891,11 @@ def _photo_variation_siblings(file_path: Path) -> list[Path]:
     """Return the photo files in `file_path`'s directory that share its base_id.
 
     The result always includes `file_path` itself and is sorted, so a length of
-    one means "no siblings — process normally" and a length >1 means a candidate
+    one means "no siblings - process normally" and a length >1 means a candidate
     variation set the caller should surface with the one/separate/skip prompt.
 
-    Matching is purely by filename grammar (`grouping_stem`) — cheap, no
-    exiftool, no disk reads beyond a directory listing — so the common
+    Matching is purely by filename grammar (`grouping_stem`) - cheap, no
+    exiftool, no disk reads beyond a directory listing - so the common
     single-photo case never pays for variation detection. Files already carrying
     an `_{S-id}` in the name are excluded: a processed document-style name is not
     an unprocessed sibling. (A photo already carrying a SOURCE: keyword can only
@@ -922,7 +922,7 @@ def _variation_role_copy(file_path: Path, is_primary: bool) -> tuple[str, str | 
     or crop); when the filename encodes only a bare copy letter ('portrait_1880b')
     there is no part-kind, so the role falls back to 'variant' and the letter is
     recorded in `copy:`. A negative is source material for the root image rather
-    than an A/B print, so its copy letter (if any) is dropped — mirroring how
+    than an A/B print, so its copy letter (if any) is dropped - mirroring how
     `fha photoindex` files negatives at the stem level.
     """
     parsed = parse_media_filename(file_path.stem)
@@ -1043,7 +1043,7 @@ def _score_photo_group(members: list[Path]) -> tuple[int, list[str]]:
     if any(m['has_pid_keyword'] for m in metas):
         score += 2
         signals.append('pid-keyword')
-    # A confident date is year-precise (or finer) with no approximation marker —
+    # A confident date is year-precise (or finer) with no approximation marker -
     # photoindex's _edtf_confidence marker_rank 0 condition, expressed directly.
     if any(m['edtf'] and is_valid_edtf(m['edtf']) and '~' not in m['edtf'] and '?' not in m['edtf']
            for m in metas):
@@ -1085,7 +1085,7 @@ def _parse_people_ids(raw: str | None, archive_root: Path) -> list[str]:
             continue
         if not is_valid_id(tok) or id_type_of(tok) != 'P':
             raise ProcessError(
-                f'{tok!r} is not a valid P-id. P-ids look like P-de957bcda1 — '
+                f'{tok!r} is not a valid P-id. P-ids look like P-de957bcda1 - '
                 'a P followed by a dash and 10 characters from the archive alphabet '
                 '(0-9 and lowercase a-z, except i, l, o, u). '
                 'Run `fha find <name>` to look up the right P-id.'
@@ -1128,7 +1128,7 @@ def process_document(
     if not _is_under(file_path, documents_root):
         raise ProcessError(
             f'{file_path.name} is not under the configured documents root '
-            f'({_rel(documents_root, archive_root)}); file it there before processing — '
+            f'({_rel(documents_root, archive_root)}); file it there before processing - '
             'a record outside the asset roots cannot be expressed as a portable alias path.'
         )
 
@@ -1151,7 +1151,7 @@ def process_document(
             source_type = hinted
 
     # DNA sources always carry restricted: true and must live under
-    # documents/dna/ (SPEC §8.5.5, lint E017) — refuse before scaffolding a
+    # documents/dna/ (SPEC §8.5.5, lint E017) - refuse before scaffolding a
     # source the linter would immediately flag.
     if source_type == 'dna':
         dna_root = documents_root / 'dna'
@@ -1244,7 +1244,7 @@ def process_pointer_only(
     """TOOLING §13b case (c): mint a source record with no asset.
 
     Only reached when `_companion_for_sidecar` found no same-stem file *and*
-    the stub explicitly flags `asset_elsewhere: true` — citation +
+    the stub explicitly flags `asset_elsewhere: true` - citation +
     `external_links` only, flagged for a later retrieval pass. Every other
     no-companion case still refuses in `_companion_for_sidecar`.
     """
@@ -1271,7 +1271,7 @@ def process_pointer_only(
         )
 
     # DNA sources always carry restricted: true (SPEC §8.5.5, lint E017),
-    # same as process_document — a missing asset doesn't relax that rule.
+    # same as process_document - a missing asset doesn't relax that rule.
     restricted = source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted')
 
     sid = _mint_one_source_id(archive_root)
@@ -1294,7 +1294,7 @@ def process_pointer_only(
 
     if dry_run:
         print(f'[dry-run] Would mint {sid}')
-        print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)} (no asset — asset-elsewhere)')
+        print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)} (no asset - asset-elsewhere)')
         print(f'[dry-run] Would delete stub {sidecar.name} (its notes -> ## Notes)')
         return EXIT_CLEAN
 
@@ -1341,7 +1341,7 @@ def process_photo(
     if not _is_under(file_path, photos_root):
         raise ProcessError(
             f'{file_path.name} is not under the configured photos root '
-            f'({_rel(photos_root, archive_root)}); file it there before processing — '
+            f'({_rel(photos_root, archive_root)}); file it there before processing - '
             'a record outside the asset roots cannot be expressed as a portable alias path.'
         )
 
@@ -1484,7 +1484,7 @@ def process_photo_group(
     """M7.3: process a variation set as ONE source sharing a single S-id.
 
     Every member is a photo under the photos root; none is renamed. The chosen
-    primary (the plain scan — `select_variation_primary`) carries `is_primary:
+    primary (the plain scan - `select_variation_primary`) carries `is_primary:
     true`, the rest carry their role/copy annotation derived from the filename
     grammar. The keyword writes happen before the record (the process_photo
     discipline) and the whole set is transactional: if any embed fails, the
@@ -1492,7 +1492,7 @@ def process_photo_group(
     keywords and the record are rolled back, so an interrupted run never leaves
     a half-tagged set. `people` (P-ids from `--people`) are written as bare
     keywords on every member of the group and land in the source record's
-    `people:` list — same atomic-write discipline as for a single photo.
+    `people:` list - same atomic-write discipline as for a single photo.
     """
     members = sorted(members)
     photos_root = resolve_path(_PHOTO_DIR, fha_config, archive_root)
@@ -1638,7 +1638,7 @@ def _process_variation_set(
     real set the TOOLING §6 prompt is shown with the batch-type label, then:
     `one` mints a shared S-id over the whole set (process_photo_group); `separate`
     processes each member as its own source; `skip` (also blank or anything
-    unrecognized — never mutate on an unclear answer) defers the set.
+    unrecognized - never mutate on an unclear answer) defers the set.
     """
     members = sorted(members)
     if len(members) == 1:
@@ -1649,7 +1649,7 @@ def _process_variation_set(
     primary = select_variation_primary(members, lambda p: parse_media_filename(p.stem))
     letter, desc = _batch_type(members)
     print(f'Found {len(members)} files that appear to be variations of the same photo '
-          f'(batch type {letter} — {desc}):')
+          f'(batch type {letter} - {desc}):')
     for m in members:
         if m == primary:
             label = '[primary]'
@@ -1671,7 +1671,7 @@ def _process_variation_set(
                                        slug=None, title=None, source_date=source_date,
                                        dry_run=dry_run, people=people))
         return rc
-    print('Skipped — deferred to a later session.')
+    print('Skipped - deferred to a later session.')
     return EXIT_CLEAN
 
 
@@ -1679,7 +1679,7 @@ def _parse_selection(text: str, count: int) -> list[int]:
     """Parse a triage selection ("all", "1,3", "2 4") into 0-based indices.
 
     Out-of-range or non-numeric tokens are dropped with a warning rather than
-    aborting the whole selection — a fat-fingered "1, 9" on a 3-group list still
+    aborting the whole selection - a fat-fingered "1, 9" on a 3-group list still
     processes group 1. Returns indices in input order, de-duplicated.
     """
     text = text.strip().lower()
@@ -1774,7 +1774,7 @@ def process_bundle(
 ) -> int:
     """M7.4: dissolve a `notes.md` bundle folder into one source (SPEC §12.1).
 
-    A bundle is a folder of related assets plus a bare `notes.md` stub — e.g. a
+    A bundle is a folder of related assets plus a bare `notes.md` stub - e.g. a
     recording and its transcript, or a photo and its document of provenance. One
     S-id covers the whole set. Each asset is filed to its proper root: documents
     are renamed `{slug}[-{role}]_{S-id}.{ext}` and moved under the documents root
@@ -1787,9 +1787,9 @@ def process_bundle(
     plural/`proofs` mapping `_record_subdir` gives the record), photos at the top
     of the photos root. SPEC §12 treats asset subfolders as free projection
     ("folders are projection"), so the exact subfolder is an implementation
-    choice, not spec law; what SPEC §12.1 pins down — shared S-id, the `[-role]`
+    choice, not spec law; what SPEC §12.1 pins down - shared S-id, the `[-role]`
     filename grammar for documents, the SOURCE: keyword for photos, notes →
-    ## Notes, and the folder dissolving — is honored exactly. The bundle folder
+    ## Notes, and the folder dissolving - is honored exactly. The bundle folder
     itself carries no durable meaning; the minted S-id binds the assets.
 
     Transactional: every move/rename/keyword-embed registers an undo and the
@@ -2002,11 +2002,11 @@ def attach_more(
     The positional `primary_path` is an already-processed asset; its S-id comes
     from the embedded SOURCE keyword (photo) or the `_{S-id}` filename suffix
     (document). The attached file is identity-marked the same way its own root
-    demands — keyword for a photo (no rename), `-{role}_{S-id}` rename for a
-    document — and a `files:` entry is appended to the located record.
+    demands - keyword for a photo (no rename), `-{role}_{S-id}` rename for a
+    document - and a `files:` entry is appended to the located record.
     """
     # _source_id_of reads the primary's embedded SOURCE keyword via exiftool when
-    # it's a photo. The documented dry-run contract is "no exiftool call" — a
+    # it's a photo. The documented dry-run contract is "no exiftool call" - a
     # machine without exiftool on PATH must still get a preview here, so only
     # dry-run degrades that read failure to a warning and stops the preview
     # rather than raising; the live path still needs the real read.
@@ -2178,7 +2178,7 @@ def _mint_one_source_id(archive_root: Path) -> str:
     """
     # mint_ids returns the canonical display form ('S-xxxxxxxxxx', uppercase type
     # prefix) that every on-disk record, filename, and SOURCE keyword uses
-    # (SPEC §13, the example archive). Keep it — do not lowercase for writing.
+    # (SPEC §13, the example archive). Keep it - do not lowercase for writing.
     return mint_ids('S', 1, archive_root)[0]
 
 
@@ -2228,7 +2228,7 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--more', nargs=2, metavar=('FILE', 'ROLE'),
                    help='Attach FILE to the existing source as ROLE[:copy]')
     p.add_argument('--people', metavar='P-IDS',
-                   help='Comma-separated P-ids of people in this photo — e.g. '
+                   help='Comma-separated P-ids of people in this photo - e.g. '
                         '"P-de957bcda1,P-ab3c8f0e12". Writes each as a bare keyword '
                         'in the photo file and populates the source record\'s people: '
                         'list. Photos only; use `fha photoindex tag-person` to tag '
@@ -2239,7 +2239,7 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
 def run_process(args: argparse.Namespace) -> Result:
     """Structured entry point for `fha process`; returns a Result.
 
-    `fha process` is an interactive intake flow — it prints its plan and prompts
+    `fha process` is an interactive intake flow - it prints its plan and prompts
     the human inline (the `_prompt`/variation-set seams), and the asset
     relocate/rename operations register their own undo callbacks and roll back on
     failure (e.g. `relocate_undo()` above). Per the structured-result contract,
@@ -2256,7 +2256,7 @@ def run_process(args: argparse.Namespace) -> Result:
             data={'status': 'working-copy'},
         ).add(
             'warning',
-            'fha process is not available in working-copy mode — '
+            'fha process is not available in working-copy mode - '
             'the photo and document files are on the main machine. '
             'Run this command there.',
         )
@@ -2276,7 +2276,7 @@ def _run_process(args: argparse.Namespace) -> int:
 
     if is_working_copy(archive_root):
         print(
-            'fha process is not available in working-copy mode — '
+            'fha process is not available in working-copy mode - '
             'the photo and document files are on the main machine. '
             'Run this command there.',
             file=sys.stderr,
@@ -2383,7 +2383,7 @@ def _run_process(args: argparse.Namespace) -> int:
 
     # The relocation above runs before process_document/process_photo's own
     # validation (e.g. dna's documents/dna/ requirement) and transactions, so
-    # any non-clean outcome below — refusal or rollback alike — must undo the
+    # any non-clean outcome below - refusal or rollback alike - must undo the
     # move too, or a failed command would still leave the asset filed out of
     # the inbox.
     try:

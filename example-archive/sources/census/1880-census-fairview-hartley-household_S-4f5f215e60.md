@@ -1,7 +1,7 @@
 ---
 id: S-4f5f215e60
 aliases: [S-4f5f215e60, C-d22ce0ac77]
-title: 1880 U.S. Census — Hartley household, Fairview, Kansas
+title: 1880 U.S. Census - Hartley household, Fairview, Kansas
 source_type: census
 source_date: 1880-06~
 source_class: original
@@ -41,7 +41,7 @@ created: 2026-06-12
   evidence: direct
   notes: Head-of-household enumeration; the standard residence claim for the family in 1880.
 
-- value: "Thomas Hartley — occupation: bookkeeper, Plains Junction Railroad"
+- value: "Thomas Hartley - occupation: bookkeeper, Plains Junction Railroad"
   id: C-d22ce0ac77
   type: occupation
   persons: [P-de957bcda1]
@@ -71,7 +71,7 @@ created: 2026-06-12
 - value: "Ethel Hartley is a child of Thomas Hartley and Margaret Cole"
   id: C-bdfbce2a11
   type: relationship
-  subtype: child-of
+  subtype: biological
   persons: [P-c4b26bb4bc, P-de957bcda1, P-cd795c61e0]
   roles:
     child: P-c4b26bb4bc
@@ -87,7 +87,7 @@ created: 2026-06-12
 - value: "Frances Hartley is a child of Thomas Hartley and Margaret Cole"
   id: C-77a0c5e218
   type: relationship
-  subtype: child-of
+  subtype: biological
   persons: [P-83e768cacb, P-de957bcda1, P-cd795c61e0]
   roles:
     child: P-83e768cacb
@@ -103,7 +103,7 @@ created: 2026-06-12
 - value: "Thomas Hartley is a child of Caleb Comstock Hartley and Chastina Augusta Reed"
   id: C-2e6b1f9c45
   type: relationship
-  subtype: child-of
+  subtype: biological
   persons: [P-de957bcda1, P-075114a0f8, P-d00c678c1a]
   roles:
     child: P-de957bcda1
