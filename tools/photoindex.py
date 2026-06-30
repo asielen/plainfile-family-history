@@ -552,6 +552,33 @@ def _load_face_regions_by_path(conn: sqlite3.Connection) -> dict[str, list[tuple
 _VIA_PRIORITY = {'pid-keyword': 0, 'source-people': 0, 'face-tag': 1, 'name-match': 2}
 
 
+def _load_alias_resolver(archive_root: Path) -> dict[str, str]:
+    """Clash-aware {alias_lower -> canonical_id} map from a fresh .cache/index.sqlite.
+
+    Mirrors `fha index`'s name resolution (`_resolve_map_from_aliases`): an alias
+    that names >=2 distinct records is OMITTED, so an ambiguous `[[Name]]` resolves
+    to nothing rather than silently picking one record (SPEC §7). The `aliases`
+    table lives in index.sqlite, NOT the photos.sqlite connection the caller holds,
+    so it is opened here. Returns {} when the index is absent/stale/unreadable -
+    callers then resolve only bare P-id `people:` entries (no index needed).
+    """
+    if not _index_is_fresh(archive_root):
+        return {}
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        idx: dict[str, set[str]] = {}
+        for alias, cid in conn.execute('SELECT alias, canonical_id FROM aliases'):
+            idx.setdefault(alias, set()).add(cid)
+        return {a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1}
+    except sqlite3.Error:
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def _load_source_people(
     conn: sqlite3.Connection, archive_root: Path,
 ) -> dict[str, list[str]]:
@@ -566,6 +593,10 @@ def _load_source_people(
     never run after `fha process --people`, or when the user manually edited the
     source record after initial processing.
 
+    Bare-P-id entries resolve without an index; name-style `[[Name]]` entries are
+    resolved through the clash-aware alias map from index.sqlite (an ambiguous or
+    unresolvable name draws no edge, matching `fha index`).
+
     Returns an empty dict when no photos carry source_ids, or when source records
     are absent or unparseable - callers fall back gracefully to keyword-only resolution.
     """
@@ -573,6 +604,9 @@ def _load_source_people(
         row[0]
         for row in conn.execute('SELECT DISTINCT source_id FROM photos WHERE source_id IS NOT NULL')
     }
+    if not source_ids:
+        return {}
+    alias_map = _load_alias_resolver(archive_root)
     result: dict[str, list[str]] = {}
     for sid in source_ids:
         rec = find_source_record(archive_root, sid)
@@ -589,15 +623,11 @@ def _load_source_people(
             if id_type_of(raw) == 'P':
                 pids.append(normalize_id(raw))
             else:
-                # Name-style target: resolve via aliases table.
-                alias_row = conn.execute(
-                    'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE LIMIT 1',
-                    (raw,),
-                ).fetchone()
-                if alias_row:
-                    cid = alias_row['canonical_id']
-                    if cid and id_type_of(cid) == 'P':
-                        pids.append(normalize_id(cid))
+                # Name-style target: resolve through the clash-aware alias map
+                # (the aliases table is in index.sqlite, not this connection).
+                cid = alias_map.get(raw.lower())
+                if cid and id_type_of(cid) == 'P':
+                    pids.append(normalize_id(cid))
         if pids:
             result[normalize_id(sid)] = pids
     return result

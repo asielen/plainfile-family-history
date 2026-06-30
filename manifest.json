@@ -350,7 +350,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "880b7b9d3e5165833b826a156ba3ffc8e8f802ddfc9c43c8ef15ad42d7eafac4",
+      "sha256": "4202ed7e100034cf158ac1c9f4afc4ec457a11f60c23ae12f61ccc3e52ee52c3",
       "spec_version": "1.2"
     },
     {
@@ -464,7 +464,7 @@
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "ad564f8e8c775e2bd5da8488499d3dd20680b13a4324886728f5f5dba07200a0",
+      "sha256": "9cc8e5ee6a9e3a6c367dd824f05b5f585bf1fa65e244f2c550dc1c4e7dbfeb3d",
       "spec_version": "1.2"
     },
     {

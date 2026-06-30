@@ -337,27 +337,31 @@ def _resolve_wikilink_ids(conn: sqlite3.Connection, text: str) -> tuple[set[str]
     extract_token_ids() handles [[S-id]] / [[P-id]] tokens; this catches the
     alias form [[Source Title]] or [[Person Name]] where the target is a title
     or name alias rather than a bare ID.  Each target is looked up in the
-    aliases table and split by kind (S → source, P → person)."""
+    aliases table and split by kind (S → source, P → person).
+
+    This is a privacy gate, so an ambiguous name (one alias resolving to several
+    records) fails CLOSED: EVERY candidate is collected, not an arbitrary one, so
+    a `[[Common Name]]` that resolves to both a public and a restricted person
+    still flags the restricted one for cleanup rather than silently slipping it
+    into public output."""
     source_ids: set[str] = set()
     person_ids: set[str] = set()
     for m in _WIKILINK_TARGET_RE.finditer(text):
         target = m.group(1).strip()
         if is_valid_id(target):
             continue  # already handled by extract_token_ids
-        row = conn.execute(
-            'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE LIMIT 1',
+        for row in conn.execute(
+            'SELECT canonical_id FROM aliases WHERE alias = ? COLLATE NOCASE',
             (target,),
-        ).fetchone()
-        if row is None:
-            continue
-        cid = row['canonical_id']
-        if not cid:
-            continue
-        kind = id_type_of(cid)
-        if kind == 'S':
-            source_ids.add(cid)
-        elif kind == 'P':
-            person_ids.add(cid)
+        ).fetchall():
+            cid = row['canonical_id']
+            if not cid:
+                continue
+            kind = id_type_of(cid)
+            if kind == 'S':
+                source_ids.add(cid)
+            elif kind == 'P':
+                person_ids.add(cid)
     return source_ids, person_ids
 
 

@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
+import index
 import photoindex
 from _lib import (
     EXIT_CLEAN,
@@ -2729,6 +2730,110 @@ class PhotoindexTests(unittest.TestCase):
                 self.assertIsNotNone(row, 'Expected a photo_people entry for wedding_1902.jpg')
                 self.assertEqual(row[0], 'p-de957bcda1')
                 self.assertEqual(row[1], 'source-people')
+            finally:
+                conn.close()
+
+    def test_source_people_resolves_name_style_wikilink_via_index(self) -> None:
+        """A `people: ["[[Ken Smith]]"]` name link resolves to its P-id through the
+        clash-aware alias map in index.sqlite. The aliases table lives in the index
+        DB, not the photos.sqlite connection _rebuild_photo_people holds, so this
+        would crash (no such table: aliases) before the resolver was split out."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            fha_config = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {},
+                    'portrait_1880-back.jpg': {},
+                    'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']},
+                    'family_reunion.jpg': {},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, fha_config)
+
+            # Person record (so the name resolves) + source record naming the
+            # person by NAME, not P-id.
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            (people_dir / 'smith__ken_P-de957bcda1.md').write_text(
+                '---\nid: P-de957bcda1\nname: Ken Smith\nliving: false\n---\n',
+                encoding='utf-8',
+            )
+            sources_dir = archive / 'sources'
+            sources_dir.mkdir(exist_ok=True)
+            (sources_dir / 'wedding_1902_S-123456789a.md').write_text(
+                '---\nid: S-123456789a\ntitle: Wedding 1902\nsource_type: photo\n'
+                'people: ["[[Ken Smith]]"]\n---\n## Claims\n```yaml\n```\n',
+                encoding='utf-8',
+            )
+
+            # Build the index so the aliases table exists and is fresh, then
+            # rebuild photo_people from it.
+            index.build_index(archive, fha_config)
+            photoindex.run_scan(archive, fha_config, full=True)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                row = conn.execute(
+                    "SELECT person_ref, via FROM photo_people "
+                    "WHERE path LIKE '%wedding_1902.jpg'"
+                ).fetchone()
+                self.assertIsNotNone(row, 'name-style people link should resolve to a P-id')
+                self.assertEqual(row[0], 'p-de957bcda1')
+                self.assertEqual(row[1], 'source-people')
+            finally:
+                conn.close()
+
+    def test_source_people_ambiguous_name_draws_no_edge(self) -> None:
+        """A name shared by two people is a clash: like `fha index`, it must resolve
+        to nothing rather than silently pick one person (SPEC §7)."""
+        with tempfile.TemporaryDirectory() as d:
+            archive = _copy_fixture(Path(d))
+            fha_config = {'roots': {'photos': 'photos'}}
+
+            def fake_exiftool(paths: list[Path]) -> list[dict]:
+                rows = {
+                    'portrait_1880.jpg': {},
+                    'portrait_1880-back.jpg': {},
+                    'wedding_1902.jpg': {'Keywords': ['SOURCE: S-123456789a']},
+                    'family_reunion.jpg': {},
+                }
+                return [{'SourceFile': str(p), **rows[p.name]} for p in paths]
+
+            photoindex._run_exiftool = fake_exiftool
+            photoindex.run_scan(archive, fha_config)
+
+            people_dir = archive / 'people'
+            people_dir.mkdir(exist_ok=True)
+            (people_dir / 'smith__john_a_P-aaaaaaaaaa.md').write_text(
+                '---\nid: P-aaaaaaaaaa\nname: John Smith\nliving: false\n---\n',
+                encoding='utf-8',
+            )
+            (people_dir / 'smith__john_b_P-bbbbbbbbbb.md').write_text(
+                '---\nid: P-bbbbbbbbbb\nname: John Smith\nliving: false\n---\n',
+                encoding='utf-8',
+            )
+            sources_dir = archive / 'sources'
+            sources_dir.mkdir(exist_ok=True)
+            (sources_dir / 'wedding_1902_S-123456789a.md').write_text(
+                '---\nid: S-123456789a\ntitle: Wedding 1902\nsource_type: photo\n'
+                'people: ["[[John Smith]]"]\n---\n## Claims\n```yaml\n```\n',
+                encoding='utf-8',
+            )
+
+            index.build_index(archive, fha_config)
+            photoindex.run_scan(archive, fha_config, full=True)
+
+            conn = sqlite3.connect(archive / '.cache' / 'photos.sqlite')
+            try:
+                rows = conn.execute(
+                    "SELECT person_ref FROM photo_people "
+                    "WHERE path LIKE '%wedding_1902.jpg' AND via = 'source-people'"
+                ).fetchall()
+                self.assertEqual(rows, [], 'ambiguous name must not resolve to any person')
             finally:
                 conn.close()
 
