@@ -29,12 +29,21 @@ Every capture writes one **staged bundle** to
 
 ```
 <slug>-<timestamp>/
+<<<<<<< HEAD
   page.html          ← the raw captured DOM, ALWAYS saved; the clean scrape source
   page-snapshot.html ← optional self-contained page snapshot (role webpage), when
                        "Keep a copy of the whole page" is on
   record.<ext>       ← optional evidence file (role record): an image or PDF, pulled
                        from the page address or dropped in; absent for "No file"
   capture.json       ← your inputs + the browser's generic pre-fill (schema 2)
+=======
+  page.html        ← the raw captured DOM, ALWAYS saved; the clean scrape source
+  page-snapshot.html   ← optional self-contained page snapshot (role webpage), when
+                     "Keep a copy of the whole page" is on
+  record.<ext>     ← optional evidence file (role record): an image or PDF, pulled
+                     from the page address or dropped in; absent for "No file"
+  capture.json     ← your inputs + the browser's generic pre-fill (schema 2)
+>>>>>>> 64245ade1fb8bf9f0ec5e0bfc86250a76668ffc2
 ```
 
 A capture can carry **both** a page snapshot and a separate evidence file (the
