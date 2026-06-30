@@ -209,6 +209,42 @@ class IngestTestCase(unittest.TestCase):
         self.assertEqual(res.data['ingested'], 1)
         self.assertIn('42', self._stubs()[0].read_text(encoding='utf-8'))
 
+    def test_curated_people_replace_recipe_scrape(self) -> None:
+        # The capture.json people list is the panel's checklist after the human
+        # unticked suggestions, so it must REPLACE the recipe scrape - recipe-
+        # found names must NOT be merged back (or an unticked name reappears).
+        _make_bundle(self.staging, 'b-people', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://www.ancestry.com/rec/9',
+                                   'asset_mode': 'none', 'people': ['Thomas Hartley']})
+        self._ingest()
+        self.assertEqual(read_record(self._stubs()[0])['meta']['people'],
+                         ['Thomas Hartley'])
+
+    def test_capture_json_repository_override(self) -> None:
+        # A human correction to "Where it's from" (capture.json repository) wins
+        # over the recipe/host guess.
+        _make_bundle(self.staging, 'b-repo', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://www.ancestry.com/rec/3',
+                                   'asset_mode': 'none',
+                                   'repository': 'Andrews Family Bible'})
+        self._ingest()
+        self.assertEqual(read_record(self._stubs()[0])['meta']['repository'],
+                         'Andrews Family Bible')
+
+    def test_bundle_with_missing_declared_asset_is_malformed(self) -> None:
+        # A schema-2 assets entry naming a file absent on disk is an incomplete
+        # capture: reported malformed and left in staging, never filed.
+        _make_bundle(self.staging, 'a-missing', page_html=_sample('ancestry'),
+                     capture_json={'url': 'https://x/1', 'schema': 2,
+                                   'assets': [{'file': 'record.jpg', 'role': 'record'}]})
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            res = self._ingest()
+        self.assertEqual(res.data['failed'], 1)
+        self.assertEqual(self._stubs(), [])                  # nothing filed
+        self.assertTrue((self.staging / 'a-missing').exists())  # left in place
+        self.assertIn('missing', err.getvalue())
+
     def test_structural_bad_field_reported_and_sweep_continues(self) -> None:
         # A list/dict where text belongs is structurally malformed → reported,
         # left in place, and must NOT abort a good sibling sorted after it.

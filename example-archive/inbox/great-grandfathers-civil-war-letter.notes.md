@@ -1,18 +1,20 @@
+---
+# Optional light hints (everything here is a guess, not a fact). This block must
+# be the very first thing in the file - the parser only reads `---` frontmatter
+# at the top - and must use the processor's real keys (source_type / source_date).
+people:
+  - Caleb Comstock Hartley
+source_date: 1863
+source_type: letter
+---
+
 # Notes about this item
 
 <!-- A LONE source stub (SPEC §12.1): a jotted note with no asset yet at all - the
      half-formed state between "I know this exists" and a processed Source. It carries
      NO S-id; `fha process` is what mints the ID and promotes it into a real source
-     record. Freeform prose is the whole point; the light frontmatter below is optional.
-     A fictional fixture. -->
-
----
-# Optional light hints (everything here is a guess, not a fact):
-people:
-  - Caleb Comstock Hartley
-about: 1863
-source_type_guess: letter
----
+     record. Freeform prose is the whole point; the frontmatter above is optional. A
+     fictional fixture. -->
 
 What is this?
 A Civil War letter my grandmother always talked about - Caleb Hartley supposedly

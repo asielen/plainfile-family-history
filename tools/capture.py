@@ -756,6 +756,7 @@ def _resolve_recipe_result(
     html: str,
     notes: str | None,
     people: list[str] | None,
+    repository: str | None = None,
 ) -> tuple[str, RecipeResult]:
     """Choose a recipe and apply the explicit/override fields (the human's nudge).
 
@@ -769,6 +770,10 @@ def _resolve_recipe_result(
 
     if title:
         result.title = title
+    if repository:
+        # A human correction to "Where it's from" wins over the recipe/host
+        # guess, like --title/--type/--date.
+        result.repository = repository
     if source_type:
         st = source_type.strip().lower()
         if st not in SOURCE_TYPES:
@@ -798,12 +803,19 @@ def _resolve_recipe_result(
     if notes is not None:
         result.body = notes
     if people is not None:
-        # Human names first, then any recipe-found name not already present
-        # (case-insensitive dedup, preserving each name's first-seen spelling).
-        seen = {name.strip().lower() for name in people}
-        merged = list(people)
-        merged += [n for n in result.people if n.strip().lower() not in seen]
-        result.people = merged
+        # The curated list is AUTHORITATIVE: it is the panel's people checklist
+        # after the human ticked/unticked suggestions, so it replaces the recipe
+        # scrape entirely - re-adding recipe-found names would resurrect a
+        # suggestion the human deliberately removed (case-insensitive dedup,
+        # preserving each name's first-seen spelling).
+        seen: set[str] = set()
+        curated: list[str] = []
+        for name in people:
+            key = name.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                curated.append(name)
+        result.people = curated
 
     # An explicit url that no recipe surfaced still belongs in external_links.
     if url and not any((isinstance(l, dict) and l.get('url') == url) for l in result.external_links):
@@ -825,6 +837,7 @@ def run_capture(
     accessed: str | None = None,
     notes: str | None = None,
     people: list[str] | None = None,
+    repository: str | None = None,
     dry_run: bool = False,
 ) -> Result:
     """Capture a page into an inbox source stub and log the search (TOOLING §13b).
@@ -846,7 +859,7 @@ def run_capture(
     """
     recipe_name, result = _resolve_recipe_result(
         url=url, title=title, source_type=source_type, source_date=source_date,
-        html=html, notes=notes, people=people,
+        html=html, notes=notes, people=people, repository=repository,
     )
 
     accessed = accessed or _today()
@@ -1010,6 +1023,7 @@ def _ingest_bundle_folder(
     accessed: str | None,
     notes: str | None,
     people: list[str] | None,
+    repository: str | None,
     assets: list[tuple[Path, str]],
     dry_run: bool = False,
 ) -> Result:
@@ -1028,7 +1042,7 @@ def _ingest_bundle_folder(
     """
     recipe_name, result = _resolve_recipe_result(
         url=url, title=title, source_type=source_type, source_date=source_date,
-        html=html, notes=notes, people=people,
+        html=html, notes=notes, people=people, repository=repository,
     )
     accessed = accessed or _today()
     if not result.title:
@@ -1226,7 +1240,8 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
     # engine mid-sweep - that would abort sibling bundles, breaking the resilient
     # contract. Scalars are str()-coerced (forgiving: `1880` → "1880"); a
     # list/dict where text belongs is structurally wrong → reported BundleError.
-    for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes'):
+    for key in ('url', 'title', 'source_type', 'source_date', 'accessed', 'notes',
+                'repository'):
         val = cap.get(key)
         if val is None or isinstance(val, str):
             continue
@@ -1308,8 +1323,18 @@ def _resolve_bundle_assets(bundle: Path, cap: dict) -> list[tuple[Path, str]]:
         for item in assets:
             if not isinstance(item, dict):
                 continue
-            path = _bundle_file(bundle, item.get('file'))
-            if path is None or path.name in seen:
+            declared = item.get('file')
+            path = _bundle_file(bundle, declared)
+            if path is None:
+                # A file listed in capture.json is part of the completed-capture
+                # contract; if it's missing (interrupted download, renamed
+                # payload) the bundle is malformed - report it and leave it in
+                # staging rather than silently filing an incomplete capture.
+                if declared:
+                    raise BundleError(
+                        f"declared asset {str(declared)!r} is missing from the bundle")
+                continue
+            if path.name in seen:
                 continue
             role = str(item.get('role') or '').strip().lower() or _DEFAULT_ASSET_ROLE
             out.append((path, role))
@@ -1408,6 +1433,7 @@ def run_ingest(
                     accessed=cap.get('accessed'),
                     notes=cap.get('notes'),
                     people=cap.get('people'),
+                    repository=cap.get('repository'),
                     assets=assets,
                     dry_run=dry_run,
                 )
@@ -1423,6 +1449,7 @@ def run_ingest(
                     accessed=cap.get('accessed'),
                     notes=cap.get('notes'),
                     people=cap.get('people'),
+                    repository=cap.get('repository'),
                     dry_run=dry_run,
                 )
         except (CaptureError, CaptureWriteError) as e:

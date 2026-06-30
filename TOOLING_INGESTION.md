@@ -102,21 +102,28 @@ A staged bundle is a folder containing:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "url": "https://www.ancestry.com/...",
   "title": "1880 United States Federal Census - Thomas Hartley",
   "accessed": "2026-06-24",
   "source_date": "1880",
   "source_type": "census",
-  "asset_mode": "fetch | singlefile | pdf | manual | none",
-  "asset_file": "asset.jpg",
+  "repository": "Ancestry.com",
+  "assets": [
+    { "file": "record.jpg", "role": "record", "mode": "manual" },
+    { "file": "page-snapshot.html", "role": "webpage", "mode": "singlefile" }
+  ],
   "people": ["Thomas Hartley", "Margaret Hartley", "Ethel Hartley"],
   "notes": "Bob's great-grandfather's household. The boy listed as 'Calvin' is Cal.",
   "recipe_hint": "ancestry"
 }
 ```
 
-Every field except `url` is optional. `notes` is the human's free-text body; `people` carries **at minimum the name of a person the record is about** - the one hint the engine most wants and review most needs. `recipe_hint` is the browser's *guess*; the engine still runs detection on `page.html` and may overrule it. `schema` is the `capture.json` shape version (current: **1**, the `capture._CAPTURE_JSON_SCHEMA` constant) and exists so the companion and the backend can evolve independently - ingest is **forgiving** about it: an *absent* `schema` is read as the current version (legacy/hand-authored bundles), and a *newer* one is read for the fields it shares with a one-line "run `fha update-tools`" warning, **never refused**. Bump it only on an incompatible shape change.
+Every field except `url` is optional. `notes` is the human's free-text body; `people` is the human's curated checklist (it **replaces** the recipe scrape - an unticked suggestion is gone), carrying **at minimum the name of a person the record is about**. `repository` is the human's "where it's from" edit and wins over the recipe/host guess. `recipe_hint` is the browser's *guess*; the engine still runs detection on `page.html` and may overrule it.
+
+**Assets (schema 2).** The shipping companion and backend use `assets: [ {file, role, mode} ]` - an ordered list (record-then-webpage), so the page-copy-plus-record "both" case files as a §12.1 bundle folder. A file listed here is part of the completed-capture contract: if it is missing on disk at ingest, the bundle is reported malformed and left in staging, not filed incomplete. The earlier flat **schema 1** shape (`asset_mode: "fetch|singlefile|pdf|manual|none"` + `asset_file: "asset.jpg"`, single asset) is still **accepted** by ingest as legacy/hand-authored input.
+
+`schema` is the `capture.json` shape version (current: **2**, the `capture._CAPTURE_JSON_SCHEMA` constant) and exists so the companion and the backend can evolve independently - ingest is **forgiving** about it: an *absent* `schema` is read as the current version (legacy/hand-authored bundles), and a *newer* one is read for the fields it shares with a one-line "run `fha update-tools`" warning, **never refused**. Bump it only on an incompatible shape change.
 
 ---
 
@@ -256,7 +263,7 @@ fha capture --ingest [DIR] [--dry-run]
 `DIR` defaults to the known capture folder (`~/Downloads/fha-inbox/`, overridable by an optional `fha.yaml` `capture_staging:` key). For each `<slug>-<timestamp>/` bundle it finds:
 
 1. **Read** `capture.json`, `page.html`, and the optional asset.
-2. **Run the engine** - feed `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as the explicit overrides (`title`/`type`/`date`/`url`/`accessed`/`notes`/`people`), exactly as if a human had typed them. The recipe re-detects on `page.html` (overruling a wrong `recipe_hint`), the human's `notes` become the stub body, and `people` names carry through as hints. This **reuses `run_capture` wholesale** - the ingest path produces a byte-identical stub to what the paste-fallback would have, which is the whole point of the staged-bundle seam.
+2. **Run the engine** - feed `page.html` as the HTML, the asset as `--asset`, and the `capture.json` fields as the explicit overrides (`title`/`type`/`date`/`url`/`accessed`/`notes`/`people`/`repository`), exactly as if a human had typed them. The recipe re-detects on `page.html` (overruling a wrong `recipe_hint`), the human's `notes` become the stub body, and `people` names carry through as hints. This **reuses `run_capture` wholesale** - the ingest path produces a byte-identical stub to what the paste-fallback would have, which is the whole point of the staged-bundle seam.
 3. **File** the resulting `{slug}.notes.md` + asset into the archive `inbox/` (the one sanctioned move).
 4. **Clear** the staged bundle (move it to a `fha-inbox/.ingested/` holding folder, never hard-delete - the same never-lose-the-human's-work bias as everywhere else).
 
