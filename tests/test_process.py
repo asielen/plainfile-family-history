@@ -41,7 +41,7 @@ class FakePhotoStore:
     """In-memory stand-in for embedded photo keywords, keyed by absolute path.
 
     Patched over process's two exiftool seams so a write here is visible to a
-    later read — exactly what the real `SOURCE:` keyword round-trip provides.
+    later read - exactly what the real `SOURCE:` keyword round-trip provides.
     """
 
     def __init__(self) -> None:
@@ -294,7 +294,7 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(len(renamed), 1)
 
     def test_document_asset_relocated_out_of_inbox(self) -> None:
-        # A bare file dropped straight in inbox/ (no sidecar) — process should
+        # A bare file dropped straight in inbox/ (no sidecar) - process should
         # file it into documents/ before scaffolding, not refuse it.
         (self.archive / 'inbox').mkdir()
         asset = self.archive / 'inbox' / 'note.txt'

@@ -141,7 +141,7 @@ class PlacesLintTests(unittest.TestCase):
 
     def test_within_on_settlement_flagged(self) -> None:
         # Hartley home (micro-place) is within Fairview (settlement).
-        # Fairview itself also links within: SomeOtherPlace, which is invalid —
+        # Fairview itself also links within: SomeOtherPlace, which is invalid -
         # a place that's already a within: target can't also point further up.
         _add_place(self.conn, 'l-home', 'Hartley home', within='l-fairview')
         _add_place(self.conn, 'l-fairview', 'Fairview', within='l-other')
@@ -285,7 +285,7 @@ class PlacesCandidatesTests(unittest.TestCase):
     def test_reconcile_missing_photos_excluded_from_gps_clusters(self) -> None:
         # Photos that `fha photoindex reconcile` has flagged vanished (path
         # rewritten to 'MISSING:<path>') must not still count toward a new
-        # GPS cluster — there's no on-disk photo left to process.
+        # GPS cluster - there's no on-disk photo left to process.
         self.conn.commit()
         from photoindex import _DDL as _PHOTO_DDL
         cache = self.archive_root / '.cache'

@@ -1,5 +1,5 @@
 /*
- * tree-adapter.js — the single seam between the archive's neutral tree-JSON
+ * tree-adapter.js - the single seam between the archive's neutral tree-JSON
  * contract and the vendored renderer (fha-tree.js).
  *
  * It is the ONLY code that understands both:
@@ -41,7 +41,10 @@
     var childrenOf = {};
     (data.edges || []).forEach(function (e) {
       if (e.type === rel) {
-        (childrenOf[e.from] = childrenOf[e.from] || []).push(e.to);
+        // Carry the edge nature (SPEC §12.2): `genetic === false` means an
+        // adoptive/step/foster/guardian bond, drawn distinctly. Absent = genetic.
+        (childrenOf[e.from] = childrenOf[e.from] || []).push(
+          { to: e.to, genetic: e.genetic !== false });
       }
     });
 
@@ -52,7 +55,11 @@
                    dates: fmtDates(n.vitals), children: [] };
       if (!seen[id]) {
         seen[id] = true;
-        (childrenOf[id] || []).forEach(function (c) { node.children.push(build(c)); });
+        (childrenOf[id] || []).forEach(function (c) {
+          var childNode = build(c.to);
+          childNode.edgeGenetic = c.genetic;   // nature of the edge into this child
+          node.children.push(childNode);
+        });
       }
       return node;
     }

@@ -96,7 +96,7 @@ Your existing photos and documents plus FIVE record types, all plain Markdown/YA
 
 | Type | What it is |
 |---|---|
-| **Person** `P-` | A human - identity, flags, and prose. |
+| **Person** `P-` | A human - identity, flags, prose, and the relationships that tie them to others. |
 | **Source** `S-` | A piece of evidence: a record, document, photo, interview. |
 | **Claim** `C-` | A single sourced assertion (a date, place, relationship) living inside its source record, moving through a `suggested → accepted` review lifecycle. |
 | **Place** `L-` | A physical location, identified by coordinates, with a dated name/jurisdiction history. |
@@ -106,6 +106,8 @@ Around those, a rebuildable **index** (SQLite, regenerated from the files) power
 The operating loop is simple: **capture → file → process → review → report**, with human review the only gate to an accepted fact.
 
 **Linking, the human way.** You connect records by name. In any profile or note, cite a source or cross-link a person by writing the name in double brackets - `[[Grandpa Joe]]`, `[[Hartley family bible]]` - and a nickname works just as well. Don't worry about making an ID: name your file something sensible, link to it by name, and if you ever run the tools the linter quietly assigns the IDs and tidies everything. The five copy-paste templates in [`archive-template/`](archive-template/) give you a filled-in starting point for each record type.
+
+**Opens in Obsidian.** The archive is a Markdown-plus-frontmatter-plus-`[[wikilink]]` vault: point Obsidian (or another Markdown app) at the folder and it opens as-is, no import. An optional [Templater pack](obsidian-templater/) and the generated site's interactive family tree make it native to plaintext-PKM workflows; see [docs/USING_WITH_OBSIDIAN.md](docs/USING_WITH_OBSIDIAN.md).
 
 ## Repository layout
 

@@ -1,5 +1,5 @@
 """
-test_consumer_sweep.py — every token reader conforms to the `[[ ]]` grammar
+test_consumer_sweep.py - every token reader conforms to the `[[ ]]` grammar
 (wikilink-native step 02).
 
 The consumers resolve the new double-bracket form (and `|display` / `#fragment`)

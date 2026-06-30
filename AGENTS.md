@@ -46,9 +46,11 @@ spec-defined documents-root processing rename (via `fha process`) and embedded m
 4. **Never edit generated content.** Files (or sections) beginning
 `<!-- GENERATED ... -->` are rebuilt by tools; regenerate, don't patch.
 5. **Mark your work as AI** where formats allow, and never overwrite human-written text.
-6. **Respect privacy flags.** `living: true` AND `living: unknown` persons (unknown = living) and `restricted: true` sources are
-excluded from any export or external-facing output unless the human explicitly says otherwise.
-DNA material is always restricted.
+6. **Respect privacy flags.** `living: true` and `living: unknown` persons (unknown = living) are
+excluded from external-facing output. The `restricted` marker - on a source, a claim, a person, or a
+name - is likewise excluded from public output and from packets unless the human explicitly opts in
+(`--include-restricted`), except the no-override types: `restricted: dna` needs `--include-dna`, and
+`restricted: by-request` is honored everywhere with no override. DNA material is always restricted.
 
 ## Operating modes
 
@@ -98,7 +100,7 @@ notes/                  general research; notes/questions.md = question log
 - **IDs:** `{P|S|C|L|H}-{10 Crockford Base32 chars}` (alphabet `0123456789abcdefghjkmnpqrstvwxyz` - lowercase, letters `ilou` omitted; H = hypothesis; never converts to C - verification mints a new claim and links both ways). The ID is the machine identity: mint with `fha id mint <TYPE>` (or, by hand, draw 10 chars from that alphabet and verify the string appears nowhere in the tree). A record a human created with no ID yet is valid - the linter mints one on contact and keeps the filename/name as an alias; never block on a missing ID.
 IDs are immutable and never reused.
 - **Filenames:** sources `{slug}_{S-id}.md`; documents-root source files
-`{slug}[-{copy}][-{role}]_{S-id}.{ext}` (photos-root files are NEVER renamed); person files `{surname}__{given_names}[_{kind}]_{P-id}.md` (birth surname, double underscore).
+`{slug}[-{copy}][-{role}]_{S-id}.{ext}` (photos-root files are NEVER renamed); person files `{primary_sort_name}__{given_names}[_{kind}]_{P-id}.md` (the sort name is the birth surname when there is one; surname-less people - mononyms, enslaved ancestors by given name, patronymics, foundlings - lead with the double underscore, e.g. `__caesar_P-….md`; the full cultural name lives in `name`/`name_variants`).
 - **Dates:** EDTF only (`1850`, `1850~`, `185X`, `1850-05`, `1871-02/1871-03`). A person record
 may carry an optional **provisional** `birth:` / `death:` estimate - the unsourced date you know
 before you have the record. That is a normal starting state, not an error: record it, and the
@@ -124,10 +126,16 @@ all still resolve - but **write the `[[ ]]` form**. **Uncited prose is story/con
 fact** - write accordingly.
 - **Claims:** YAML list under `## Claims` in the source file; schema in SPEC §8.4.
 Required: `id, type, persons, value, status`; `roles:` required for relationship claims.
+A `relationship` claim carries a **`subtype`** naming the nature of the bond - kin (`biological`, the default, `adoptive`, `step`, `foster`, `guardian`, `surrogate-gestational`, `surrogate-genetic`, `donor-sperm`, `donor-egg`, `social`) or non-kin (`enslaver`, `enslaved-by`, `employer`, `employee`, `member-of`, `friend`, `associate`, `neighbor`). Two parents of differing nature are two co-valid claims, never a `contradicts`. A person record may carry an optional `relationships:` block applying these edges in plain words; a sourced entry links its `claim:`/`source:`, an unsourced one is a `status: hypothesis` belief. Mirror every sourced edge on both people, pointing at the same claim.
+A membership or affiliation (a tribe, a military unit, a lodge, an employer, a church) is a `relationship` claim with `subtype: member-of` (or `employer`), the organization in `value` / `value_org:` - a structured edge, sourced or held as a hypothesis, not a formless note.
 AI-drafted ⇒ `status: suggested`, and populate the Mills analysis fields (`information`, `evidence`; `source_class` on the source) by default.
 - **Claim types:** birth, death, marriage, baptism, burial · residence, census,
 occupation, education, military, immigration, divorce, name, relationship · event, note (+ free-text `subtype`).
 Nothing else without a logged spec change.
+- **Privacy marker:** write `restricted: true` next to anything that should stay out of exports - a
+source, a single claim, a person, or a `name_variants` entry (a private prior name). Optional types
+(`restricted: by-request`, `restricted: dna`) mark no-override exclusions. A person may carry
+`gender:` beside `sex:` (both optional); record gender only when there is something to say.
 
 ## Tools (your hands)
 
@@ -151,6 +159,7 @@ fha find <ID|text>           locate anything: record + assets + citations for an
                             FTS across records, notes, transcripts, photo captions
 fha find --related <ID>      neighborhood of any ID - people/places/sources/claims
                             adjacent to a person, place, source, claim, or hypothesis
+fha relate <P-A> <P-B>       how two people are related: blood degree + shortest social path
 fha packet <P-id>            person export packet
 ```
 

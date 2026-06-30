@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-fha — family history archive CLI.
+fha - family history archive CLI.
 
 Subcommands live in individual tool files under tools/; each is also
 runnable standalone (e.g. python tools/lint.py --root …).
 
-This file is intentionally thin — just a dispatcher.  All logic lives in the
+This file is intentionally thin - just a dispatcher.  All logic lives in the
 individual tool modules.  Adding a new tool: implement it in tools/newtool.py
 with a register(subs) function, then add one import + one register() call here.
 """
@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import argparse
 
 COMMANDS = (
-    'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'photoindex',
+    'id', 'index', 'lint', 'stubs', 'views', 'doctor', 'find', 'relate', 'photoindex',
     'xref', 'cooccur', 'report', 'packet', 'places', 'gedcom', 'wikitree',
     'process', 'capture', 'convert-mining', 'claim', 'confirm', 'site', 'install',
     'update-tools', 'working-copy', 'normalize-links',
@@ -88,7 +88,7 @@ def _load_site_module():
     """Import tools/site.py under a private module name.
 
     The tool's command is `fha site`, so its file must be `tools/site.py`
-    (BUILD.md M8.1) — but the stem `site` collides with Python's stdlib `site`
+    (BUILD.md M8.1) - but the stem `site` collides with Python's stdlib `site`
     module, which is already in sys.modules from interpreter startup. A plain
     `import site` therefore returns the stdlib module, not ours. Loading the
     file by path under the alias `fha_site` sidesteps the collision without
@@ -211,8 +211,8 @@ def _intercept_doctor(argv: list[str]) -> int | None:
     doctor.py guards its own `import yaml` so it can report a missing-PyYAML
     health check cleanly on a fresh machine.  But normal dispatch in main()
     imports every other tool module (id, index, lint, stubs, views, find)
-    before doctor.py gets a turn, and those modules import _lib — which
-    imports yaml unconditionally — so a missing PyYAML would crash on one of
+    before doctor.py gets a turn, and those modules import _lib - which
+    imports yaml unconditionally - so a missing PyYAML would crash on one of
     those imports before doctor's guard ever runs.  Intercept 'doctor' here,
     before any of those imports happen, and hand off straight to doctor.py's
     own entry point.
@@ -256,7 +256,7 @@ def _intercept_scaffold(argv: list[str]) -> int | None:
     scaffold.py only needs stdlib (json, shutil, pathlib) and never imports
     PyYAML.  Without this intercept a user on a fresh machine (PyYAML not yet
     installed) hits the ModuleNotFoundError at the bulk-import block below
-    before `fha install` gets a chance to run — which is the very command they
+    before `fha install` gets a chance to run - which is the very command they
     need to run in order to satisfy that dependency.
 
     Returns an exit code when the command is install or update-tools, or None
@@ -308,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     tool's subcommand to the shared parser.
 
     Alias: `fha id check <ID>` is re-routed through find.find_by_id so both
-    commands produce the same structured output.  id.py stays unchanged — the
+    commands produce the same structured output.  id.py stays unchanged - the
     re-routing is purely in this dispatcher (TOOLING §4a).
     """
     argv_list = list(argv) if argv is not None else sys.argv[1:]
@@ -332,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
             return result
 
         # Intercept 'install' and 'update-tools' before the bulk imports below.
-        # scaffold.py uses only stdlib (json, shutil, pathlib) — it does not need
+        # scaffold.py uses only stdlib (json, shutil, pathlib) - it does not need
         # PyYAML.  Without this intercept a user on a fresh machine (PyYAML not yet
         # installed) hits a ModuleNotFoundError before `fha install` can run.
         result = _intercept_scaffold(argv_list)
@@ -347,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         from views import register as views_register
         from doctor import register as doctor_register
         from find import register as find_register
+        from relate import register as relate_register
         from photoindex import register as photoindex_register
         from xref import register as xref_register
         from cooccur import register as cooccur_register
@@ -378,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
         views_register(subs)
         doctor_register(subs)
         find_register(subs)
+        relate_register(subs)
         photoindex_register(subs)
         xref_register(subs)
         cooccur_register(subs)
@@ -425,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
             if _ar and is_working_copy(_ar):
                 print(
                     '[working copy] photos and documents live on the main machine'
-                    ' — asset features are paused here',
+                    ' - asset features are paused here',
                     file=sys.stderr,
                     flush=True,
                 )

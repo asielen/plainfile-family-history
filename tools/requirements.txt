@@ -5,7 +5,7 @@
 PyYAML>=6.0
 # Publication (`fha site`, TOOLING §12):
 Jinja2>=3.1
-# Optional — standalone-site image derivatives (`fha site`, no --linked).
+# Optional - standalone-site image derivatives (`fha site`, no --linked).
 # Without it the standalone site simply omits photos (originals never leave
 # the archive); install it to publish EXIF-stripped web images.
 Pillow>=10.0

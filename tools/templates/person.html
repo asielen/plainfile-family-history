@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ person.name }} — {{ site_title }}{% endblock %}
+{% block title %}{{ person.name }} - {{ site_title }}{% endblock %}
 {% block content %}
 <article class="person">
   <h1>{{ person.name }}</h1>
@@ -9,7 +9,7 @@
   <dl class="summary">
     {% for row in person.summary %}
     <dt>{{ row.label }}</dt>
-    <dd>{{ row.value }}{% if row.place %} — {{ row.place }}{% endif %} {{ row.source_html }}</dd>
+    <dd>{{ row.value }}{% if row.place %} - {{ row.place }}{% endif %} {{ row.source_html }}</dd>
     {% endfor %}
   </dl>
   {% endif %}
@@ -31,7 +31,7 @@
       {% if group.decade %}<h3>{{ group.decade }}</h3>{% endif %}
       <ul>
         {% for e in group.entries %}
-        <li>{{ e.date }} — {{ e.type }}: {{ e.value }}{% if e.place %} @ {{ e.place }}{% endif %} {{ e.source_html }}</li>
+        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place %} @ {{ e.place }}{% endif %} {{ e.source_html }}</li>
         {% endfor %}
       </ul>
     {% endfor %}

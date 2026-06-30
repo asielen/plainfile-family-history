@@ -29,12 +29,12 @@ Every capture writes one **staged bundle** to
 
 ```
 <slug>-<timestamp>/
-  page.html        ← the raw captured DOM, ALWAYS saved; the clean scrape source
-  page-copy.html   ← optional self-contained page snapshot (role webpage), when
-                     "Keep a copy of the whole page" is on
-  record.<ext>     ← optional evidence file (role record): an image or PDF, pulled
-                     from the page address or dropped in; absent for "No file"
-  capture.json     ← your inputs + the browser's generic pre-fill (schema 2)
+  page.html          ← the raw captured DOM, ALWAYS saved; the clean scrape source
+  page-snapshot.html ← optional self-contained page snapshot (role webpage), when
+                       "Keep a copy of the whole page" is on
+  record.<ext>       ← optional evidence file (role record): an image or PDF, pulled
+                       from the page address or dropped in; absent for "No file"
+  capture.json       ← your inputs + the browser's generic pre-fill (schema 2)
 ```
 
 A capture can carry **both** a page snapshot and a separate evidence file (the
@@ -57,7 +57,7 @@ per staged file with its `role`:
   "source_type": "census",
   "assets": [
     { "file": "record.jpg", "role": "record", "mode": "manual", "provisional": true },
-    { "file": "page-copy.html", "role": "webpage", "mode": "singlefile" }
+    { "file": "page-snapshot.html", "role": "webpage", "mode": "singlefile" }
   ],
   "people": ["Thomas Hartley", "Margaret Hartley"],
   "notes": "Bob's great-grandfather's household.",
@@ -116,7 +116,7 @@ in Chrome and Edge; a Firefox port is a packaging detail, not a redesign.
        when it is a screenshot, so reviewers know to look for a clearer original
        later.
      - **No, the page copy is the record**, for memorials, index entries, and
-       write-ups where the page itself is the evidence. (With the page-copy toggle
+       write-ups where the page itself is the evidence. (With the page-snapshot toggle
        off too, this is a pointer-only capture: just the citation.)
 4. **Capture & save.** The bundle is staged to Downloads. **No source record is
    minted, no claims drafted, no ID assigned**, it is pre-source. Go back to

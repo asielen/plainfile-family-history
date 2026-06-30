@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-normalize_links.py — fha normalize-links: settle citations to their canonical form.
+normalize_links.py - fha normalize-links: settle citations to their canonical form.
 
-  fha normalize-links            Preview the rewrites (dry run — writes nothing)
+  fha normalize-links            Preview the rewrites (dry run - writes nothing)
   fha normalize-links --write    Apply them, showing the same diff
 
 This is the ONE explicit, previewed rewrite pass over a human's citation prose
 (SPEC §3 "resolve always; rewrite only on purpose"). It is deliberately separate
 from the Formatter, which never rewrites prose beyond trailing whitespace
-(TOOLING §3) — and citations are prose. Nothing here ever runs silently: the
+(TOOLING §3) - and citations are prose. Nothing here ever runs silently: the
 default is a dry run, a real write needs `--write`, and a human stem is never
 dropped (it stays in the record's `aliases:`, which is exactly what lets the
 shortened link keep resolving).
@@ -22,11 +22,11 @@ Three rewrites, all toward the stable, rename-proof, ID-carrying form:
       → `["[[P-…|Ken Smith]]"]`                          (the human graph surface,
       settled to a stable P-id target)
 
-An AMBIGUOUS name (two "John Smith"s) is never guessed — it is reported and left
+An AMBIGUOUS name (two "John Smith"s) is never guessed - it is reported and left
 exactly as written for the human (or Obsidian autocomplete) to pin to an ID.
 
 The claims ```yaml block and bare-ID frontmatter lists are NEVER touched: those
-are structured data, not prose (SPEC §8/§14 — "the claims block stays bare").
+are structured data, not prose (SPEC §8/§14 - "the claims block stays bare").
 
 Follows the headless-core Result contract: `run_normalize_links` computes and
 returns a `Result`; `_cmd_normalize_links` renders it and returns the exit code.
@@ -69,7 +69,7 @@ except ModuleNotFoundError:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
 
 # Fenced code blocks (the ```yaml claims block, any ``` example) are structured
-# data, not prose — split them out so a prose rewrite never edits a bare ID
+# data, not prose - split them out so a prose rewrite never edits a bare ID
 # inside them.
 import re
 
@@ -146,7 +146,7 @@ def _rewrite_wikilinks(
         nonlocal edits
         target = m.group(1).strip()
         if id_type_of(target):
-            return m.group(0)   # already an ID link — canonical, leave it
+            return m.group(0)   # already an ID link - canonical, leave it
         resolved = resolve_ref(target, alias_map)
         if resolved:
             display = (m.group(3) or target).strip()
@@ -217,7 +217,7 @@ def normalize_text(
         like citation:, provenance:, title:, aliases: are never touched, and
         bare-ID `people: [P-…]` lists without wikilinks are left alone);
       - body prose: name-link upgrade + legacy single-bracket upgrade, but NOT
-        inside ```fenced``` blocks — the claims YAML stays bare.
+        inside ```fenced``` blocks - the claims YAML stays bare.
     """
     fm = FRONT_RE.match(text)
     if fm:
@@ -230,7 +230,7 @@ def normalize_text(
     edits = e_fm
     ambiguous = list(a_fm)
     for i, part in enumerate(_FENCE_RE.split(body)):
-        if i % 2 == 1:          # odd parts are fenced blocks — structured data
+        if i % 2 == 1:          # odd parts are fenced blocks - structured data
             out.append(part)
             continue
         new_part, e, a = _rewrite_prose(part, alias_map, clashes)
@@ -292,7 +292,7 @@ def run_normalize_links(
             if name.lower() not in ambiguous_seen:
                 ambiguous_seen.add(name.lower())
                 ids = ', '.join(fmt_id_display(i) for i in clashes.get(name.lower(), []))
-                result.add('warning', f"{rel}: '{name}' is ambiguous — it names {ids}. "
+                result.add('warning', f"{rel}: '{name}' is ambiguous - it names {ids}. "
                            'Left unchanged; pin it to one ID by hand.')
 
         if new_text == original:
@@ -315,7 +315,7 @@ def run_normalize_links(
     result.data['written'] = write
 
     if files_changed == 0:
-        result.add('info', 'All citations are already in canonical form — nothing to normalize.')
+        result.add('info', 'All citations are already in canonical form - nothing to normalize.')
     elif write:
         result.add('info', f'Normalized {total_edits} citation(s) across {files_changed} file(s).')
     else:

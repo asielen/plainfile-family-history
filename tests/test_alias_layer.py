@@ -1,5 +1,5 @@
 """
-test_alias_layer.py — the `aliases:` resolution layer (wikilink-native step 03).
+test_alias_layer.py - the `aliases:` resolution layer (wikilink-native step 03).
 
 Covers the keystone contract: every reference (an ID, a human stem, a person's
 name) resolves to one canonical ID through the alias map; the human graph surface
@@ -49,6 +49,26 @@ class ResolveHelperTests(unittest.TestCase):
 
     def test_unknown_ref_is_none(self):
         self.assertIsNone(resolve_ref('nobody', self.amap))
+
+    def test_restricted_variant_dict_resolves_by_value(self):
+        # A restricted name variant (deadname, SPEC §18) is a {value:, restricted:}
+        # mapping. Its clean value must still resolve internally; str(dict) would
+        # make the Python repr the alias key, so the real prior name would resolve
+        # to nothing and a clash on it would go undetected.
+        records = [{
+            'id': 'P-de957bcda1', 'name': 'Jane Hartley',
+            'name_variants': [{'value': 'John Hartley', 'restricted': 'true'}],
+        }]
+        amap = build_alias_map(records)
+        self.assertEqual(resolve_ref('John Hartley', amap), 'p-de957bcda1')
+        self.assertEqual(resolve_ref('[[John Hartley]]', amap), 'p-de957bcda1')
+        # And a deadname colliding with another person's name is still a clash.
+        clash = [
+            {'id': 'P-aaaaaaaaaa', 'name': 'John Hartley'},
+            {'id': 'P-bbbbbbbbbb', 'name': 'Jane Hartley',
+             'name_variants': [{'value': 'John Hartley', 'restricted': 'true'}]},
+        ]
+        self.assertIn('john hartley', alias_clashes(clash))
 
     def test_clashing_name_never_resolves(self):
         records = [
@@ -143,7 +163,7 @@ class LintAliasTests(unittest.TestCase):
         self._two_johns()
         codes = self._codes()
         self.assertIn('W112', codes)        # latent
-        self.assertNotIn('W113', codes)     # not active — nothing links by the name
+        self.assertNotIn('W113', codes)     # not active - nothing links by the name
 
     def test_active_name_clash_flagged_not_guessed(self):
         self._two_johns()
@@ -151,7 +171,7 @@ class LintAliasTests(unittest.TestCase):
                '---\nid: S-1111111111\ntitle: A\nsource_type: photo\n---\n'
                '## Notes\nPictured with [[John Smith]] at the fair.\n')
         codes = self._codes()
-        self.assertIn('W113', codes)        # active — a link uses the ambiguous name
+        self.assertIn('W113', codes)        # active - a link uses the ambiguous name
 
     def test_self_alias_warns_only_when_aliases_present_but_wrong(self):
         # No aliases: field → not nagged (forgiving).
@@ -171,7 +191,7 @@ class LintAliasTests(unittest.TestCase):
 
     def test_unresolved_non_id_stem_is_inert(self):
         # A bare name/stem wikilink that matches no alias is an ordinary Obsidian
-        # link, not a citation — no finding at all.
+        # link, not a citation - no finding at all.
         _write(self.root / 'sources' / 'a_S-1111111111.md',
                '---\nid: S-1111111111\ntitle: A\nsource_type: photo\n---\n'
                '## Notes\nSee [[grandmas-album]].\n')

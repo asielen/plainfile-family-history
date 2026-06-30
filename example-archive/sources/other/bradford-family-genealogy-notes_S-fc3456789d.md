@@ -1,7 +1,7 @@
 ---
 id: S-fc3456789d
 aliases: [S-fc3456789d]
-title: Bradford family genealogy notes — handwritten, undated
+title: Bradford family genealogy notes - handwritten, undated
 source_type: other
 source_date: 1980~
 source_class: derivative
@@ -29,7 +29,7 @@ created: 2026-06-14
 - value: "Edith Louise Hartley is a child of Warren Calvin Hartley and Clara Mabel Frost"
   id: C-fc0000001a
   type: relationship
-  subtype: child-of
+  subtype: biological
   persons: [P-5e6f7g8h9j, P-6f7g8h9jka, P-7g8h9jkamb]
   roles:
     child: P-5e6f7g8h9j
@@ -44,7 +44,7 @@ created: 2026-06-14
 - value: "James Robert Bradford is a child of George Arthur Bradford and Edith Louise Hartley"
   id: C-fc0000002b
   type: relationship
-  subtype: child-of
+  subtype: biological
   persons: [P-2b3c4d5e6f, P-4d5e6f7g8h, P-5e6f7g8h9j]
   roles:
     child: P-2b3c4d5e6f
@@ -59,7 +59,7 @@ created: 2026-06-14
 - value: "Alex James Bradford is a child of James Robert Bradford and Carol Anne Simmons"
   id: C-fc0000003c
   type: relationship
-  subtype: child-of
+  subtype: biological
   persons: [P-0a1b2c3d4e, P-2b3c4d5e6f, P-3c4d5e6f7g]
   roles:
     child: P-0a1b2c3d4e

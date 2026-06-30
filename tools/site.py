@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-site.py — fha site: the static-HTML family explorer (TOOLING §12).
+site.py - fha site: the static-HTML family explorer (TOOLING §12).
 
   fha site [--out PATH] [--standalone | --linked] [--dry-run] [--root PATH]
 
 ARCHITECTURE OVERVIEW
 ----------------------
 `fha site` renders the whole archive as a browsable, fully-relative-link
-website that opens straight from `file://` — no server, no CDN, no JS
+website that opens straight from `file://` - no server, no CDN, no JS
 framework. It is a *snapshot*, not a live view: structured data is read from
 `.cache/index.sqlite` (so the site is exactly as fresh as the last
 `fha index`), prose (biography, Stories) is read from the curated person
@@ -17,9 +17,12 @@ framework. It is a *snapshot*, not a live view: structured data is read from
 
 Two build modes, one generator:
   - `--standalone` (default): the safe-to-share snapshot. Living/unknown
-    persons get no page and render as "Living Person"; restricted, DNA, and
-    `rights.publication_ok: false` sources get no page and render as
-    "Restricted — not included in this publication"; image assets become
+    persons - and `restricted` persons (any value, SPEC §21) - get no page and
+    render as "Living Person"; restricted, DNA, and `rights.publication_ok:
+    false` sources get no page and render as "Restricted - not included in this
+    publication"; a single `restricted` claim is withheld even when its source
+    publishes; a restricted name (a deadname) resolves internally but redacts to
+    the person's unrestricted display name (SPEC §18); image assets become
     web-optimized, EXIF-stripped derivatives copied into `site/media/` so the
     snapshot depends on nothing outside itself.
   - `--linked`: a fast *local* developer preview. Real archive paths (no
@@ -29,10 +32,10 @@ This file ships the whole Layer 8 publication suite: M8.1 (foundations: query
 layer, Jinja2, source page), M8.2 (curated person page), M8.3 (place +
 discoveries pages), M8.4 (home page: surname A-Z + discoveries teaser, and the
 standalone redaction audit enforced by the page-set design below), and M8.5
-(interactive trees — a vendored, dependency-free renderer fed the neutral tree
+(interactive trees - a vendored, dependency-free renderer fed the neutral tree
 JSON through a single adapter seam).
 
-WHY A LIBRARY FUNCTION (`run_site`): mirrors packet/report — a testable
+WHY A LIBRARY FUNCTION (`run_site`): mirrors packet/report - a testable
 `run_site(archive_root, out_dir, ...) -> dict` core, with a thin CLI handler
 that turns the result into exit codes and stdout. Tests drive `run_site`
 against a synthetic index without touching the real archive.
@@ -52,41 +55,41 @@ PIL.
 CODE MAP
 --------
   Prose / HTML
-    _escape                    — html.escape shorthand
-    _prose_to_html             — minimal stdlib markdown→HTML (no md library)
-    _inline_html               — inline pass: links, [ID] tokens, **bold**
-    _extract_section           — pull one `## Heading` section body from a record
+    _escape                    - html.escape shorthand
+    _prose_to_html             - minimal stdlib markdown→HTML (no md library)
+    _inline_html               - inline pass: links, [ID] tokens, **bold**
+    _extract_section           - pull one `## Heading` section body from a record
 
   Dates
-    _decade_header             — EDTF date → "1880s" decade label (timeline grouping)
+    _decade_header             - EDTF date → "1880s" decade label (timeline grouping)
 
   Image derivatives
-    _PIL_AVAILABLE             — is Pillow importable?
-    _make_derivative           — resized, EXIF-stripped JPEG/PNG copy (standalone)
+    _PIL_AVAILABLE             - is Pillow importable?
+    _make_derivative           - resized, EXIF-stripped JPEG/PNG copy (standalone)
 
   Paths / hrefs
-    _rel_href                  — relative href from a page dir to a target file
-    _page_filename             — id → 'p-xxx.html' / 's-xxx.html'
-    _json_for_script           — JSON serialized safe for inline <script> embedding
+    _rel_href                  - relative href from a page dir to a target file
+    _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
+    _json_for_script           - JSON serialized safe for inline <script> embedding
 
   Interactive tree (M8.5)
-    _apex_ancestor             — deepest ancestor of root_person (home-tree seed)
-    _build_tree_data           — BFS relationships → neutral tree JSON + url + redaction
-    _tree_node, _person_vitals — one redacted node; its birth/death labels
-    _make_tree_ctx             — build a tree, write data/tree_*.json, return template ctx
-    _copy_vendor               — copy the vendored renderer/adapter into the site
+    _apex_ancestor             - deepest ancestor of root_person (home-tree seed)
+    _build_tree_data           - BFS relationships → neutral tree JSON + url + redaction
+    _tree_node, _person_vitals - one redacted node; its birth/death labels
+    _make_tree_ctx             - build a tree, write data/tree_*.json, return template ctx
+    _copy_vendor               - copy the vendored renderer/adapter into the site
 
   Builder
-    _SiteBuilder               — holds conn, mode, maps, page sets, jinja env
-      .prepare                 — load persons/sources, decide which pages exist
-      .render_token            — one [ID] token → HTML (link / redaction / mark)
-      .build_source_page       — M8.1 source page
-      .build_person_page       — M8.2 person page
-      .build_index_page        — minimal people+sources landing page
-      .run                     — orchestrate: prepare, build all pages, write
+    _SiteBuilder               - holds conn, mode, maps, page sets, jinja env
+      .prepare                 - load persons/sources, decide which pages exist
+      .render_token            - one [ID] token → HTML (link / redaction / mark)
+      .build_source_page       - M8.1 source page
+      .build_person_page       - M8.2 person page
+      .build_index_page        - minimal people+sources landing page
+      .run                     - orchestrate: prepare, build all pages, write
 
   Core / CLI
-    run_site                   — library entry point
+    run_site                   - library entry point
     _cmd_site, register, _standalone_main
 """
 
@@ -116,6 +119,7 @@ from _lib import (
     configure_utf8_stdout,
     fmt_id_display,
     id_type_of,
+    is_genetic_parent_subtype,
     is_working_copy,
     load_fha_yaml,
     normalize_id,
@@ -135,7 +139,7 @@ try:  # Jinja2 is a required dependency for this tool (TOOLING §12); guard the
 except ModuleNotFoundError:  # pragma: no cover - exercised via the CLI guard
     jinja2 = None  # type: ignore[assignment]
 
-try:  # Pillow is OPTIONAL — standalone image derivatives use it when present.
+try:  # Pillow is OPTIONAL - standalone image derivatives use it when present.
     from PIL import Image
     _PIL_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - environment-dependent
@@ -161,7 +165,7 @@ _PEDIGREE_GENERATIONS = 3
 
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
-_RESTRICTED_LABEL = 'Restricted — not included in this publication'
+_RESTRICTED_LABEL = 'Restricted - not included in this publication'
 
 # Summary-block label per vital claim type (M8.2 "summary block (accepted vitals)").
 _VITAL_LABELS = {
@@ -188,10 +192,26 @@ def _today() -> str:
     return datetime.date.today().isoformat()
 
 
+# ── The `restricted` marker (SPEC §19, §21) ────────────────────────────────────
+# A standalone snapshot is public output, so anything `restricted` - a source, a
+# claim, a person, or a name - is excluded wherever it appears, with no opt-in.
+# The index carries no claim/person/name-level `restricted`, so those are read
+# from the record files in `_load_restriction_markers`. One truthiness test:
+
+def _is_restricted_value(value) -> bool:
+    """True when a `restricted:` value withholds a record from public output.
+
+    The marker is open (SPEC §19): the plain boolean `true` or any free-text
+    type all mean restricted; only absent/false is not. (`read_record` coerces
+    booleans to `'true'`/`'false'`.) Public output has no opt-in - even
+    `restricted: by-request` is honored - so a single truthiness test suffices."""
+    return value not in (None, False, '', 'false')
+
+
 # ── Prose / HTML ────────────────────────────────────────────────────────────
 
 def _escape(text: str) -> str:
-    """html.escape, never quoting — we only emit text into element bodies here."""
+    """html.escape, never quoting - we only emit text into element bodies here."""
     return html.escape(text, quote=False)
 
 
@@ -321,7 +341,7 @@ def _decade_header(date_edtf: str | None) -> str | None:
     Mirrors views.py `_decade_from_edtf`: read the decade from the *display*
     EDTF, not from the widened date_min (an approximate '1840~' has date_min
     '1839-01-01' and would land in the wrong decade). Duplicated rather than
-    imported — tools never import tools (TOOLING §15).
+    imported - tools never import tools (TOOLING §15).
     """
     if not date_edtf:
         return None
@@ -340,8 +360,8 @@ def _make_derivative(src: Path, dest: Path) -> bool:
     """Write a resized, EXIF-stripped copy of `src` to `dest`. True on success.
 
     Standalone snapshots must carry their own image derivatives so no full-res
-    original — and none of its EXIF (camera, GPS, timestamps that could leak a
-    living person's location) — ever leaves the archive (TOOLING §12). PIL drops
+    original - and none of its EXIF (camera, GPS, timestamps that could leak a
+    living person's location) - ever leaves the archive (TOOLING §12). PIL drops
     metadata on a plain save; we additionally cap the longest edge at 1200px.
 
     Failure (a corrupt image, an unsupported format, a locked file) returns
@@ -368,7 +388,7 @@ def _rel_href(target: Path, page_dir: Path) -> str:
     Used in `--linked` mode to point at real archive assets, and for media
     derivatives in `--standalone`. `os.path.relpath` raises ValueError when the
     two paths are on different Windows drives (an external asset root on D:\\,
-    site on C:\\) — fall back to a `file://` absolute URI so the link still
+    site on C:\\) - fall back to a `file://` absolute URI so the link still
     resolves rather than emitting a broken relative path.
     """
     try:
@@ -387,7 +407,7 @@ def _json_for_script(obj) -> str:
     """Serialize `obj` for safe embedding inside an inline <script> element.
 
     A bare `</script>` (or a `<!--`) inside JSON would close the script tag and
-    let the rest be parsed as HTML — an injection vector. Escaping `<`, `>`, and
+    let the rest be parsed as HTML - an injection vector. Escaping `<`, `>`, and
     `&` as JSON unicode escapes keeps the value valid JSON while making a
     `</script>` sequence impossible. The result is read back via
     `JSON.parse(scriptEl.textContent)`, never fetched (file:// has no network)."""
@@ -401,7 +421,7 @@ class _SiteBuilder:
     """Holds the shared state for one site build and renders every page.
 
     Constructed once per `run_site`. `prepare()` loads the person/source
-    metadata and decides — once, up front — which person and source pages will
+    metadata and decides - once, up front - which person and source pages will
     exist under the active mode. Every cross-link and every token-swap then
     consults that single decision (`self.person_pages` / `self.source_pages`),
     so the site can never link to a page it didn't generate (the standalone
@@ -441,8 +461,15 @@ class _SiteBuilder:
         self.person_pages: set[str] = set()   # normalized pids that get a page
         self.source_pages: set[str] = set()   # normalized sids that get a page
         self.place_pages: set[str] = set()    # normalized lids that get a page
+        # The `restricted` marker at the claim/person/name level, read from the
+        # record files once in prepare() (the index carries none of these). A
+        # restricted source caught only by a free-text type also lands here.
+        self.restricted_persons: set[str] = set()       # pids withheld from public output
+        self.restricted_sources: set[str] = set()        # sids the index 0/1 missed
+        self.restricted_claims: set[str] = set()         # claim ids withheld
+        self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         # Opened once in prepare() when the photo index is fresh, reused across
-        # every person page, closed by run_site — so the photos-root freshness
+        # every person page, closed by run_site - so the photos-root freshness
         # walk happens once per build, not once per curated person.
         self.photos_conn: sqlite3.Connection | None = None
         # discoveries.md is read for both the discoveries page and the home
@@ -457,7 +484,7 @@ class _SiteBuilder:
         else:  # pragma: no cover - guarded earlier in run_site
             self.env = None
 
-    # — preparation —
+    # - preparation -
 
     def prepare(self) -> None:
         """Load metadata and decide which pages exist under the active mode."""
@@ -474,9 +501,16 @@ class _SiteBuilder:
             self.place_meta[row['id']] = row
             self.place_names[row['id']] = row['name'] or ''
 
+        # Read the claim/person/name-level `restricted` markers from the record
+        # files (the index carries none of them) before deciding which pages
+        # exist, so the predicates below see a restricted person/source. Skipped
+        # in --linked mode (the dev preview applies no redaction at all).
+        if not self.linked:
+            self._load_restriction_markers()
+
         # Alias resolve map (clash-aware): lets a prose `[[Ken Smith]]` / `[[stem]]`
         # name-link resolve to its canonical ID so a living person referenced only
-        # by name is still redacted — the privacy hole the display-text form opens.
+        # by name is still redacted - the privacy hole the display-text form opens.
         self._alias_table_ok: bool = False
         idx: dict[str, set[str]] = {}
         try:
@@ -488,8 +522,18 @@ class _SiteBuilder:
         self.alias_map: dict[str, str] = {
             a: next(iter(ids)) for a, ids in idx.items() if len(ids) == 1
         }
+        # A restricted name variant (deadname) is stored mangled in the index
+        # alias table (as the stringified mapping), so `[[prior name]]` would not
+        # resolve there. Register its value here so the link still resolves to
+        # the person internally (SPEC §18) - render_token then redacts the
+        # display. Only add an unambiguous value (don't override an existing
+        # alias / introduce a silent clash).
+        for rid, values in self.restricted_names.items():
+            for value in values:
+                if value and value not in self.alias_map:
+                    self.alias_map[value] = rid
 
-        # Build the set of source ids that name a living person — checked via both the
+        # Build the set of source ids that name a living person - checked via both the
         # explicit source_people table (frontmatter `people:`) and via claim_persons
         # (claims attached to the source that name a living participant).
         source_living: set[str] = set()
@@ -506,6 +550,25 @@ class _SiteBuilder:
                 "WHERE p.living IN ('true','unknown') AND c.source_id IS NOT NULL"
             ):
                 source_living.add(row['source_id'])
+            # Also exclude sources naming a person-level restricted person
+            # (deceased but carrying `restricted: by-request`). The person's
+            # page is suppressed by _person_is_redacted; the source page must
+            # follow suit so the facts don't leak through the source view.
+            if self.restricted_persons:
+                placeholders = ','.join('?' * len(self.restricted_persons))
+                rp = list(self.restricted_persons)
+                for row in self.conn.execute(
+                    f"SELECT sp.source_id FROM source_people sp WHERE sp.person_id IN ({placeholders})",
+                    rp,
+                ):
+                    source_living.add(row['source_id'])
+                for row in self.conn.execute(
+                    f"SELECT DISTINCT c.source_id FROM claims c "
+                    f"JOIN claim_persons cp ON c.id = cp.claim_id "
+                    f"WHERE cp.person_id IN ({placeholders}) AND c.source_id IS NOT NULL",
+                    rp,
+                ):
+                    source_living.add(row['source_id'])
 
         for sid, row in self.source_meta.items():
             if self.linked or not self._source_is_redacted(row):
@@ -525,11 +588,51 @@ class _SiteBuilder:
 
         self._open_photos()
 
+    def _load_restriction_markers(self) -> None:
+        """Read the claim/person/name-level `restricted` markers from disk.
+
+        The index records `restricted` only on sources, and only as 0/1, so the
+        person-level marker, the per-claim marker, the per-name-variant marker,
+        and a free-text source type (`restricted: by-request`) are all invisible
+        to it. This one pass over the person and source records fills the four
+        sets the redaction predicates consult. A record that cannot be read is
+        skipped (its page still builds; the standalone audit catches any leak)."""
+        for pid, row in self.person_meta.items():
+            if not row['path']:
+                continue
+            try:
+                rec = read_record(self.archive_root / row['path'])
+            except Exception:
+                continue
+            meta = rec['meta']
+            if _is_restricted_value(meta.get('restricted')):
+                self.restricted_persons.add(pid)
+            for v in meta.get('name_variants') or []:
+                if isinstance(v, dict) and _is_restricted_value(v.get('restricted')):
+                    value = v.get('value')
+                    if value:
+                        self.restricted_names.setdefault(pid, set()).add(str(value).strip().lower())
+        for sid, row in self.source_meta.items():
+            if row['restricted'] or not row['path']:
+                continue   # index-restricted sources are already handled
+            try:
+                rec = read_record(self.archive_root / row['path'])
+            except Exception:
+                continue
+            if _is_restricted_value(rec['meta'].get('restricted')):
+                self.restricted_sources.add(sid)
+            for claim in rec['claims']:
+                if not isinstance(claim, dict):
+                    continue
+                cid = normalize_id(str(claim.get('id', '')))
+                if cid and _is_restricted_value(claim.get('restricted')):
+                    self.restricted_claims.add(cid)
+
     def _open_photos(self) -> None:
         """Open the photo index once if it is fresh, for the person photo strips.
 
         The freshness check (`photoindex_status`) walks the whole photos root,
-        so it must run once per build — never once per person. An absent, stale,
+        so it must run once per build - never once per person. An absent, stale,
         or unreadable photo index simply leaves `self.photos_conn` None and the
         photo strip is omitted (it is enrichment, never a build blocker).
         """
@@ -554,8 +657,12 @@ class _SiteBuilder:
         """A source is withheld from a standalone snapshot when restricted, DNA,
         or explicitly `rights.publication_ok: false` (TOOLING §12 / SPEC §21).
         `COALESCE(publication_ok, 1) = 0` is the codebase-wide predicate (gedcom,
-        wikitree): absent → publishable, explicit false → withheld."""
+        wikitree): absent → publishable, explicit false → withheld. A free-text
+        restricted type (`restricted: by-request`) the index stored as 0 is
+        caught via the `restricted_sources` set read from the record files."""
         if (row['restricted'] or 0):
+            return True
+        if row['id'] in self.restricted_sources:
             return True
         if (row['source_type'] or '') == 'dna':
             return True
@@ -563,11 +670,15 @@ class _SiteBuilder:
         return pub is not None and int(pub) == 0
 
     def _person_is_redacted(self, row: sqlite3.Row) -> bool:
-        """Living and unknown-living persons are redacted from standalone output
-        (AGENTS.md privacy rule; `unknown` is treated as living)."""
+        """A person is redacted from standalone output when living/unknown
+        (AGENTS.md; `unknown` is treated as living) or `restricted` (any value,
+        SPEC §21 - a restricted person, like a living one, gets no page and is
+        rendered as a redaction label)."""
+        if row['id'] in self.restricted_persons:
+            return True
         return (row['living'] or '') in ('true', 'unknown')
 
-    # — token rendering —
+    # - token rendering -
 
     def render_token(self, token: str, page_dir: Path, in_display: str | None = None) -> str:
         """Render one citation token to HTML, relative to the page being built.
@@ -575,21 +686,21 @@ class _SiteBuilder:
         `token` is an ID *or* a human name/stem; a name/stem is resolved through
         the alias map first. `in_display` is the text a human wrote inside the
         token (`[[P-id|Margaret Cole]]`) and is preferred over the resolved
-        record name — EXCEPT for a redacted living person, where neither the name
+        record name - EXCEPT for a redacted living person, where neither the name
         nor the in-token display is ever emitted.
 
         P-id → link to the person page when one exists; "Living Person" when the
         person is redacted under standalone; otherwise the plain (escaped) name.
-        S-id → link to the source page, or "Restricted — not included…" when
+        S-id → link to the source page, or "Restricted - not included…" when
         withheld. L-id → link to the place page (places are never redacted).
-        A dangling *ID* token renders highlighted — `<mark>[X-xxxx]</mark>` (TOOLING
+        A dangling *ID* token renders highlighted - `<mark>[X-xxxx]</mark>` (TOOLING
         §12 / BUILD M8.1; already a lint error). An unresolved *name/stem* link is
         an ordinary Obsidian note-link, not a citation, and renders as plain text.
         """
         pid = normalize_id(token)
         kind = id_type_of(pid)
         if kind is None:
-            # A name/stem wikilink target — resolve through the alias map.
+            # A name/stem wikilink target - resolve through the alias map.
             resolved = self.alias_map.get(strip_link_wrapper(token).lower())
             if resolved:
                 pid, kind = resolved, id_type_of(resolved)
@@ -597,7 +708,7 @@ class _SiteBuilder:
                 # Inert Obsidian link, not a broken citation → plain text.
                 # Exception: when the aliases table is absent (stale index) we
                 # can't distinguish a non-record link from an unresolved living
-                # person — redact in standalone mode rather than leak a name.
+                # person - redact in standalone mode rather than leak a name.
                 if not self.linked and not self._alias_table_ok:
                     return f'<span class="redacted">{_LIVING_LABEL}</span>'
                 return _escape(in_display or token)
@@ -609,6 +720,13 @@ class _SiteBuilder:
             row = self.person_meta[pid]
             if not self.linked and self._person_is_redacted(row):
                 return f'<span class="redacted">{_LIVING_LABEL}</span>'
+            # A restricted name (a deadname) resolves to the person internally
+            # but must never be displayed: drop an in-token display that is one of
+            # this person's restricted variants, so the unrestricted display name
+            # is shown instead (SPEC §18).
+            if (not self.linked and in_display
+                    and in_display.strip().lower() in self.restricted_names.get(pid, set())):
+                in_display = None
             name = _escape(in_display or row['name'] or display)
             if pid in self.person_pages:
                 href = html.escape(_rel_href(self.persons_dir / _page_filename(pid), page_dir), quote=True)
@@ -631,7 +749,7 @@ class _SiteBuilder:
                 href = html.escape(_rel_href(self.places_dir / _page_filename(pid), page_dir), quote=True)
                 return f'<a href="{href}">{name}</a>'
             return name
-        # Unresolved ID token — surfaced as the literal [X-xxxx] form, not hidden
+        # Unresolved ID token - surfaced as the literal [X-xxxx] form, not hidden
         # (TOOLING §12 / BUILD M8.1; these are already lint errors).
         return f'<mark>[{_escape(display)}]</mark>'
 
@@ -645,7 +763,7 @@ class _SiteBuilder:
         Distinct from `render_token`'s prose handling, which renders an S-id as
         the source *title* so a sentence reads naturally. In a dense timeline or
         summary a short bracketed id is clearer, so this builds the chip
-        directly — while honoring the same redaction and page-existence rules.
+        directly - while honoring the same redaction and page-existence rules.
         """
         sid = normalize_id(sid)
         chip = f'[{_escape(fmt_id_display(sid))}]'
@@ -673,7 +791,7 @@ class _SiteBuilder:
         text (free-text `place_text` with no registry id stays unlinked). Returns
         a Markup so the template renders the link; an empty Markup when there is
         no place at all (so `{% if %}` guards still treat it as absent). Mirrors
-        the `[L-id]`-token link in prose — the symmetry the review flagged."""
+        the `[L-id]`-token link in prose - the symmetry the review flagged."""
         label = self._place_label(place_text, place_id)
         if not label:
             return self._markup('')
@@ -682,7 +800,7 @@ class _SiteBuilder:
             return self._markup(f'<a href="{href}">{_escape(label)}</a>')
         return self._markup(_escape(label))
 
-    # — assets —
+    # - assets -
 
     def _file_entry(self, asset_rel: str, role: str | None, page_dir: Path) -> dict | None:
         """Build one source-page file entry (thumbnail + link) for an asset.
@@ -698,7 +816,7 @@ class _SiteBuilder:
             failed → omit the image with a note (never copy the original, which
             would leak EXIF).
           - --standalone, non-image → list the filename with a note that the
-            original stays in the archive (originals never leave — TOOLING §12).
+            original stays in the archive (originals never leave - TOOLING §12).
         """
         label = Path(asset_rel).name
         try:
@@ -734,7 +852,7 @@ class _SiteBuilder:
         archives often reuse per-folder sequential names like `001.jpg`).
         Namespacing by stem alone would let the second overwrite the first and
         publish the wrong image. A short hash of the full alias path makes the
-        name unique while staying deterministic — the same asset always maps to
+        name unique while staying deterministic - the same asset always maps to
         the same derivative, so it is built once and reused across pages rather
         than churning or colliding."""
         norm = alias_path.replace('\\', '/')
@@ -754,12 +872,12 @@ class _SiteBuilder:
         self.messages.append(f'WARNING: could not build a web image for {asset_rel} (skipped, build continues)')
         return {'label': Path(asset_rel).name, 'note': 'image could not be processed', 'link_href': None, 'thumb_href': None}
 
-    # — source page (M8.1) —
+    # - source page (M8.1) -
 
     def build_source_page(self, sid: str) -> None:
         """Render one source page: citation, metadata, claims table, files.
 
-        Wrapped so a single malformed source never aborts the build — its page
+        Wrapped so a single malformed source never aborts the build - its page
         falls back to the title-only citation and a plain warning, and the rest
         of the site still renders (M8 UX bar (a)+(c)).
         """
@@ -778,7 +896,7 @@ class _SiteBuilder:
         except Exception as e:
             self.messages.append(f'WARNING: could not read {row["path"]} ({e}); showing the title only.')
 
-        # A standalone snapshot publishes only the archive's current position —
+        # A standalone snapshot publishes only the archive's current position -
         # accepted + needs-review. `suggested` (unreviewed AI drafts; "your
         # suggestions are not facts") and `rejected`/`superseded` (known not
         # current) are withheld from public output, matching the timeline's
@@ -798,6 +916,10 @@ class _SiteBuilder:
             "CASE WHEN date_min IS NULL OR date_min = '' THEN 1 ELSE 0 END, date_min ASC",
             (sid,),
         ):
+            # A restricted claim (read from the record file) is withheld from
+            # public output even when its source page is published (SPEC §8.4).
+            if not self.linked and normalize_id(str(c['id'])) in self.restricted_claims:
+                continue
             person_rows = self.conn.execute(
                 'SELECT person_id FROM claim_persons WHERE claim_id = ? ORDER BY position', (c['id'],)
             ).fetchall()
@@ -832,7 +954,7 @@ class _SiteBuilder:
             if not self.linked and self._is_living_tagged_photo(f['path']):
                 entries.append({
                     'label': Path(f['path']).name,
-                    'note': 'image omitted — tagged to a living person',
+                    'note': 'image omitted - tagged to a living person',
                     'link_href': None,
                     'thumb_href': None,
                 })
@@ -843,7 +965,7 @@ class _SiteBuilder:
             entries.append(entry)
         return entries
 
-    # — person page (M8.2) —
+    # - person page (M8.2) -
 
     def build_person_page(self, pid: str) -> None:
         """Render one curated person page (TOOLING §12 / M8.2)."""
@@ -880,7 +1002,7 @@ class _SiteBuilder:
             ")"
         )
         rows = self.conn.execute(
-            "SELECT type, value, date_edtf, place_id, place_text, source_id FROM claims c "
+            "SELECT c.id, type, value, date_edtf, place_id, place_text, source_id FROM claims c "
             "JOIN claim_persons cp ON c.id = cp.claim_id "
             f"WHERE cp.person_id = ? AND c.status = 'accepted' "
             f"AND c.type IN ('birth','death','marriage','baptism','burial') {living_filter}",
@@ -888,10 +1010,12 @@ class _SiteBuilder:
         ).fetchall()
         # Standalone: withold vitals whose only support is a withheld source; a fact
         # established exclusively by a restricted/DNA/publication_ok=false source must
-        # not appear as a public datum with the citation silently redacted.
+        # not appear as a public datum with the citation silently redacted. A
+        # restricted CLAIM is withheld too, regardless of its source.
         if not self.linked:
             rows = [r for r in rows
-                    if r['source_id'] is None or r['source_id'] in self.source_pages]
+                    if (r['source_id'] is None or r['source_id'] in self.source_pages)
+                    and normalize_id(str(r['id'])) not in self.restricted_claims]
         by_type: dict[str, sqlite3.Row] = {}
         for r in rows:
             by_type.setdefault(r['type'], r)   # first accepted of each type
@@ -921,7 +1045,7 @@ class _SiteBuilder:
         return biography_html, stories_html
 
     def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
-        """Accepted + needs-review claims, grouped by decade (TOOLING §12 — the
+        """Accepted + needs-review claims, grouped by decade (TOOLING §12 - the
         same query and shape as `fha views timeline`'s main chronology; suggested
         claims are excluded from the published timeline)."""
         living_filter = (
@@ -932,15 +1056,18 @@ class _SiteBuilder:
             ")"
         )
         rows = self.conn.execute(
-            "SELECT DISTINCT c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id "
+            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
             f"WHERE cp.person_id = ? AND c.status IN ('accepted','needs-review') {living_filter} "
             "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (pid,),
         ).fetchall()
-        # Standalone: omit events backed only by withheld sources (same rule as summary vitals).
+        # Standalone: omit events backed only by withheld sources (same rule as
+        # summary vitals), and omit a restricted claim regardless of its source.
         if not self.linked:
-            rows = [r for r in rows if r['source_id'] is None or r['source_id'] in self.source_pages]
+            rows = [r for r in rows
+                    if (r['source_id'] is None or r['source_id'] in self.source_pages)
+                    and normalize_id(str(r['id'])) not in self.restricted_claims]
         groups: list[dict] = []
         current: str | None = '\x00'   # sentinel distinct from None (undated)
         entries: list[dict] = []
@@ -961,7 +1088,7 @@ class _SiteBuilder:
         return groups
 
     def _person_sources(self, pid: str, page_dir: Path) -> list[dict]:
-        """Sources citing the person, grouped by source_type (TOOLING §12 — the
+        """Sources citing the person, grouped by source_type (TOOLING §12 - the
         same two-table UNION as `fha views sources-index`)."""
         status_filter = '' if self.linked else "AND c.status IN ('accepted','needs-review')"
         rows = self.conn.execute(
@@ -992,13 +1119,15 @@ class _SiteBuilder:
         Used in standalone mode to suppress relationship edges whose only evidence comes
         from restricted, DNA, or living-linked sources."""
         rows = self.conn.execute(
-            "SELECT c.source_id FROM claims c "
+            "SELECT c.id, c.source_id FROM claims c "
             "JOIN claim_persons cp1 ON c.id = cp1.claim_id AND cp1.person_id = ? "
             "JOIN claim_persons cp2 ON c.id = cp2.claim_id AND cp2.person_id = ? "
             "WHERE c.status IN ('accepted','needs-review')",
             (pid1, pid2),
         ).fetchall()
         for r in rows:
+            if normalize_id(str(r['id'])) in self.restricted_claims:
+                continue
             if r['source_id'] is None or r['source_id'] in self.source_pages:
                 return True
         return not rows  # no claims at all → relationship came from YAML directly, show it
@@ -1007,7 +1136,7 @@ class _SiteBuilder:
         """Return True when any person tagged to this photo in the catalog is living/unknown.
 
         Source-page image derivatives must skip photos co-tagged to living persons
-        even when the source itself is otherwise public — the same rule applied
+        even when the source itself is otherwise public - the same rule applied
         to person photo strips applies here."""
         if self.photos_conn is None:
             return False
@@ -1020,7 +1149,10 @@ class _SiteBuilder:
             return False
         for row in rows:
             person = self.person_meta.get(row['person_ref'] or '')
-            if person and (person['living'] or '') in ('true', 'unknown'):
+            # A deceased `restricted: by-request` person is redacted too, not just
+            # living/unknown - mirror the person photo strips, which gate on the
+            # full _person_is_redacted predicate.
+            if person and self._person_is_redacted(person):
                 return True
         return False
 
@@ -1032,7 +1164,7 @@ class _SiteBuilder:
         by_rel: dict[str, list[str]] = {}
         for r in rows:
             # Standalone: omit the relationship entirely rather than showing a "Living
-            # Person" placeholder — the existence and type of a family link is itself
+            # Person" placeholder - the existence and type of a family link is itself
             # personal information that should not be published.
             if not self.linked:
                 meta = self.person_meta.get(r['other_id'])
@@ -1052,7 +1184,7 @@ class _SiteBuilder:
     def _person_photos(self, pid: str, page_dir: Path) -> list[dict]:
         """Photo strip from `.cache/photos.sqlite` (`photo_people`), one entry
         per variation group. Omitted silently when the photo index is absent or
-        stale (`self.photos_conn` None) — it is an optional enrichment, never a
+        stale (`self.photos_conn` None) - it is an optional enrichment, never a
         build blocker. Uses the connection opened once in `prepare()`."""
         if self.photos_conn is None:
             return []
@@ -1134,7 +1266,7 @@ class _SiteBuilder:
         href = _rel_href(dest, page_dir)
         return {'href': href, 'full_href': href, 'caption': caption}
 
-    # — place page (M8.3) —
+    # - place page (M8.3) -
 
     def build_place_page(self, lid: str) -> None:
         """Render one place page (TOOLING §12 / M8.3): name, coords (a map *URL*,
@@ -1142,7 +1274,7 @@ class _SiteBuilder:
         contained micro-places (`within:` children), and the people most often
         associated with it. People links follow the standard redaction rule, and
         the people-frequency list omits redacted persons entirely so a standalone
-        place page never links to — or even names — a living person."""
+        place page never links to - or even names - a living person."""
         row = self.place_meta[lid]
         page_dir = self.places_dir
 
@@ -1176,10 +1308,12 @@ class _SiteBuilder:
             "ORDER BY CASE WHEN c.date_min IS NULL OR c.date_min = '' THEN 1 ELSE 0 END, c.date_min ASC",
             (lid,),
         ).fetchall()
-        # Standalone: also withhold events whose only source is restricted/living-linked.
+        # Standalone: also withhold events whose only source is restricted/living-linked,
+        # and a restricted claim regardless of its source.
         if not self.linked:
             claim_rows = [c for c in claim_rows
-                          if c['source_id'] is None or c['source_id'] in self.source_pages]
+                          if (c['source_id'] is None or c['source_id'] in self.source_pages)
+                          and normalize_id(str(c['id'])) not in self.restricted_claims]
         claims = []
         person_freq: dict[str, int] = {}
         for c in claim_rows:
@@ -1220,7 +1354,7 @@ class _SiteBuilder:
         self._write_page(self.places_dir / _page_filename(lid), 'place.html',
                          {'place': ctx, 'root_prefix': '..'})
 
-    # — discoveries page (M8.3) —
+    # - discoveries page (M8.3) -
 
     def build_discoveries_page(self) -> None:
         """Render `notes/discoveries.md` as the discoveries page (TOOLING §12 /
@@ -1240,7 +1374,7 @@ class _SiteBuilder:
     def _read_discoveries(self) -> tuple[str, list[str]]:
         """Read notes/discoveries.md and return (body_without_leading_H1,
         recent_entry_chunks). An entry is a `##`/`###` section or a top-level
-        `-` bullet — the dated, ref-carrying shape TOOLING §15a appends. The
+        `-` bullet - the dated, ref-carrying shape TOOLING §15a appends. The
         schema is loose by design, so this is tolerant: no recognizable entries
         means an empty teaser, never an error. The last five chunks (most
         recently appended) are returned for the home-page teaser. Memoized: the
@@ -1274,18 +1408,20 @@ class _SiteBuilder:
         self._discoveries = (body, chunks[-5:])
         return self._discoveries
 
-    # — interactive tree (M8.5) —
+    # - interactive tree (M8.5) -
 
     def _person_vitals(self, pid: str) -> dict:
         """First accepted birth/death `date_edtf` for a person, for tree labels.
         Mirrors `fha views tree`'s node vitals (TOOLING §7 D3)."""
         vitals = {'birth': None, 'death': None}
         for r in self.conn.execute(
-            "SELECT c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted'",
             (pid,),
         ):
-            # Standalone: skip dates whose only source is withheld (restricted/living).
+            # Standalone: skip dates from restricted claims or withheld sources.
+            if not self.linked and normalize_id(str(r['id'])) in self.restricted_claims:
+                continue
             if not self.linked and r['source_id'] is not None and r['source_id'] not in self.source_pages:
                 continue
             if vitals.get(r['type']) is None:
@@ -1298,7 +1434,7 @@ class _SiteBuilder:
         BUILD M8.5 seeds the home tree from "the root person (descendants mode)";
         TOOLING §12 frames the home hero as a "descendant explorer from a root
         *ancestor*". The configured `root_person` is the Ahnentafel proband (the
-        youngest), which has no descendants — so a literal descendants-from-proband
+        youngest), which has no descendants - so a literal descendants-from-proband
         tree would be a single node. Seeding from the apex of the proband's direct
         line (its most distant ancestor) reconciles the two: the explorer fans
         forward across the whole lineage, and it is still derived from the
@@ -1357,7 +1493,9 @@ class _SiteBuilder:
             if max_hops is not None and hop >= max_hops:
                 continue
             for r in self.conn.execute(
-                'SELECT DISTINCT other_id, claim_id FROM relationships WHERE person_id = ? AND rel = ?',
+                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype
+                   FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
+                   WHERE r.person_id = ? AND r.rel = ?''',
                 (cur, rel),
             ):
                 other = r['other_id']
@@ -1366,9 +1504,15 @@ class _SiteBuilder:
                         continue
                     if not self._has_public_claim(cur, other):
                         continue
+                # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
+                # (adoptive, step, foster, guardian, …) draws distinctly from the
+                # genetic line. Unset/legacy subtypes default to genetic.
+                subtype = (r['subtype'] or '').strip().lower() or None
                 edges.append({
                     'type': rel, 'from': fmt_id_display(cur), 'to': fmt_id_display(other),
                     'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
+                    'subtype': subtype,
+                    'genetic': is_genetic_parent_subtype(subtype),
                     'dates': {'start': None, 'end': None},
                 })
                 if other not in seen:
@@ -1414,14 +1558,14 @@ class _SiteBuilder:
         except OSError as e:
             self.messages.append(f'WARNING: could not copy the tree library into the site ({e}).')
 
-    # — index / home page (M8.4) —
+    # - index / home page (M8.4) -
 
     def build_index_page(self) -> None:
         """The home page (TOOLING §12 / M8.4): a surname A-Z index of people and
         a recent-discoveries teaser (last five entries), plus source and place
         navigation so every generated page is reachable. The surname index is
         built from `person_pages`, which already excludes redacted persons under
-        standalone — so the home page never lists or links a living person."""
+        standalone - so the home page never lists or links a living person."""
         page_dir = self.out_dir
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
 
@@ -1452,7 +1596,7 @@ class _SiteBuilder:
             key=lambda p: p['name'].lower())
         intro = (
             'A safe-to-share snapshot of this family archive.' if not self.linked
-            else 'Local developer preview (linked mode — not redacted, do not share).'
+            else 'Local developer preview (linked mode - not redacted, do not share).'
         )
 
         # Descendant explorer (M8.5): seed from the apex of the configured
@@ -1484,7 +1628,7 @@ class _SiteBuilder:
             'places': places, 'intro': intro, 'tree': tree, 'root_prefix': '.',
         })
 
-    # — rendering plumbing —
+    # - rendering plumbing -
 
     def _markup(self, raw_html: str):
         """Wrap pre-rendered HTML so Jinja's autoescape leaves it intact. The
@@ -1502,7 +1646,7 @@ class _SiteBuilder:
                 'footer_note': (
                     'Generated by fha site. Living people and restricted material are excluded from this snapshot.'
                     if not self.linked else
-                    'Generated by fha site (linked preview — unredacted; do not publish).'
+                    'Generated by fha site (linked preview - unredacted; do not publish).'
                 ),
             }
             full.update(ctx)
@@ -1528,10 +1672,10 @@ class _SiteBuilder:
 
     def _reset_output(self) -> None:
         """Clear only the subtrees this tool owns, so a rebuild drops pages for
-        records that became redacted (idempotent regeneration — TOOLING §12)
+        records that became redacted (idempotent regeneration - TOOLING §12)
         without disturbing anything else a human keeps in the output directory.
 
-        Standalone builds raise OSError if a subtree cannot be removed — leaving a
+        Standalone builds raise OSError if a subtree cannot be removed - leaving a
         previously generated page for a now-redacted person would be a privacy leak.
         Linked (dev preview) mode silently ignores removal failures."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -1557,13 +1701,13 @@ def _site_payload(
     """Build the site and return a result dict.
 
     Returns {'status', 'messages', 'out_dir', 'pages'} where status is one of:
-      'no-jinja'    — Jinja2 not installed (CLI prints an install hint)
-      'no-index'    — index absent/unreadable/stale (open_index_db already explained;
-                      standalone builds refuse a stale index — run `fha index` first)
-      'bad-config'  — fha.yaml is malformed (message carries the detail)
-      'bad-output'  — output dir would clobber archive content (CLI explains)
-      'dry-run'     — would build N pages; nothing written
-      'ok'          — built; 'messages' non-empty means finished with warnings
+      'no-jinja'    - Jinja2 not installed (CLI prints an install hint)
+      'no-index'    - index absent/unreadable/stale (open_index_db already explained;
+                      standalone builds refuse a stale index - run `fha index` first)
+      'bad-config'  - fha.yaml is malformed (message carries the detail)
+      'bad-output'  - output dir would clobber archive content (CLI explains)
+      'dry-run'     - would build N pages; nothing written
+      'ok'          - built; 'messages' non-empty means finished with warnings
     """
     if jinja2 is None:
         return {'status': 'no-jinja', 'messages': [], 'out_dir': out_dir, 'pages': 0}
@@ -1590,7 +1734,7 @@ def _site_payload(
 
     # Standalone builds refuse a stale index to avoid publishing redacted persons whose
     # living flag was changed since the last `fha index` run.  Linked (dev preview)
-    # mode only warns — a slightly stale preview beats no preview.
+    # mode only warns - a slightly stale preview beats no preview.
     conn = open_index_db(archive_root, _REQUIRED_TABLES, strict=not linked)
     if conn is None:
         return {'status': 'no-index', 'messages': [], 'out_dir': out_dir, 'pages': 0}
@@ -1641,7 +1785,7 @@ def run_site(
             data={'status': 'working-copy', 'out_dir': str(out_dir), 'pages': [], 'messages': []},
         ).add(
             'warning',
-            'fha site is not available in working-copy mode — '
+            'fha site is not available in working-copy mode - '
             'the photo and document files are on the main machine. '
             'Build the site there.',
         )
@@ -1664,7 +1808,7 @@ def _unsafe_output_reason(out_dir: Path, archive_root: Path, fha_config: dict) -
 
     `fha site` clears its owned subtrees (`persons/`, `sources/`, `places/`,
     `media/`, `data/`, `vendor/`) of the output directory before regenerating
-    (idempotent rebuild). Two of those — `sources/` and `places/` — share names
+    (idempotent rebuild). Two of those - `sources/` and `places/` - share names
     with the archive's own record trees, so pointing `--out` at the archive root
     would delete real records. And building *into* a record or asset tree (e.g.
     `--out sources`) would scatter generated pages among the originals. Refuse
@@ -1754,7 +1898,7 @@ def _cmd_site(args: argparse.Namespace) -> int:
     mode = 'linked preview' if getattr(args, 'linked', False) else 'standalone snapshot'
     where = _display_path(result['out_dir'], archive_root)
     if status == 'dry-run':
-        print(f'(dry run — no files written) Would build {result["pages"]} pages ({mode}) in {where}')
+        print(f'(dry run - no files written) Would build {result["pages"]} pages ({mode}) in {where}')
         return EXIT_WARNINGS if result['messages'] else EXIT_CLEAN
 
     print(f'Site built: {result["pages"]} pages ({mode}) in {where}')

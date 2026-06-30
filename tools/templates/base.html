@@ -52,6 +52,9 @@
   .fha-tree { overflow:auto; border:1px solid var(--rule); background:#fff; border-radius:.3rem; padding:.5rem; }
   .fha-tree-svg { display:block; }
   .fha-tree-edge { fill:none; stroke:#bbb; stroke-width:1.5; }
+  /* A non-genetic bond (adoptive, step, foster, guardian, ...) drawn distinctly
+     from the genetic line (SPEC 12.2). */
+  .fha-tree-edge-social { stroke:#c08552; stroke-dasharray:5 3; }
   .fha-node { box-sizing:border-box; width:168px; height:56px; border:1px solid var(--rule);
               border-radius:.3rem; background:#f7f4ee; padding:.25rem .4rem; overflow:hidden;
               font-size:.8rem; line-height:1.15; position:relative; }

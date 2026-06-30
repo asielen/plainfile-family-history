@@ -84,10 +84,10 @@ class RelatedPersonTests(unittest.TestCase):
 
         rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None, self.archive_root, {})
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('spouse: Bob [p-bbbbbbbbbb] — 1 source(s)', out)
+        self.assertIn('spouse: Bob [p-bbbbbbbbbb] - 1 source(s)', out)
 
     def test_cooccurrence_excludes_existing_relationship(self) -> None:
-        # Alice/Bob share two sources and already have a relationship edge —
+        # Alice/Bob share two sources and already have a relationship edge -
         # should appear under relationships, not co-occurrence.
         _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'residence', 'lived together',
                     ['p-aaaaaaaaaa', 'p-bbbbbbbbbb'])
@@ -97,7 +97,7 @@ class RelatedPersonTests(unittest.TestCase):
             "INSERT INTO relationships(person_id, rel, other_id, claim_id) "
             "VALUES ('p-aaaaaaaaaa','spouse','p-bbbbbbbbbb','c-1111111111')"
         )
-        # Alice/Carol share a source with no edge — should show as co-occurring.
+        # Alice/Carol share a source with no edge - should show as co-occurring.
         _add_claim(self.conn, 'c-3333333333', 's-1111111111', 'residence', 'lived together',
                     ['p-aaaaaaaaaa', 'p-cccccccccc'])
         self.conn.commit()
@@ -105,7 +105,7 @@ class RelatedPersonTests(unittest.TestCase):
         rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None, self.archive_root, {})
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertNotIn('Bob', out.split('co-occurring persons')[1])
-        self.assertIn('Carol [p-cccccccccc] — 1 shared source(s)', out)
+        self.assertIn('Carol [p-cccccccccc] - 1 shared source(s)', out)
 
     def test_places_ranked_by_frequency(self) -> None:
         _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'residence', 'lived in Topeka',
@@ -116,7 +116,7 @@ class RelatedPersonTests(unittest.TestCase):
 
         rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None, self.archive_root, {})
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('Topeka, Kansas — 2 claim(s)', out)
+        self.assertIn('Topeka, Kansas - 2 claim(s)', out)
 
     def test_shared_affiliation_hub(self) -> None:
         _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'occupation',
@@ -127,7 +127,7 @@ class RelatedPersonTests(unittest.TestCase):
 
         rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None, self.archive_root, {})
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('Plains Junction Railroad [occupation] — also: Bob [p-bbbbbbbbbb]', out)
+        self.assertIn('Plains Junction Railroad [occupation] - also: Bob [p-bbbbbbbbbb]', out)
 
     def test_date_filter_narrows_relationships_and_places(self) -> None:
         _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'relationship',
@@ -146,11 +146,11 @@ class RelatedPersonTests(unittest.TestCase):
         self.assertIn('relationships: none', out)
 
         rc, out = _run(find.run_related, 'p-aaaaaaaaaa', '1900', self.archive_root, {})
-        self.assertIn('parent: Bob [p-bbbbbbbbbb] — 1 source(s)', out)
+        self.assertIn('parent: Bob [p-bbbbbbbbbb] - 1 source(s)', out)
 
     def test_date_filter_uses_relationship_validity_not_claim_bounds(self) -> None:
         # Married in 1850 (the marriage claim's own bounds are just that
-        # year), still married in 1865 — date_end stays NULL (open-ended)
+        # year), still married in 1865 - date_end stays NULL (open-ended)
         # because no divorce/death claim ended it. A --date query for 1865
         # must still find the spouse edge even though it falls outside the
         # marriage claim's own narrow date_min/date_max.
@@ -165,7 +165,7 @@ class RelatedPersonTests(unittest.TestCase):
 
         rc, out = _run(find.run_related, 'p-aaaaaaaaaa', '1865', self.archive_root, {})
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('spouse: Bob [p-bbbbbbbbbb] — 1 source(s)', out)
+        self.assertIn('spouse: Bob [p-bbbbbbbbbb] - 1 source(s)', out)
 
         rc, out = _run(find.run_related, 'p-aaaaaaaaaa', '1840', self.archive_root, {})
         self.assertIn('relationships: none', out)
@@ -202,7 +202,7 @@ class RelatedPlaceTests(unittest.TestCase):
         rc, out = _run(find.run_related, 'l-1111111111', None, self.archive_root, {})
         self.assertEqual(rc, EXIT_CLEAN)
         self.assertIn('c-1111111111', out)
-        self.assertIn('Alice [p-aaaaaaaaaa] — 1 claim(s)', out)
+        self.assertIn('Alice [p-aaaaaaaaaa] - 1 claim(s)', out)
         self.assertIn('Fairview Cemetery [l-2222222222]', out)
 
     def test_unknown_place_returns_warning(self) -> None:
@@ -438,7 +438,7 @@ class RunFindDispatchTests(unittest.TestCase):
         return args
 
     def test_date_without_related_is_rejected_not_silently_dropped(self) -> None:
-        # `fha find P-id --date EDTF` (no --related) has no defined meaning —
+        # `fha find P-id --date EDTF` (no --related) has no defined meaning -
         # it must not silently discard the ID and run the standalone
         # --related --date time-slice instead.
         args = self._parse(['p-aaaaaaaaaa', '--date', '1900'])
@@ -452,7 +452,7 @@ class RunFindDispatchTests(unittest.TestCase):
         self.assertIn("p-aaaaaaaaaa's world", out)
 
     def test_date_with_text_is_rejected_not_silently_dropped(self) -> None:
-        # `fha find --text "X" --date 1900` has no defined meaning — --date
+        # `fha find --text "X" --date 1900` has no defined meaning - --date
         # is only documented for --related. Used to silently route through
         # the --text branch and discard the date; should now error out.
         args = self._parse(['--text', 'lived', '--date', '1900'])
@@ -501,7 +501,7 @@ class PersonPlacesStatusTests(unittest.TestCase):
 
         rc, out = _run(find.run_related, 'p-aaaaaaaaaa', None, self.archive_root, {})
         self.assertEqual(rc, EXIT_CLEAN)
-        self.assertIn('Topeka, Kansas — 1 claim(s)', out)
+        self.assertIn('Topeka, Kansas - 1 claim(s)', out)
         self.assertNotIn('Wichita', out)
         self.assertNotIn('Lawrence', out)
 
@@ -572,7 +572,7 @@ class PhotoIndexFreshnessInRelatedTests(unittest.TestCase):
         cache = self.archive_root / '.cache'
         cache.mkdir(exist_ok=True)
         # Build the minimal schema the queries touch so we'd surface rows
-        # if the freshness gate were absent — the test then asserts we do not.
+        # if the freshness gate were absent - the test then asserts we do not.
         pconn = sqlite3.connect(str(cache / 'photos.sqlite'))
         pconn.executescript(
             '''
@@ -672,7 +672,7 @@ class RelatedSourceDateTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_source_people_skipped_in_dated_slice(self) -> None:
-        # Bob is only on s-1111111111 via frontmatter source_people — no
+        # Bob is only on s-1111111111 via frontmatter source_people - no
         # in-window claim ties him to it. A dated slice must not list him.
         _add_claim(self.conn, 'c-1111111111', 's-1111111111', 'residence', 'lived',
                     ['p-aaaaaaaaaa'], date_edtf='1880',

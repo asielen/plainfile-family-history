@@ -466,7 +466,7 @@ class PacketTests(unittest.TestCase):
     def test_living_person_named_only_in_prose_gets_caution(self):
         profile_path = self._seed_person()
         self._seed_person(pid='p-bbbbbbbbbb', name='Prose Only Living', living='true', surname='Other')
-        # No claim_persons/source_people row for p-bbbbbbbbbb — only a bare
+        # No claim_persons/source_people row for p-bbbbbbbbbb - only a bare
         # [P-id] token in the copied profile prose.
         profile_path.write_text(
             '---\nid: p-aaaaaaaaaa\nname: Test Person\n---\n'
@@ -526,7 +526,7 @@ class PacketTests(unittest.TestCase):
     def test_out_dir_inside_arbitrary_record_subdir_refused(self):
         # Broadened rule: anything inside the archive whose top-level
         # component isn't literally 'out' is refused, not just the three
-        # named record trees — e.g. a custom internal scratch dir.
+        # named record trees - e.g. a custom internal scratch dir.
         self._seed_person()
         self._commit_fresh()
 

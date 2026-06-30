@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-scaffold.py — fha install / fha update-tools: vendor the operating layer into a
+scaffold.py - fha install / fha update-tools: vendor the operating layer into a
 private archive and keep it current (TOOLING §13c, BUILD.md M9.1-M9.2).
 
 A real family archive is a *separate, private* repository: the user's records
 plus a vendored copy of the generic operating layer (the `tools/`, the spec docs,
 the agent rulebooks, the human docs). This file is the ritual that copies that
-operating layer in, and later refreshes it from an improved public clone —
+operating layer in, and later refreshes it from an improved public clone -
 without ever destroying the human's work.
 
 THE MANIFEST (the package's own packing list)
@@ -15,21 +15,21 @@ THE MANIFEST (the package's own packing list)
 Every entry names a destination `path` (archive-relative), a content `sha256`, a
 `spec_version`, and a `category`:
 
-  - "operating"  — tools, spec docs, human docs. `fha update-tools` keeps these
+  - "operating"  - tools, spec docs, human docs. `fha update-tools` keeps these
                    current; the human may edit any of them and the checksum
                    compare protects the edit on the next update.
-  - "skeleton"   — the empty starting structure: `fha.yaml`, the seeded
+  - "skeleton"   - the empty starting structure: `fha.yaml`, the seeded
                    `places/places.yaml`, `inbox/_TEMPLATE.notes.md`, and the
                    `.gitkeep` files that hold the empty record directories.
                    These are written ONCE by `fha install` and never touched by
                    `update-tools`, because `fha.yaml` and `places.yaml` quickly
-                   fill with the human's own configuration and data — refreshing
+                   fill with the human's own configuration and data - refreshing
                    them would clobber that. (See the design note in
                    tools/README.md; surfaced as a TOOLING clarification.)
 
 Skeleton entries carry a `src` field (their source path *inside* the public
 repo, e.g. `archive-template/fha.yaml`) because their archive `path` strips the
-`archive-template/` prefix — the template folder seeds the skeleton but is never
+`archive-template/` prefix - the template folder seeds the skeleton but is never
 itself copied into an archive. Operating entries omit `src` (source == dest).
 
 The manifest is committed data, regenerated from the repo by `_write_manifest`
@@ -39,11 +39,11 @@ committed, so a PR that changes a tool but forgets to regenerate fails CI.
 
 `fha install <archive-path> [--repo PATH]`  (run from a public-repo clone)
 -------------------------------------------------------------------------
-Preflight (Python ≥ 3.10; exiftool on PATH — a friendly heads-up, never a hard
+Preflight (Python ≥ 3.10; exiftool on PATH - a friendly heads-up, never a hard
 stop), then copy every manifest file into the archive and stamp
 `.plaintext-version` (the manifest version + the per-file checksums received).
 Works from a git clone OR an unzipped download (`--repo` only needs a directory
-containing `manifest.json`; `.git/` is never assumed) — the zip path is
+containing `manifest.json`; `.git/` is never assumed) - the zip path is
 first-class for non-technical users (docs/SETUP_FROM_ZIP.md).
 
 `fha update-tools [--dry-run] --repo PATH`  (run from inside an archive)
@@ -65,32 +65,32 @@ moves-aside-and-reports. The human is always the one who throws things away.
 CODE MAP
 --------
   Errors / checksums
-    ScaffoldError              — friendly, message-carrying failure
-    _sha256_bytes/_sha256_file — content checksums (binary, exact)
+    ScaffoldError              - friendly, message-carrying failure
+    _sha256_bytes/_sha256_file - content checksums (binary, exact)
 
   Manifest definition + IO
-    _operating_files           — the operating-layer file list (repo walk)
-    _skeleton_files            — the skeleton file list (archive-template remap)
-    generate_manifest          — build the manifest dict from a repo clone
-    _write_manifest            — (maintenance) regenerate and write manifest.json
-    load_manifest              — read+validate manifest.json from a repo dir
-    _resolve_repo_root         — locate the clone/zip dir holding manifest.json
+    _operating_files           - the operating-layer file list (repo walk)
+    _skeleton_files            - the skeleton file list (archive-template remap)
+    generate_manifest          - build the manifest dict from a repo clone
+    _write_manifest            - (maintenance) regenerate and write manifest.json
+    load_manifest              - read+validate manifest.json from a repo dir
+    _resolve_repo_root         - locate the clone/zip dir holding manifest.json
 
   Version stamp + backups
-    _load_version_stamp        — read .plaintext-version (None if absent)
-    _stamp_dict                — build a .plaintext-version payload
-    _write_version_stamp       — write .plaintext-version
-    _unique_backup_path        — collision-free .plaintext-backup/{date}/ path
+    _load_version_stamp        - read .plaintext-version (None if absent)
+    _stamp_dict                - build a .plaintext-version payload
+    _write_version_stamp       - write .plaintext-version
+    _unique_backup_path        - collision-free .plaintext-backup/{date}/ path
 
   Install (M9.1)
-    _preflight                 — Python/exiftool checks → (ok, messages)
-    run_install                — create skeleton + copy operating layer + stamp
-    _cmd_install               — argparse → run_install
+    _preflight                 - Python/exiftool checks → (ok, messages)
+    run_install                - create skeleton + copy operating layer + stamp
+    _cmd_install               - argparse → run_install
 
   Update (M9.2)
-    _plan_update               — classify every file (add/current/stock/customized/retired)
-    run_update_tools           — execute (or preview) the plan, rewrite the stamp
-    _cmd_update_tools          — argparse → run_update_tools
+    _plan_update               - classify every file (add/current/stock/customized/retired)
+    run_update_tools           - execute (or preview) the plan, rewrite the stamp
+    _cmd_update_tools          - argparse → run_update_tools
 
   CLI
     register / _standalone_main
@@ -125,8 +125,8 @@ MANIFEST_VERSION = '1'
 
 # Operating-layer docs that live at the repo root (not under tools/ or docs/).
 # Enumerated rather than walked because the repo root also holds furniture that
-# never enters an archive (PRIVACY.md — the *public-repo* "no real data" policy,
-# which is contradictory inside a real archive; RELEASE_CHECKLIST.md — the public
+# never enters an archive (PRIVACY.md - the *public-repo* "no real data" policy,
+# which is contradictory inside a real archive; RELEASE_CHECKLIST.md - the public
 # release process; CNAME, manifest.json, .git*, …). TOOLING §13c / BUILD.md M9.1.
 # README.md is shipped (project orientation a genealogist benefits from).
 _ROOT_OPERATING_DOCS = (
@@ -141,13 +141,13 @@ _ROOT_OPERATING_DOCS = (
 )
 
 # Subtrees walked whole for the operating layer. `.claude/skills/` carries the
-# agent's genealogy workflow procedures (process-source, review-claims, …) — the
+# agent's genealogy workflow procedures (process-source, review-claims, …) - the
 # "how to operate" an archive, so it ships. `.claude/settings.json` is *not*
 # walked: it is this spec-repo's own agent config, not an archive's.
 _OPERATING_SUBTREES = ('tools', 'docs', '.claude/skills')
 
 # The template folder whose *contents* seed the skeleton. The folder itself is
-# never copied into an archive — each file's archive path strips this prefix.
+# never copied into an archive - each file's archive path strips this prefix.
 _SKELETON_SRC_DIR = 'archive-template'
 
 # A file under archive-template/ that is repo furniture, not skeleton: it tells a
@@ -166,7 +166,7 @@ class ScaffoldError(Exception):
     """A failure with a plain, human-facing message and a next step.
 
     Raised inside the run_* helpers and caught at the CLI boundary, so the
-    non-technical user never sees a traceback — only the message, which always
+    non-technical user never sees a traceback - only the message, which always
     names a cause and the exact command or fix to try next.
     """
 
@@ -300,7 +300,7 @@ def _read_spec_version(repo_root: Path) -> str:
 def _write_manifest(repo_root: Path) -> Path:
     """(Maintenance) Regenerate manifest.json from the repo and write it.
 
-    Not part of the `fha` command surface — invoked by a tool-builder via
+    Not part of the `fha` command surface - invoked by a tool-builder via
     `python tools/scaffold.py write-manifest --repo .` after any change to a
     tool, doc, or skeleton file. The committed manifest.json is the packing list
     `install`/`update-tools` read; this keeps it honest.
@@ -322,7 +322,7 @@ def load_manifest(repo_root: Path) -> dict:
     if not path.is_file():
         raise ScaffoldError(
             f"no manifest.json in {repo_root}. Point --repo at your copy of the "
-            f"plaintext tools — the folder that contains manifest.json, SPEC.md, "
+            f"plaintext tools - the folder that contains manifest.json, SPEC.md, "
             f"and the tools/ folder (a git clone or an unzipped download both work)."
         )
     try:
@@ -344,7 +344,7 @@ def _resolve_repo_root(repo_arg: str | None) -> Path:
     """Resolve the public-repo directory holding manifest.json.
 
     When --repo is given, use it. Otherwise default to this file's repo (two
-    levels up from tools/scaffold.py) — correct for `fha install` run from a
+    levels up from tools/scaffold.py) - correct for `fha install` run from a
     clone or an unzipped download, where the running tools ARE the source. The
     caller (install vs update) decides whether a default is acceptable; this only
     resolves the path.
@@ -366,7 +366,7 @@ def _load_version_stamp(archive_root: Path) -> dict | None:
     except (json.JSONDecodeError, OSError) as exc:
         raise ScaffoldError(
             f"{path} is unreadable ({exc}). Delete it and run `fha update-tools` "
-            f"again — it will be rewritten (your tool files are not touched by "
+            f"again - it will be rewritten (your tool files are not touched by "
             f"reading it)."
         ) from exc
     if not isinstance(stamp, dict):
@@ -395,7 +395,7 @@ def _unique_backup_path(archive_root: Path, rel_path: str, date_str: str) -> Pat
 
     Backups preserve the archive-relative subtree (so a backed-up tools/fha.py
     lands at .plaintext-backup/{date}/tools/fha.py). If that target already
-    exists — e.g. two updates the same day each move a re-edited file — a numeric
+    exists - e.g. two updates the same day each move a re-edited file - a numeric
     suffix (-2, -3, …) is added so an earlier backup is never overwritten. The
     updater's whole promise is that nothing is lost.
     """
@@ -416,7 +416,7 @@ def _unique_backup_path(archive_root: Path, rel_path: str, date_str: str) -> Pat
 def _preflight() -> tuple[bool, list[str]]:
     """Check first-day prerequisites; return (python_ok, advisory_messages).
 
-    Plain, friendly guidance — never a traceback or a bare "not found":
+    Plain, friendly guidance - never a traceback or a bare "not found":
       - Python < 3.10 → a hard stop (python_ok=False) with a download pointer.
       - exiftool missing → an advisory message; install proceeds (photo features
         simply wait until it is installed). BUILD.md M9.1.
@@ -450,7 +450,7 @@ def run_install(
     file into `archive_path`, then writes `.plaintext-version` recording the
     manifest version and the per-file checksums received. Refuses an archive that
     already carries tools (a `.plaintext-version` or `tools/fha.py`) and points
-    the human at `fha update-tools` instead — install is a one-time bootstrap.
+    the human at `fha update-tools` instead - install is a one-time bootstrap.
 
     Returns a `Result` (Result == int, so callers/tests comparing against EXIT_*
     keep working): EXIT_CLEAN on success (even with the exiftool advisory),
@@ -500,7 +500,7 @@ def run_install(
     # before running `fha install`.
     # Exception: if a skeleton file is byte-for-byte identical to what install would
     # place (sha256 match) it was left by a partial previous install that never wrote
-    # the stamp — safe to overwrite so the user can simply re-run install to finish.
+    # the stamp - safe to overwrite so the user can simply re-run install to finish.
     conflicts = [
         entry['path']
         for entry in files
@@ -519,7 +519,7 @@ def run_install(
         )
 
     if dry_run:
-        print(f'Dry run — would install into: {archive_path}')
+        print(f'Dry run - would install into: {archive_path}')
         print(f'  {len(files)} file(s) from {repo_root / "manifest.json"}')
         skel = sum(1 for e in files if e.get('category') == 'skeleton')
         print(f'  ({skel} skeleton file(s), {len(files) - skel} operating-layer file(s))')
@@ -586,12 +586,12 @@ def _plan_update(
     """Classify every operating-layer file without writing anything.
 
     Returns a plan dict with five lists of (archive_path, src_path|None):
-      added      — in the manifest, not on disk yet
-      current    — on disk and already byte-identical to the new stock (no-op)
-      stock      — on disk, unchanged from the stock you installed, stock improved
+      added      - in the manifest, not on disk yet
+      current    - on disk and already byte-identical to the new stock (no-op)
+      stock      - on disk, unchanged from the stock you installed, stock improved
                    → overwrite silently
-      customized — on disk and different from what you installed → back up + install
-      retired    — recorded in .plaintext-version but gone from the manifest, and
+      customized - on disk and different from what you installed → back up + install
+      retired    - recorded in .plaintext-version but gone from the manifest, and
                    still on disk → move to backup
 
     Only "operating" files are considered. Skeleton seeds (fha.yaml, places.yaml,
@@ -669,7 +669,7 @@ def run_update_tools(
 
     if stamp is None:
         print(
-            f'No {VERSION_FILE} found in {archive_root} — treating existing tool '
+            f'No {VERSION_FILE} found in {archive_root} - treating existing tool '
             f'files as your own work. Anything different from the new version is '
             f'backed up (never overwritten), not replaced silently.'
         )
@@ -678,7 +678,7 @@ def run_update_tools(
     plan = _plan_update(archive_root, repo_root, manifest, stamp)
     date_str = datetime.date.today().isoformat()
 
-    # A broken/partial clone must fail before any mutation — otherwise a
+    # A broken/partial clone must fail before any mutation - otherwise a
     # customized file could be moved to backup and then have no stock to replace
     # it. Mirrors install's pre-write source check. Retired entries carry no src.
     missing = [
@@ -701,7 +701,7 @@ def run_update_tools(
     n_current = len(plan['current'])
 
     if dry_run:
-        print(f'Dry run — comparing {archive_root} against {repo_root / "manifest.json"}:')
+        print(f'Dry run - comparing {archive_root} against {repo_root / "manifest.json"}:')
         _report_plan(archive_root, plan, date_str, verbose=verbose)
         print()
         print(
@@ -717,7 +717,7 @@ def run_update_tools(
     # Apply. Each action is individually guarded; a single OSError is reported and
     # downgrades the run to a warning rather than aborting partway. Every per-file
     # message is printed AFTER its operation succeeds, and the summary counts only
-    # what actually happened — the output never claims a success that did not occur.
+    # what actually happened - the output never claims a success that did not occur.
     installed_ok: dict[str, str] = {}
     failures: list[str] = []
     failed_paths: set[str] = set()
@@ -788,7 +788,7 @@ def run_update_tools(
         n_custom_ok += 1
         backups_made = True
         print(
-            f'Your edited {archive_path} has been backed up to {backup} — '
+            f'Your edited {archive_path} has been backed up to {backup} - '
             f'the new version is now in {archive_path}.'
         )
 
@@ -804,7 +804,7 @@ def run_update_tools(
         n_retired_ok += 1
         backups_made = True
         print(
-            f'Moved {archive_path} to {backup} — it is no longer part of the '
+            f'Moved {archive_path} to {backup} - it is no longer part of the '
             f'plaintext tools (kept, not deleted).'
         )
 
@@ -813,7 +813,7 @@ def run_update_tools(
             print(f'{archive_path} is already up to date.')
 
     # Rewrite the stamp. Each recorded checksum is an operating file's *installed
-    # baseline* — what the next run compares the working copy against:
+    # baseline* - what the next run compares the working copy against:
     #   - newly installed this run → its new on-disk hash;
     #   - already current (untouched, == stock) → its on-disk hash (== stock);
     #   - FAILED this run → keep the PRIOR recorded baseline, never the current
@@ -862,7 +862,7 @@ def run_update_tools(
     )
     if backups_made:
         print(
-            f'Your earlier versions are safe in {archive_root / BACKUP_DIR / date_str} — '
+            f'Your earlier versions are safe in {archive_root / BACKUP_DIR / date_str} - '
             f'review and delete them once you have reconciled your changes.'
         )
     # Files actually installed this run, plus the rewritten stamp.
@@ -917,7 +917,7 @@ def _report_plan(
     for archive_path, _src in plan['retired']:
         backup = _unique_backup_path(archive_root, archive_path, date_str)
         print(
-            f'Would move {archive_path} to {backup} — it is no longer part of the '
+            f'Would move {archive_path} to {backup} - it is no longer part of the '
             f'plaintext tools (kept, not deleted).'
         )
 
@@ -943,14 +943,14 @@ def _cmd_update_tools(args: argparse.Namespace) -> int:
     if archive_root:
         # An explicit --root must still be an archive (the auto-detect branch
         # below enforces this via find_archive_root). Without this check, a typo
-        # like `--root /tmp/typo` would scatter the operating layer into — or
-        # create — the wrong directory, since update-tools writes files.
+        # like `--root /tmp/typo` would scatter the operating layer into - or
+        # create - the wrong directory, since update-tools writes files.
         archive_root = Path(archive_root).resolve()
         if not (archive_root / 'fha.yaml').is_file():
             print(
                 f'ERROR: {archive_root} does not look like an archive (no fha.yaml '
                 f'there). `fha update-tools` refreshes the tools inside an existing '
-                f'archive — point --root at your archive folder (the one containing '
+                f'archive - point --root at your archive folder (the one containing '
                 f'fha.yaml), or use `fha install <new-folder>` to create one.',
                 file=sys.stderr,
             )
@@ -1014,7 +1014,7 @@ def register(subs: argparse._SubParsersAction) -> None:
         help='Refresh an archive\'s tools/rulebooks from an updated public clone.',
         description=(
             'Compare your archive against a newer copy of the public tools and '
-            'pull in improvements. Never deletes and never overwrites your edits — '
+            'pull in improvements. Never deletes and never overwrites your edits - '
             'anything you customized is backed up first. Run from inside your '
             'archive with --repo pointing at the updated tools.'
         ),

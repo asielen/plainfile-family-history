@@ -1,0 +1,8 @@
+{
+  "_comment": "Sample Obsidian graph colorGroups for a Plaintext vault. Merge the colorGroups array into your vault's .obsidian/graph.json. It dims unplaced stubs and brightens curated people so the local graph and household clusters read clearly. (The global graph at ~2,000 nodes is always a hairball; the local graph is the win.)",
+  "colorGroups": [
+    { "query": "path:people/stubs", "color": { "a": 1, "rgb": 8421504 } },
+    { "query": "path:people", "color": { "a": 1, "rgb": 4366024 } },
+    { "query": "path:sources", "color": { "a": 1, "rgb": 12674900 } }
+  ]
+}

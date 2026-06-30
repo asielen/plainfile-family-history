@@ -1,5 +1,5 @@
 """
-test_lint.py — fha lint forgiving-input behavior (PR 05).
+test_lint.py - fha lint forgiving-input behavior (PR 05).
 
 Covers the "forgiving, not fussy" rule (AGENTS.md → "Who you serve"): a human
 who hand-edits a claim and writes a loose date ("circa 1870", "1870s") or types
@@ -140,7 +140,7 @@ class LintForgivingDateTests(unittest.TestCase):
         self.assertEqual(len(e014), 1)
         msg = e014[0].message
         self.assertIn('the day after never', msg)
-        # Plain, example-bearing — no bare jargon, names accepted shapes.
+        # Plain, example-bearing - no bare jargon, names accepted shapes.
         self.assertIn('1880', msg)
         self.assertNotIn('EDTF', msg)
 
@@ -156,7 +156,7 @@ class LintForgivingDateTests(unittest.TestCase):
 
     def test_unregistered_l_id_place_still_errors(self) -> None:
         # A well-formed L-id that resolves to nothing is a broken link, not a
-        # forgiving case — integrity matters, so it stays E004.
+        # forgiving case - integrity matters, so it stays E004.
         findings = self._lint('1870', place_line='place: L-cccccccccc')
         e004 = [f for f in findings if f.code == 'E004' and 'L-cccccccccc' in f.message]
         self.assertTrue(e004)

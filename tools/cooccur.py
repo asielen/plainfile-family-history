@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-cooccur.py — fha cooccur: connection candidate detection over the claim index.
+cooccur.py - fha cooccur: connection candidate detection over the claim index.
 
   fha cooccur [--threshold N] [--root PATH]
 
-Read-only candidate-suggestion tool (TOOLING §14a2) — sibling to
+Read-only candidate-suggestion tool (TOOLING §14a2) - sibling to
 `fha places candidates`: deterministic clustering, human-confirm discipline,
 consumed through `fha report`. Never writes to the archive: confirming a
 person-pair mints a `relationship` claim and dismissing one records a
@@ -19,32 +19,32 @@ THREE OUTPUTS (TOOLING §690)
 
 2. Shared-place co-occurrence: accepted/needs-review claims of different,
    unlinked people that share a place (`place_id` if both have one, else
-   normalized `place_text`) with overlapping EDTF date bounds — e.g. two
+   normalized `place_text`) with overlapping EDTF date bounds - e.g. two
    people each placed in the same town the same year by different sources,
    with no existing `relationships` edge between them.
 
 3. Org/entity recurrence: repeated claim values for `occupation`,
    `military`, and membership-style `event`/`note` claims. The grouping key is
    `(category, normalized value)` so employers, military units, and clubs with
-   similar wording do not collapse into one hub. These stay claim values — no
+   similar wording do not collapse into one hub. These stay claim values - no
    schema change, no new `O-` object type (organizations are out of scope for now).
 
 CODE MAP
 --------
   DB / root / tombstone helpers
-    open_index_db, resolve_root_arg — shared via _lib.py
-    _load_dismissed                — tombstone reader (unique to cooccur; see below)
+    open_index_db, resolve_root_arg - shared via _lib.py
+    _load_dismissed                - tombstone reader (unique to cooccur; see below)
 
   Person co-occurrence
-    _person_cooccurrence       — pair candidates ranked by source count + variety
+    _person_cooccurrence       - pair candidates ranked by source count + variety
 
   Shared-place co-occurrence
-    _same_place, _place_cooccurrence — same-place, overlapping-dates pairs
+    _same_place, _place_cooccurrence - same-place, overlapping-dates pairs
                                   (uses _lib.normalize_place_text)
 
   Org / entity recurrence
-    _org_category, _normalize_entity_value — claim -> hub grouping key
-    _org_recurrence            — group claims into recurring affiliation hubs
+    _org_category, _normalize_entity_value - claim -> hub grouping key
+    _org_recurrence            - group claims into recurring affiliation hubs
 
   Top-level query / CLI
     run_cooccur, _cmd_cooccur, register, _standalone_main
@@ -81,7 +81,7 @@ _REQUIRED_TABLES = ('persons', 'claims', 'sources', 'claim_persons', 'source_peo
 def _load_dismissed(archive_root: Path) -> set[frozenset[str]]:
     """
     Read the dismissed-pairs tombstone. Missing file = empty set, not an error
-    — the skill layer writes this file; this tool only ever reads it.
+    - the skill layer writes this file; this tool only ever reads it.
     """
     path = archive_root / '.cache' / 'cooccur_dismissed.json'
     if not path.exists():
@@ -166,7 +166,7 @@ def _same_place(a: dict, b: dict) -> bool:
     structured `place_id` when both claims have one, else normalized
     `place_text`. A claim with `place_id` but no `place_text` (or vice versa)
     still matches a counterpart that only has the other field, as long as
-    that field agrees — fixing the id/text fallback ignores a partially
+    that field agrees - fixing the id/text fallback ignores a partially
     migrated archive where only one side has been normalized.
     """
     if a['place_id'] and b['place_id']:
@@ -180,7 +180,7 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
     """
     Accepted/needs-review claims of different, unlinked people that share a
     place (structured `place_id` preferred, else normalized `place_text`)
-    with overlapping EDTF bounds — e.g. two people each placed in the same
+    with overlapping EDTF bounds - e.g. two people each placed in the same
     town the same year by different sources (TOOLING §690b).
     """
     claims = {
@@ -212,7 +212,7 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
 
     # Bucket claims by place first so the pairwise comparison below only ever
     # runs within a shared-place bucket, not across every placed claim in the
-    # archive — `_same_place` can only be true for claims that land in the
+    # archive - `_same_place` can only be true for claims that land in the
     # same place_id bucket or the same normalized place_text bucket.
     by_place_id: dict[str, list[str]] = {}
     by_place_text: dict[str, list[str]] = {}
@@ -223,7 +223,7 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
         if text_norm:
             by_place_text.setdefault(text_norm, []).append(cid)
 
-    # Cache keyed by (person pair, normalized place) — not person pair alone —
+    # Cache keyed by (person pair, normalized place) - not person pair alone -
     # so two people sharing more than one place get a separate candidate per
     # place instead of one candidate whose claim_ids/source_ids blend places.
     pair_data: dict[tuple[frozenset[str], str], dict] = {}
@@ -246,7 +246,7 @@ def _place_cooccurrence(conn: sqlite3.Connection, dismissed: set[frozenset[str]]
         place_label = claim_a['place_text'] or claim_b['place_text'] or claim_a['place_id'] or claim_b['place_id']
         # When both claims share a place_id, canonicalize the bucket key on
         # that id rather than on whichever place_text happens to be
-        # encountered first — otherwise the same person-pair/place_id can
+        # encountered first - otherwise the same person-pair/place_id can
         # fragment into multiple candidates keyed by different aliases.
         if claim_a['place_id'] and claim_b['place_id']:
             place_norm = claim_a['place_id'].strip().lower()
@@ -319,11 +319,11 @@ def _entity_label(category: str, value: str) -> str:
     Extract the entity/organization portion of a claim value for grouping.
 
     `occupation` and `military` values follow the documented "role, entity"
-    convention (SPEC §8.4, e.g. "bookkeeper, Plains Junction Railroad") — the
+    convention (SPEC §8.4, e.g. "bookkeeper, Plains Junction Railroad") - the
     role varies between claims about the same employer, so grouping on the
     whole value would split one recurring employer into separate hubs. The
     entity is the text after the FIRST comma, since entity names can
-    themselves contain commas (e.g. "Plains Junction Railroad, Topeka Div.") —
+    themselves contain commas (e.g. "Plains Junction Railroad, Topeka Div.") -
     splitting on the last comma would drop everything before the entity's own
     internal comma. Membership values have no documented role/entity split,
     so they're used as-is.
@@ -455,7 +455,7 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
             print(
                 f"  {c['name_a']} [{fmt_id_display(c['person_a'])}]  <->  "
                 f"{c['name_b']} [{fmt_id_display(c['person_b'])}]  "
-                f"— {c['source_count']} source(s), {c['variety']} type(s)"
+                f"- {c['source_count']} source(s), {c['variety']} type(s)"
             )
             for sid in c['source_ids']:
                 print(f"    {fmt_id_display(sid)}")
@@ -469,7 +469,7 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
             print(
                 f"  {c['name_a']} [{fmt_id_display(c['person_a'])}]  <->  "
                 f"{c['name_b']} [{fmt_id_display(c['person_b'])}]  "
-                f"@ {c['place_label']}  — {c['source_count']} source(s)"
+                f"@ {c['place_label']}  - {c['source_count']} source(s)"
             )
             for cid in c['claim_ids']:
                 print(f"    {fmt_id_display(cid)}")
@@ -481,7 +481,7 @@ def _cmd_cooccur(args: argparse.Namespace) -> int:
         print(f'\nFound {len(groups)} candidate org/entity recurrence hub(s):')
         for g in groups:
             print(
-                f"  {g['label']} [{g['category']}] — "
+                f"  {g['label']} [{g['category']}] - "
                 f"{g['person_count']} people, {g['source_count']} sources"
             )
             for cid in g['claim_ids']:

@@ -1691,7 +1691,7 @@ for whoever finds it:
 WORKING_COPY  (file at the archive root)
 ─────────────────────────────────────────
 This is a working copy synced from the main archive. The photo and document
-files don't live here — the tools won't treat them as missing or lost. Delete
+files don't live here - the tools won't treat them as missing or lost. Delete
 this file to turn the archive back into a full, asset-aware archive.
 ```
 A marker file - not an `fha.yaml` key - because the mode is a fact about *this machine's copy*:
@@ -1705,10 +1705,10 @@ conservative, never less*:
 - **index** records asset presence as **unknown** (`exists_on_disk = NULL`), not missing (`0`),
   and skips the on-disk asset-reconciliation glob. The claim/person/source/relationship surface
   is built normally from the `.md` files.
-- **photoindex scan** refuses and **never prunes** (`this is a working copy — run photo
+- **photoindex scan** refuses and **never prunes** (`this is a working copy - run photo
   indexing on your main archive`); read-only photo queries return whatever the cache holds.
 - **asset-mutating commands** (`fha process <file>`, `fha photoindex tag-person`, `fha packet`)
-  refuse with a plain `the photo/document files aren't here — do this on your main archive`,
+  refuse with a plain `the photo/document files aren't here - do this on your main archive`,
   exit clean. Plain-text editing, `fha index`, `find`, `views`, `report`, and
   `fha capture` → `inbox/` all work normally.
 - **doctor** headlines the mode and stops flagging missing asset roots as errors.

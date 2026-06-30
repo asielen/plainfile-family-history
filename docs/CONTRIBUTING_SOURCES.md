@@ -50,6 +50,10 @@ in, and add **one** notes file named exactly `notes.md` (a copy of the template)
 Everything in a folder is treated as **one item**, so use a separate folder for
 each unrelated thing.
 
+If a record is in another language and you have an English version, include both -
+put them in the same folder, and the translation will be filed right beside the
+original. Don't change the original's wording; the translation is a separate helper file.
+
 ```
 grandma-rose-portrait/
 ├── front.jpg

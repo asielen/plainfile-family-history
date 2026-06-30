@@ -1,5 +1,5 @@
 /*
- * fha-tree.js — minimal, self-contained collapsible tree renderer.
+ * fha-tree.js - minimal, self-contained collapsible tree renderer.
  *
  * This is the VENDORED rendering engine for fha site's interactive trees
  * (TOOLING §12 "borrow the engine"). It has no external dependencies (no D3,
@@ -12,7 +12,7 @@
  *     { id, name, dates, url, children: [ <same shape>, ... ] }
  *
  * Swapping in a richer engine later (e.g. family-chart) means rewriting THIS
- * file and the adapter; nothing else in the generated site changes — that is
+ * file and the adapter; nothing else in the generated site changes - that is
  * the whole point of keeping the adapter as the single seam.
  */
 (function (global) {
@@ -62,7 +62,7 @@
 
     // Bound the initial paint: nodes at or beyond options.initialDepth start
     // collapsed, so a large descendant explorer renders a few generations up
-    // front and the reader expands forward on demand (the data is complete —
+    // front and the reader expands forward on demand (the data is complete -
     // nothing is dropped, only hidden). Omitting initialDepth shows everything.
     if (options.initialDepth != null) {
       (function seed(node, depth) {
@@ -89,8 +89,11 @@
       (function edges(node) {
         if (collapsed[node.id]) return;
         (node.children || []).forEach(function (c) {
+          // A non-genetic bond (adoptive/step/…) gets an extra class so the page
+          // CSS can draw it distinctly (dashed); genetic edges are the default.
+          var edgeClass = 'fha-tree-edge' + (c.edgeGenetic === false ? ' fha-tree-edge-social' : '');
           var p = svg('path', {
-            'class': 'fha-tree-edge',
+            'class': edgeClass,
             d: 'M' + px(node) + ',' + (py(node) + NODE_H / 2) +
                ' C' + px(node) + ',' + (py(node) + ROW_H / 2) +
                ' ' + px(c) + ',' + (py(c) - ROW_H / 2) +

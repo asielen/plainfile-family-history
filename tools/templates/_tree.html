@@ -6,7 +6,7 @@
    in a <script> element. #}
 {% if tree %}
 <div class="fha-tree" id="fha-tree"></div>
-<p class="fha-tree-note">{{ tree.caption }} — click a name to open that person; use −/+ to collapse or expand.</p>
+<p class="fha-tree-note">{{ tree.caption }} - click a name to open that person; use −/+ to collapse or expand.</p>
 <script type="application/json" id="fha-tree-data">{{ tree.data_json }}</script>
 <script src="{{ root_prefix }}/vendor/fha-tree.js"></script>
 <script src="{{ root_prefix }}/vendor/tree-adapter.js"></script>

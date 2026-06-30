@@ -1,5 +1,5 @@
 """
-test_confirm.py — fha confirm: human-directed write-back for detection candidates.
+test_confirm.py - fha confirm: human-directed write-back for detection candidates.
 
 Covers the pure-text surgical edit helpers (link append, scalar set, claim
 append, AI-DRAFT flip) and each verb's `run_*` contract (dry-run writes nothing,
@@ -28,8 +28,8 @@ from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, Result, load_fha_yaml,
 EXAMPLE = ROOT / 'example-archive'
 
 # Stable IDs from the example archive (fixtures, not the real archive).
-CLAIM_A = 'C-77a0c5e218'          # census child-of (S-4f5f215e60), accepted
-CLAIM_B = 'C-fa0000001a'          # typescript child-of (S-fa1234567b), accepted, no place
+CLAIM_A = 'C-77a0c5e218'          # census parent/child (S-4f5f215e60), accepted
+CLAIM_B = 'C-fa0000001a'          # typescript parent/child (S-fa1234567b), accepted, no place
 SOURCE = 'S-fc3456789d'           # bradford-family genealogy notes (has a ## Claims block)
 PERSON_1 = 'P-4d5e6f7g8h'
 PERSON_2 = 'P-6f7g8h9jka'
@@ -143,12 +143,12 @@ class EditHelperTests(unittest.TestCase):
         self.assertFalse(changed)
 
     def test_ai_draft_flip(self) -> None:
-        body = 'Prose.\n<!-- AI-DRAFT 2026-06-14 claude-sonnet-4-6 — drafted -->\nMore.\n'
+        body = 'Prose.\n<!-- AI-DRAFT 2026-06-14 claude-sonnet-4-6 - drafted -->\nMore.\n'
         new, n = confirm._AI_DRAFT_RE.subn(
             lambda m: f'<!--{m.group(1)}AI-ACCEPTED{m.group(2).rstrip()} (accepted 2026-06-24) -->',
             body)
         self.assertEqual(n, 1)
-        self.assertIn('AI-ACCEPTED 2026-06-14 claude-sonnet-4-6 — drafted (accepted 2026-06-24)', new)
+        self.assertIn('AI-ACCEPTED 2026-06-14 claude-sonnet-4-6 - drafted (accepted 2026-06-24)', new)
         self.assertNotIn('AI-DRAFT', new)
 
 

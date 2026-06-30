@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-find.py — fha find: the universal locator.
+find.py - fha find: the universal locator.
 
   fha find <ID>                       Locate any archive ID (P/S/C/L/H)
   fha find --text "phrase"            Full-text search across records, notes, transcripts
@@ -17,13 +17,13 @@ implementation of "where does this ID live?" now lives here.  TOOLING §4a.
 
 Design decisions in TOOLING §4a:
   D4: --related implemented (BUILD.md M4.3), after fha xref / fha cooccur.
-      It is a pure read-only query over the index — no schema change, no
+      It is a pure read-only query over the index - no schema change, no
       writes. Unlike find_by_id, --related requires a real index (the
       relational joins it runs have no meaningful tree-scan fallback): an
       absent or unreadable index is a hard error (exit 3), not a degrade.
   D7: --text searches records + notes; photo captions are searched when
       .cache/photos.sqlite is fresh (else find prints a skip note). The
-      transcripts_fts table exists but is not yet populated — transcript
+      transcripts_fts table exists but is not yet populated - transcript
       search is deferred to a later milestone.
 """
 
@@ -70,50 +70,50 @@ configure_utf8_stdout()
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Index freshness helpers (newest_record_mtime imported from _lib)
-#    _index_is_fresh           — compare index.sqlite vs record mtimes
-#    _open_index               — open .cache/index.sqlite; returns None on failure
+#    _index_is_fresh           - compare index.sqlite vs record mtimes
+#    _open_index               - open .cache/index.sqlite; returns None on failure
 #
 #  Per-ID-type finders (index path)
-#    _find_person              — P-id: file, couple folder, companions, claims, cites
-#    _find_source              — S-id: record, files (resolved + on-disk), claims, cites
-#    _find_claim               — C-id: source record, line, status, value, links
-#    _find_place               — L-id: place entry, claims referencing it, mentions
-#    _find_hypothesis          — H-id: research file, heading, status, verified_claim
+#    _find_person              - P-id: file, couple folder, companions, claims, cites
+#    _find_source              - S-id: record, files (resolved + on-disk), claims, cites
+#    _find_claim               - C-id: source record, line, status, value, links
+#    _find_place               - L-id: place entry, claims referencing it, mentions
+#    _find_hypothesis          - H-id: research file, heading, status, verified_claim
 #
 #  Tree-scan fallback (no fresh index)
-#    _find_by_scan             — grep all text files for bare ID string
+#    _find_by_scan             - grep all text files for bare ID string
 #
 #  Text search
-#    _find_text                — FTS (when index fresh) + re.search over record bodies
+#    _find_text                - FTS (when index fresh) + re.search over record bodies
 #
 #  --related (M4.3): neighborhood queries over the relational index
-#    (opened via _lib.open_index_db with the full relational table set — see
+#    (opened via _lib.open_index_db with the full relational table set - see
 #    _RELATED_REQUIRED_TABLES below)
-#    _related_person           — P-id world: edges, co-occurrence, places, hubs, sources, photos
-#    _person_cooccur_neighbors — co-occurring persons with no existing relationship edge
-#    _person_places            — places ranked by this person's claim frequency
-#    _person_org_hubs          — recurring occupation/military/membership affiliations shared
+#    _related_person           - P-id world: edges, co-occurrence, places, hubs, sources, photos
+#    _person_cooccur_neighbors - co-occurring persons with no existing relationship edge
+#    _person_places            - places ranked by this person's claim frequency
+#    _person_org_hubs          - recurring occupation/military/membership affiliations shared
 #                                 with others
-#    _person_source_count      — distinct source count for a person
-#    _print_person_photos      — photo_people lookup in .cache/photos.sqlite
-#    _related_place            — L-id world: claims, people, sources, micro-places, photos
-#    _print_place_photos       — GPS-proximity photo lookup for a place
-#    _related_source           — S-id world: claims, persons, places, linked/sibling sources
-#    _related_claim            — C-id neighborhood: source, persons, place, links, siblings
-#    _related_hypothesis       — H-id neighborhood: person, referencing claims, verifying claim
-#    _related_date             — standalone --date time-slice neighborhood
-#    _related_dispatch         — top-level neighborhood dispatcher (prints, returns int)
-#    run_related                — wraps _related_dispatch into the Result contract
+#    _person_source_count      - distinct source count for a person
+#    _print_person_photos      - photo_people lookup in .cache/photos.sqlite
+#    _related_place            - L-id world: claims, people, sources, micro-places, photos
+#    _print_place_photos       - GPS-proximity photo lookup for a place
+#    _related_source           - S-id world: claims, persons, places, linked/sibling sources
+#    _related_claim            - C-id neighborhood: source, persons, place, links, siblings
+#    _related_hypothesis       - H-id neighborhood: person, referencing claims, verifying claim
+#    _related_date             - standalone --date time-slice neighborhood
+#    _related_dispatch         - top-level neighborhood dispatcher (prints, returns int)
+#    run_related                - wraps _related_dispatch into the Result contract
 #
 #  Public API
-#    find_by_id                — locate a single ID; called by fha id check alias in fha.py
-#    run_find                  — full dispatcher (id | text | --related); returns a Result
-#    _as_find_result           — wrap a find/related exit code into a Result
+#    find_by_id                - locate a single ID; called by fha id check alias in fha.py
+#    run_find                  - full dispatcher (id | text | --related); returns a Result
+#    _as_find_result           - wrap a find/related exit code into a Result
 #
 #  CLI
-#    register                  — attach 'find' to the main fha parser
-#    _run_find                 — argparse → run_find bridge (returns the int exit code)
-#    _standalone_main          — for `python tools/find.py` direct invocation
+#    register                  - attach 'find' to the main fha parser
+#    _run_find                 - argparse → run_find bridge (returns the int exit code)
+#    _standalone_main          - for `python tools/find.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -145,17 +145,17 @@ def _index_is_fresh(archive_root: Path) -> bool:
         return False
     record_mtime = newest_record_mtime(archive_root)
     if record_mtime == 0.0:
-        return True   # no records yet — trivially current
+        return True   # no records yet - trivially current
     return db_mtime >= record_mtime
 
 
 def _open_index(archive_root: Path) -> sqlite3.Connection | None:
     """
     Open .cache/index.sqlite for reading; return None if missing, corrupt, or
-    schema-less — silently, with no printed message.
+    schema-less - silently, with no printed message.
 
     Deliberately not `_lib.open_index_db`: this is the find_by_id / --text
-    path, where an absent or unreadable index is *not* fatal — the caller
+    path, where an absent or unreadable index is *not* fatal - the caller
     falls back to a tree scan and prints its own warning about that
     fallback. `open_index_db` (used by --related, which has no tree-scan
     fallback) prints its own ERROR/WARNING and is meant to be the final
@@ -167,7 +167,7 @@ def _open_index(archive_root: Path) -> sqlite3.Connection | None:
     conn: sqlite3.Connection | None = None
     try:
         # sqlite3.connect() itself can raise (path is a directory, permission
-        # denied, locked) — keep it inside the guard so this fallback-eligible
+        # denied, locked) - keep it inside the guard so this fallback-eligible
         # path returns None and lets find_by_id/_text_search degrade to a tree
         # scan instead of raising a traceback.
         conn = sqlite3.connect(str(db_path))
@@ -194,7 +194,7 @@ def _find_person(
     Print the P-id report: file path, couple folder, companion files,
     claim summary grouped by type+status, citation sites, and photo note.
 
-    The couple folder is the parent directory of the profile file — the
+    The couple folder is the parent directory of the profile file - the
     meaningful unit of organisation in the people/ tree.  Companion files
     (research, timeline, sources-index, draft-queue) share the P-id and
     live alongside the profile; they're stored in person_files with kind != 'profile'.
@@ -342,7 +342,7 @@ def _find_source(
             elif f['exists_on_disk'] is None:
                 status_sym = '~'  # NULL = assumed present on main machine (working-copy mode)
             elif f['exists_on_disk'] == 0 and is_working_copy(archive_root):
-                # Stale index built before the WORKING_COPY marker existed — WC mode overrides
+                # Stale index built before the WORKING_COPY marker existed - WC mode overrides
                 status_sym = '~'
             elif resolved is not None and resolved.exists():
                 status_sym = _OK
@@ -389,7 +389,7 @@ def _find_claim(
     scanning the source file for the claim ID), status, value, and any
     corroborates/contradicts links.
 
-    Line number is approximate because the claims block is YAML — the line
+    Line number is approximate because the claims block is YAML - the line
     shown is the first occurrence of the C-id string in the file.
     """
     row = conn.execute(
@@ -406,7 +406,7 @@ def _find_claim(
     ).fetchone()
     src_path = src_row['path'] if src_row else '(source not found)'
 
-    # Approximate line — scan the source file for the first occurrence of cid
+    # Approximate line - scan the source file for the first occurrence of cid
     approx_line: int | None = None
     if src_row:
         src_abs = archive_root / src_path
@@ -520,7 +520,7 @@ def _find_hypothesis(
     and every record mentioning [H-id].
 
     Section heading is found by walking upward from the H-id's line in the file
-    to the most recent ## heading — this reflects where the hypothesis is
+    to the most recent ## heading - this reflects where the hypothesis is
     documented in the research narrative.
     """
     row = conn.execute(
@@ -528,8 +528,8 @@ def _find_hypothesis(
         (hid,)
     ).fetchone()
     if row is None:
-        # Hypothesis indexing is deferred — the index builder never populates the
-        # `hypotheses` table — so a structured miss is expected. Fall back to a
+        # Hypothesis indexing is deferred - the index builder never populates the
+        # `hypotheses` table - so a structured miss is expected. Fall back to a
         # tree scan so real H-ids documented in research files are still located.
         return _find_by_scan(hid, archive_root)
 
@@ -636,7 +636,7 @@ def _find_text(
     Search records and notes for query text, plus photo captions when available.
 
     When the index is fresh: query notes_fts (and transcripts_fts, currently
-    empty — transcript population is deferred) first, then a re.search pass to
+    empty - transcript population is deferred) first, then a re.search pass to
     catch anything the FTS tables may not cover (e.g. a fresh lint-only run
     without FTS populated).
 
@@ -672,7 +672,7 @@ def _find_text(
                     hits.append((rel, row[1]))
                     seen_paths.add(rel)
         except Exception:
-            pass   # FTS tables absent (index built without note content) — fall through
+            pass   # FTS tables absent (index built without note content) - fall through
 
     # re.search pass over all record directories.
     # documents/ uses ('*.md', '*.txt') to catch transcript files (role: transcription).
@@ -738,7 +738,7 @@ def _find_text(
 
     # Photo captions: search photo_fts only when the photo index is verifiably
     # fresh (DB present, schema OK, newer than the photos root). When it is
-    # absent/stale/unreadable we skip and say so explicitly — never silently.
+    # absent/stale/unreadable we skip and say so explicitly - never silently.
     photo_note: str | None = None
     photo_status, _ = photoindex_status(archive_root, fha_config)
     if photo_status == 'fresh':
@@ -758,14 +758,14 @@ def _find_text(
             finally:
                 pconn.close()
         except sqlite3.OperationalError:
-            # Malformed FTS MATCH query (e.g. unbalanced quotes) — report, don't crash.
-            photo_note = 'Note: photo caption search skipped — query is not valid FTS syntax.'
+            # Malformed FTS MATCH query (e.g. unbalanced quotes) - report, don't crash.
+            photo_note = 'Note: photo caption search skipped - query is not valid FTS syntax.'
     elif photo_status == 'stale':
-        photo_note = 'Note: photo captions not searched — photo index is stale; run fha photoindex.'
+        photo_note = 'Note: photo captions not searched - photo index is stale; run fha photoindex.'
     elif photo_status == 'unreadable':
-        photo_note = 'Note: photo captions not searched — photo index is unreadable; rebuild with fha photoindex.'
+        photo_note = 'Note: photo captions not searched - photo index is unreadable; rebuild with fha photoindex.'
     else:  # 'absent'
-        photo_note = 'Note: photo captions not searched — run fha photoindex to include.'
+        photo_note = 'Note: photo captions not searched - run fha photoindex to include.'
 
     if not hits:
         print(f'No results for: {query!r}')
@@ -788,7 +788,7 @@ def _find_text(
 
 # Unlike _open_index (used by find_by_id, which can fall back to a tree
 # scan), --related's joins across relationships/claim_links/claim_persons
-# have no meaningful tree-scan equivalent — a missing or incompatible index
+# have no meaningful tree-scan equivalent - a missing or incompatible index
 # is a hard error (caller returns exit 3), so --related uses _lib's shared
 # open_index_db (same as xref.py/cooccur.py) instead of the quieter
 # _open_index above. A stale index still warns but is queried, since
@@ -806,7 +806,7 @@ def _overlap_clause(start_col: str, end_col: str) -> str:
     caller's date_bounds", with both ends NULL-and-empty-string safe.
 
     index.py stores an undated claim's date_min/date_max as '' (not the
-    unbounded sentinel edtf_bounds() would return for None) — see TOOLING
+    unbounded sentinel edtf_bounds() would return for None) - see TOOLING
     §1 / edtf_bounds docstring. A raw `end_col >= ?` comparison would treat
     '' as the lowest possible value and exclude every undated row from a
     --date filter; the explicit '' / NULL checks restore the intended
@@ -826,11 +826,11 @@ def _person_cooccur_neighbors(
 ) -> list[dict]:
     """
     Other persons sharing a source with pid that have no existing
-    relationship edge — the person-pair half of TOOLING §4a's "people tied by
+    relationship edge - the person-pair half of TOOLING §4a's "people tied by
     ... co-occurrence" bullet, narrowed to one person's neighborhood.
 
     This duplicates cooccur.py's person co-occurrence grouping logic
-    (TOOLING §690) rather than importing it — tools never import other tools.
+    (TOOLING §690) rather than importing it - tools never import other tools.
 
     When date_bounds is set, only claim_persons participation is considered:
     each row carries a date via its backing claim, but source_people (a
@@ -883,12 +883,12 @@ def _person_places(
     """
     Places this person's claims name, ranked by claim frequency
     (TOOLING §4a "places they recur in"). Grouped on structured place_id
-    when present, else normalized place_text — same precedence cooccur.py's
+    when present, else normalized place_text - same precedence cooccur.py's
     shared-place detector uses, so the two tools agree on what counts as
     "the same place."
     """
     # Same accepted/needs-review gate as _person_cooccur_neighbors and
-    # _person_org_hubs use — without it, `suggested`/`rejected` draft
+    # _person_org_hubs use - without it, `suggested`/`rejected` draft
     # placed claims silently get promoted into the person's place ranking.
     sql = '''
         SELECT c.place_id, c.place_text
@@ -921,7 +921,7 @@ def _person_org_hubs(
 ) -> list[dict]:
     """
     Recurring occupation/military/membership affiliations this person shares
-    with at least one other person — TOOLING §4a's "shared entities ...
+    with at least one other person - TOOLING §4a's "shared entities ...
     ranked by how many others share each" bullet.
 
     Duplicates cooccur.py's (category, normalized value) grouping for org/
@@ -931,7 +931,7 @@ def _person_org_hubs(
 
     With a date window, the same overlap predicate the rest of the
     neighborhood uses (`_overlap_clause` on `date_min/date_max`) narrows
-    affiliations — otherwise a person's 1880 job would still parade their
+    affiliations - otherwise a person's 1880 job would still parade their
     1950 club membership in `fha find --related P-… --date 1880`.
     """
     sql = '''
@@ -940,7 +940,8 @@ def _person_org_hubs(
         WHERE c.status IN ('accepted', 'needs-review')
           AND (c.negated IS NULL OR c.negated = 0)
           AND (c.type IN ('occupation', 'military')
-               OR (c.type IN ('event', 'note') AND LOWER(COALESCE(c.subtype, '')) = 'membership'))
+               OR (c.type IN ('event', 'note') AND LOWER(COALESCE(c.subtype, '')) = 'membership')
+               OR (c.type = 'relationship' AND LOWER(COALESCE(c.subtype, '')) = 'member-of'))
     '''
     params: list = []
     if date_bounds:
@@ -953,7 +954,7 @@ def _person_org_hubs(
         category = row['type'] if row['type'] in ('occupation', 'military') else 'membership'
         label = (row['value'] or '').strip()
         # occupation/military values follow the documented "role, entity"
-        # convention (SPEC §8.4) — split on the FIRST comma so an entity name
+        # convention (SPEC §8.4) - split on the FIRST comma so an entity name
         # that itself contains a comma stays intact (same rule as cooccur.py).
         if category in ('occupation', 'military') and ',' in label:
             label = label.split(',', 1)[1].strip()
@@ -981,7 +982,7 @@ def _person_source_count(
     """Distinct sources naming pid, via claim_persons (claims) or source_people (frontmatter).
 
     With a date window, only the claim-backed half is counted (with the same
-    `_overlap_clause` the rest of the neighborhood uses) — source_people is a
+    `_overlap_clause` the rest of the neighborhood uses) - source_people is a
     frontmatter-level list with no date and can't be filtered, so a person's
     1880 source count would otherwise still include a 1950-only source whose
     frontmatter merely names them.
@@ -1036,12 +1037,12 @@ def _print_person_photos(
 ) -> None:
     """
     Photos tagged to this person via any resolution confidence
-    (pid-keyword/face-tag/name-match — photo_people already records the
+    (pid-keyword/face-tag/name-match - photo_people already records the
     winning method per photo). Mirrors _find_person's photo-count lookup but
     lists the group's primary_path so the photos are actually locatable.
 
-    Gated on `photoindex_status()` so a stale photos.sqlite — e.g. after a
-    name-variant change or photo rename/delete — is reported as stale rather
+    Gated on `photoindex_status()` so a stale photos.sqlite - e.g. after a
+    name-variant change or photo rename/delete - is reported as stale rather
     than silently surfacing old `photo_people`/`photo_groups` rows that may
     point to renamed people or missing files.
 
@@ -1054,7 +1055,7 @@ def _print_person_photos(
         print('  photos: not indexed (run fha photoindex)')
         return
     if status == 'stale':
-        print('  photos: photo index is stale — run fha photoindex')
+        print('  photos: photo index is stale - run fha photoindex')
         return
     if status in ('unreadable', 'old-schema'):
         print('  photos: photo index is unreadable; rebuild with fha photoindex')
@@ -1138,12 +1139,12 @@ def _related_person(
         print('  relationships:')
         for r in edge_rows:
             other_name = names.get(r['other_id'], r['other_id'])
-            print(f"    {r['rel']}: {other_name} [{r['other_id']}] — {r['source_count']} source(s)")
+            print(f"    {r['rel']}: {other_name} [{r['other_id']}] - {r['source_count']} source(s)")
     else:
         print('  relationships: none')
 
     # Existing edges exclude a candidate from co-occurrence regardless of the
-    # date window — a confirmed relationship doesn't stop being confirmed
+    # date window - a confirmed relationship doesn't stop being confirmed
     # just because this particular time slice predates the backing claim.
     all_edge_others = {
         row['other_id'] for row in
@@ -1154,7 +1155,7 @@ def _related_person(
         print('  co-occurring persons (no relationship edge yet):')
         for c in cooccur_rows[:10]:
             other_name = names.get(c['other_id'], c['other_id'])
-            print(f"    {other_name} [{c['other_id']}] — {c['source_count']} shared source(s)")
+            print(f"    {other_name} [{c['other_id']}] - {c['source_count']} shared source(s)")
     else:
         print('  co-occurring persons: none')
 
@@ -1162,7 +1163,7 @@ def _related_person(
     if place_rows:
         print('  places (by claim frequency):')
         for p in place_rows[:10]:
-            print(f"    {p['label']} — {p['count']} claim(s)")
+            print(f"    {p['label']} - {p['count']} claim(s)")
     else:
         print('  places: none')
 
@@ -1171,7 +1172,7 @@ def _related_person(
         print('  shared affiliations:')
         for h in hub_rows:
             others = ', '.join(f"{names.get(o, o)} [{o}]" for o in h['others'][:5])
-            print(f"    {h['label']} [{h['category']}] — also: {others}")
+            print(f"    {h['label']} [{h['category']}] - also: {others}")
     else:
         print('  shared affiliations: none')
 
@@ -1189,7 +1190,7 @@ def _print_place_photos(
 ) -> None:
     """
     Photos geotagged within ~0.002 degrees of the place's coords
-    (roughly 200m at mid-latitudes — TOOLING §4a "photos geotagged within
+    (roughly 200m at mid-latitudes - TOOLING §4a "photos geotagged within
     it"). Coordinate-only proximity; a place with no within: children and no
     coords simply has no photo neighborhood to report.
 
@@ -1208,7 +1209,7 @@ def _print_place_photos(
         print('  photos: not indexed (run fha photoindex)')
         return
     if status == 'stale':
-        print('  photos: photo index is stale — run fha photoindex')
+        print('  photos: photo index is stale - run fha photoindex')
         return
     if status in ('unreadable', 'old-schema'):
         print('  photos: photo index is unreadable; rebuild with fha photoindex')
@@ -1294,7 +1295,7 @@ def _related_place(
         names = {row['id']: row['name'] for row in conn.execute('SELECT id, name FROM persons')}
         print('  people (by frequency):')
         for pid, n in sorted(person_freq.items(), key=lambda kv: (-kv[1], kv[0]))[:10]:
-            print(f"    {names.get(pid, pid)} [{pid}] — {n} claim(s)")
+            print(f"    {names.get(pid, pid)} [{pid}] - {n} claim(s)")
     else:
         print('  people: none')
 
@@ -1356,7 +1357,7 @@ def _related_source(
                 places.add(row['place_id'])
             elif row['place_text']:
                 places.add(row['place_text'])
-    # source_people is a frontmatter-level list with no date — including it
+    # source_people is a frontmatter-level list with no date - including it
     # in a dated slice would surface persons whose only connection to this
     # source is an out-of-window claim (or no claim at all). Skip it when
     # date_bounds is set; otherwise keep the cross-listing as before.
@@ -1379,7 +1380,7 @@ def _related_source(
     else:
         print('  places: none')
 
-    # Corroborating/contradicting sources via claim_links — a source's claims
+    # Corroborating/contradicting sources via claim_links - a source's claims
     # may link out (claim_id) or be linked to (target_id); both directions
     # have to be checked, with the inverse-rel label for the incoming side
     # (same convention as _find_claim's links/incoming split).
@@ -1463,12 +1464,12 @@ def _related_source(
 def _related_claim(cid: str, conn: sqlite3.Connection) -> int:
     """
     Print a C-id's neighborhood: source, persons, place, linked claims,
-    sibling claims (same person + same type — the cluster a researcher would
+    sibling claims (same person + same type - the cluster a researcher would
     weigh together, per TOOLING §4a).
 
     Unlike the person/place/source neighborhoods, a single claim has no
-    meaningful date-bounds narrowing — its own date_edtf already pins it to
-    one point — so --date is not accepted here.
+    meaningful date-bounds narrowing - its own date_edtf already pins it to
+    one point - so --date is not accepted here.
     """
     claim = conn.execute(
         'SELECT id, source_id, type, value, status, place_id, place_text, date_edtf '
@@ -1535,8 +1536,8 @@ def _related_hypothesis(hid: str, conn: sqlite3.Connection) -> int:
     it (claims.hypothesis = hid), and the verifying claim if one is set.
 
     The `hypotheses` table itself is never populated by the index builder
-    (research-file hypothesis entries aren't parsed into rows — see
-    _find_hypothesis's matching note above) — only claims.hypothesis is. So
+    (research-file hypothesis entries aren't parsed into rows - see
+    _find_hypothesis's matching note above) - only claims.hypothesis is. So
     a missing hypotheses row is the expected case, not a failure: this falls
     back to deriving the neighborhood entirely from claims.hypothesis and the
     persons named on those claims.
@@ -1552,7 +1553,7 @@ def _related_hypothesis(hid: str, conn: sqlite3.Connection) -> int:
     names = {r['id']: r['name'] for r in conn.execute('SELECT id, name FROM persons')}
 
     if row is None:
-        print('  (no hypotheses-table row — hypothesis indexing is deferred; '
+        print('  (no hypotheses-table row - hypothesis indexing is deferred; '
               'deriving the neighborhood from claims.hypothesis instead)')
         person_ids: set[str] = set()
         for c in claim_rows:
@@ -1596,7 +1597,7 @@ def _related_date(date_bounds: tuple[str, str], date_str: str, conn: sqlite3.Con
     claim whose bounds overlap date_bounds, and the people/sources/places
     behind them (TOOLING §4a's `--related --date` bullet).
 
-    Photos are omitted here (unlike the P-id/L-id neighborhoods) — photo
+    Photos are omitted here (unlike the P-id/L-id neighborhoods) - photo
     EDTFs live in a separate database with no person/place join key back to
     this query's claim set, so a meaningful photo count would require a
     second, unrelated date-overlap pass; TOOLING describes this as a future
@@ -1660,7 +1661,7 @@ def _related_dispatch(
 
     related_id is None for the standalone `--related --date EDTF` form;
     date_filter is None when narrowing isn't requested. At least one of the
-    two must be set (the CLI layer guarantees this — see _run_find).
+    two must be set (the CLI layer guarantees this - see _run_find).
 
     Printing stays here (rather than in a renderer) because the neighborhood
     report is assembled across many small `_related_*`/`_print_*` helpers that
@@ -1713,7 +1714,7 @@ def _related_dispatch(
             # open_index_db only probes that the required tables exist, not
             # that every column a related query touches is present. An older
             # cache (e.g. with `relationships` but no `date_start`) would
-            # otherwise traceback out of dispatch — same incompatible-schema
+            # otherwise traceback out of dispatch - same incompatible-schema
             # failure mode xref/cooccur catch with the documented rebuild
             # message and exit 3.
             print(
@@ -1807,7 +1808,7 @@ def find_by_id(
         conn.close()
 
     # A stale index may simply be missing a record added since the last
-    # `fha index` run — rescan the tree before reporting "not found".
+    # `fha index` run - rescan the tree before reporting "not found".
     if result == EXIT_WARNINGS and not fresh:
         return _find_by_scan(id_str, archive_root)
     return result
@@ -1860,7 +1861,7 @@ def run_find(
     (related_id is None in both cases, so the flag alone isn't enough).
 
     The finder helpers print as they go (find's human report is its surface), so
-    this returns a Result wrapping their exit code rather than print-free data —
+    this returns a Result wrapping their exit code rather than print-free data -
     `_run_find` renders nothing further and just returns `result.exit_code`.
     """
     if related_requested or date_filter is not None:
@@ -1870,7 +1871,7 @@ def run_find(
     if text_mode:
         return _as_find_result(_text_search(id_or_text or '', archive_root, fha_config))
 
-    # Bare argument — distinguish ID from text
+    # Bare argument - distinguish ID from text
     if not id_or_text:
         print('ERROR: provide an ID or --text "phrase"', file=sys.stderr)
         return _as_find_result(EXIT_FAILURE)
@@ -1879,7 +1880,7 @@ def run_find(
     if is_valid_id(id_norm):
         return _as_find_result(find_by_id(id_norm, archive_root, fha_config))
 
-    # Doesn't look like an ID — treat as text search
+    # Doesn't look like an ID - treat as text search
     return _as_find_result(_text_search(id_or_text, archive_root, fha_config))
 
 
@@ -1904,7 +1905,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     mode.add_argument(
         '--related', nargs='?', default=_NO_RELATED, const=None, metavar='ID',
-        help='Neighborhood of an ID — people/places/sources adjacent. '
+        help='Neighborhood of an ID - people/places/sources adjacent. '
              'Combine with --date for a time slice, or pass --related --date EDTF alone '
              'for the standalone time-slice neighborhood.',
     )
@@ -1949,7 +1950,7 @@ def _run_find(args: argparse.Namespace) -> int:
     related_id = related if (related_requested and related) else None
 
     # --date only has defined behavior alongside --related (TOOLING §4a D4).
-    # Catch it before the --text branch — otherwise `fha find --text "X" --date Y`
+    # Catch it before the --text branch - otherwise `fha find --text "X" --date Y`
     # silently runs an unfiltered text search and drops the date.
     if date is not None and not related_requested:
         print('ERROR: --date requires --related.', file=sys.stderr)
@@ -1964,7 +1965,7 @@ def _run_find(args: argparse.Namespace) -> int:
         # + --date 1900 + positional query 'P-…'. Without this rescue the
         # positional silently routes to the standalone date-slice branch and
         # the user's P-id is dropped on the floor. Treat the leftover positional
-        # as the related ID — that's almost certainly what they meant.
+        # as the related ID - that's almost certainly what they meant.
         if related_id is None and query:
             related_id = query
             query = None

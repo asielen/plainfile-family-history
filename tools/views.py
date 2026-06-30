@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-views.py — fha views: generate view files from the index.
+views.py - fha views: generate view files from the index.
 
   fha views timeline [P-id | --all-curated]
   fha views sources-index [P-id | --all-curated | --couple-folders]
@@ -13,7 +13,7 @@ views.py — fha views: generate view files from the index.
 ARCHITECTURE OVERVIEW
 ---------------------
 Three content views (timeline, sources-index, draft-queue) are read-only
-projections derived from the index — they add no new facts.  Each follows
+projections derived from the index - they add no new facts.  Each follows
 the same pipeline:
 
   1. Open .cache/index.sqlite  (built by `fha index`; views never write it)
@@ -24,7 +24,7 @@ The GENERATED header (see _gen_header) is the contract between views and lint:
 lint rule W105 checks that generated companion files carry this exact header
 so accidental hand-edits are caught on the next lint run.
 
-Output files are "companion" files — they live alongside the profile they
+Output files are "companion" files - they live alongside the profile they
 describe and share its naming prefix:
     hartley__thomas_edward_P-de957bcda1.md          ← profile (hand-edited)
     hartley__thomas_edward_timeline_P-de957bcda1.md ← generated companion
@@ -65,8 +65,12 @@ from _lib import (
     EXIT_WARNINGS,
     FhaConfigError,
     Result,               # the structured-result contract every run_* returns
+    SOCIAL_PARENT_SUBTYPES,   # parent natures shown but NOT numbered (SPEC §12.2)
     fmt_id_display,       # uppercase type prefix for output IDs (p-xxx → P-xxx)
+    format_bracket_child,    # `Given` or `Given (adopted)` - shared with lint W103
+    is_genetic_parent_subtype,
     load_fha_yaml,
+    nonbirth_bracket_label,  # 'adopted'/'step'/… mark for a non-birth child
     normalize_id,         # lower-cases IDs for consistent set/dict keying
     open_index_db,        # open .cache/index.sqlite with freshness check + table probe
     read_record,          # parses YAML front-matter + body from a .md file
@@ -84,8 +88,8 @@ def _views_result(
 
     The view commands generate/delete companion files (side effects) and narrate
     their progress as they go; that printing stays inline (the prompts in
-    `run_brackets` make it inseparable), so the Result records the outcome — the
-    exit code, whether it succeeded, and the files written/removed in `changed` —
+    `run_brackets` make it inseparable), so the Result records the outcome - the
+    exit code, whether it succeeded, and the files written/removed in `changed` -
     rather than re-deriving printed lines.  `ok` is true for clean and
     warnings-only runs (a generated-but-now-stale-index run still succeeded).
     """
@@ -99,63 +103,63 @@ def _views_result(
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Helpers (shared utilities)
-#    _today, _gen_header          — GENERATED header text
+#    _today, _gen_header          - GENERATED header text
 #    (database / root resolution now live in _lib.py: open_index_db, resolve_root_arg)
-#    _profile_path_for            — locate a person's .md profile file
-#    _out_path_for                — build companion file path from profile path
-#    _format_sid, _place_label    — formatting helpers
-#    _curated_person_ids          — list all curated P-ids from index
-#    _couple_folders              — identify curated couple folders + their members
+#    _profile_path_for            - locate a person's .md profile file
+#    _out_path_for                - build companion file path from profile path
+#    _format_sid, _place_label    - formatting helpers
+#    _curated_person_ids          - list all curated P-ids from index
+#    _couple_folders              - identify curated couple folders + their members
 #
 #  Timeline view  (_generate_timeline)
-#    _decade_from_edtf            — EDTF string → '### 1880s' decade header
-#    _timeline_claim_line         — format one claim as a timeline bullet
-#    _generate_timeline           — main generator: queries, groups, writes file
+#    _decade_from_edtf            - EDTF string → '### 1880s' decade header
+#    _timeline_claim_line         - format one claim as a timeline bullet
+#    _generate_timeline           - main generator: queries, groups, writes file
 #
 #  Sources-index view  (_generate_sources_index_*)
-#    _source_ids_for_persons      — collect all source IDs linked to a person set
-#    _write_sources_index         — shared writer (person and couple-folder both call this)
-#    _generate_sources_index_person        — per-person sources-index
-#    _generate_sources_index_couple_folder — couple-folder sources-index.md
+#    _source_ids_for_persons      - collect all source IDs linked to a person set
+#    _write_sources_index         - shared writer (person and couple-folder both call this)
+#    _generate_sources_index_person        - per-person sources-index
+#    _generate_sources_index_couple_folder - couple-folder sources-index.md
 #
 #  Draft-queue view  (_generate_draft_queue)
-#    _generate_draft_queue        — diff accepted sources against cited tokens
+#    _generate_draft_queue        - diff accepted sources against cited tokens
 #
 #  Brackets view  (_cmd_brackets and helpers)
-#    _parse_bracket_names         — extract [Name1 + Name2] list from folder name
-#    _folder_numeric_prefix       — '040 Thomas …' → 40
-#    _given_name                  — 'Thomas Edward Hartley' → 'Thomas' (first word)
-#    _couple_folder_dirs          — list digit-prefixed dirs under people/
-#    _persons_in_folder           — person_ids whose profile files live in a folder
-#    _build_ahnentafel_map        — BFS from root_person → {pid: int position}
-#    _check_w103_brackets         — derive expected bracket lists, find mismatches
-#    _person_couple_folder        — locate a person's current couple folder via index
-#    _person_name_from_db         — fetch display name from persons table
-#    _companion_files_in_folder   — disk-scan for all .md files for a person in a folder
-#    _check_w110_ahnentafel       — check 2 (folder rename) and check 3 (file move)
-#    _compose_folder_renames      — merge W103+W110 renames that share a source folder
-#    _print_bracket_preview       — format the preview diff before any writes
-#    _apply_bracket_fixes         — perform renames/moves after confirmation
-#    _cmd_brackets                — CLI handler: report, preview, fix
+#    _parse_bracket_names         - extract [Name1 + Name2] list from folder name
+#    _folder_numeric_prefix       - '040 Thomas …' → 40
+#    _given_name                  - 'Thomas Edward Hartley' → 'Thomas' (first word)
+#    _couple_folder_dirs          - list digit-prefixed dirs under people/
+#    _persons_in_folder           - person_ids whose profile files live in a folder
+#    _build_ahnentafel_map        - BFS from root_person → {pid: int position}
+#    _check_w103_brackets         - derive expected bracket lists, find mismatches
+#    _person_couple_folder        - locate a person's current couple folder via index
+#    _person_name_from_db         - fetch display name from persons table
+#    _companion_files_in_folder   - disk-scan for all .md files for a person in a folder
+#    _check_w110_ahnentafel       - check 2 (folder rename) and check 3 (file move)
+#    _compose_folder_renames      - merge W103+W110 renames that share a source folder
+#    _print_bracket_preview       - format the preview diff before any writes
+#    _apply_bracket_fixes         - perform renames/moves after confirmation
+#    _cmd_brackets                - CLI handler: report, preview, fix
 #
 #  Tree view  (_cmd_tree and helpers)
-#    _build_nodes_bulk            — batch TOOLING §7 node dicts for all BFS pids (2 SQL queries)
-#    _collect_edges               — DISTINCT edges from relationships table for a pid
-#    _traverse_tree               — BFS with cycle detection; returns nodes + edges dicts
-#    _edge_to_json_dict           — edge dict → TOOLING §7 JSON edge schema
-#    _tree_to_json                — serialize traversal to neutral JSON (TOOLING §7 D3)
-#    _tree_to_dot                 — serialize traversal to GraphViz DOT
-#    _cmd_tree                    — CLI handler: traversal + output
+#    _build_nodes_bulk            - batch TOOLING §7 node dicts for all BFS pids (2 SQL queries)
+#    _collect_edges               - DISTINCT edges from relationships table for a pid
+#    _traverse_tree               - BFS with cycle detection; returns nodes + edges dicts
+#    _edge_to_json_dict           - edge dict → TOOLING §7 JSON edge schema
+#    _tree_to_json                - serialize traversal to neutral JSON (TOOLING §7 D3)
+#    _tree_to_dot                 - serialize traversal to GraphViz DOT
+#    _cmd_tree                    - CLI handler: traversal + output
 #
 #  CLI wiring
-#    _cmd_timeline, _cmd_sources_index, _cmd_draft_queue  — argparse handlers
-#    _cmd_brackets                — brackets handler (above)
-#    _cmd_tree                    — tree handler (above)
-#    _cmd_clean                   — delete all GENERATED companion files
-#    _cmd_refresh                 — regenerate all content views for all curated persons
-#    _cmd_views_help              — prints views help when no subcommand given
-#    register           — called by fha.py to attach 'views' to the main parser
-#    register_standalone, main    — used when running `python tools/views.py` directly
+#    _cmd_timeline, _cmd_sources_index, _cmd_draft_queue  - argparse handlers
+#    _cmd_brackets                - brackets handler (above)
+#    _cmd_tree                    - tree handler (above)
+#    _cmd_clean                   - delete all GENERATED companion files
+#    _cmd_refresh                 - regenerate all content views for all curated persons
+#    _cmd_views_help              - prints views help when no subcommand given
+#    register           - called by fha.py to attach 'views' to the main parser
+#    register_standalone, main    - used when running `python tools/views.py` directly
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -169,7 +173,7 @@ def _today() -> str:
 # The first non-blank line of a generated view file always begins with this
 # marker.  It is the contract between views (writer), lint (W105), and
 # `views clean` (deleter): a file is "owned" by views only when this marker is
-# its first non-blank line — never merely present somewhere in the body.
+# its first non-blank line - never merely present somewhere in the body.
 _GEN_MARKER = '<!-- GENERATED by fha views'
 
 
@@ -178,13 +182,13 @@ def _gen_header(subcommand: str) -> str:
     Return the GENERATED header comment for a view file.
 
     The exact wording 'GENERATED by fha views {subcommand}' is checked by lint
-    rule W105 — if you change this string, update the W105 pattern in lint.py
+    rule W105 - if you change this string, update the W105 pattern in lint.py
     as well, otherwise every existing generated file will be flagged as
     hand-edited on the next lint run.
     """
     return (
         f'{_GEN_MARKER} {subcommand} on {_today()}'
-        ' — do not edit; regenerate instead -->\n\n'
+        ' - do not edit; regenerate instead -->\n\n'
     )
 
 
@@ -227,7 +231,7 @@ def _refused_exit(e: _ManualFileRefused) -> int:
     """Report a refused overwrite and return the failure exit code."""
     print(
         f'ERROR: refusing to overwrite hand-written file (no GENERATED header): '
-        f'{e} — move or delete it, then re-run.',
+        f'{e} - move or delete it, then re-run.',
         file=sys.stderr,
     )
     return EXIT_FAILURE
@@ -318,7 +322,7 @@ def _couple_folders(conn: sqlite3.Connection, archive_root: Path) -> list[tuple[
     (TOOLING §7: only folders with ≥1 curated person get a sources-index.md.)
 
     WHY TWO QUERIES: curated tier is the quality gate for deciding WHICH folders
-    get a sources-index — we don't want one for every stub-only folder.  But the
+    get a sources-index - we don't want one for every stub-only folder.  But the
     source union itself should cover everyone in the folder, including stub spouses
     and children.  A stub person may hold a unique source (e.g. an obituary for the
     spouse) that the biographer needs to see even though the stub hasn't been
@@ -380,11 +384,11 @@ def _decade_from_edtf(date_edtf: str | None) -> str | None:
     """
     if not date_edtf:
         return None
-    # Handle interval A/B — use the start
+    # Handle interval A/B - use the start
     edtf = date_edtf.split('/')[0].strip()
     # Strip qualifiers: ~, ?, [..
     edtf = edtf.lstrip('[.').rstrip('~?]')
-    # EDTF decade form, e.g. '185X' — the century+decade digits are explicit
+    # EDTF decade form, e.g. '185X' - the century+decade digits are explicit
     # and the units digit is a literal 'X', so int() on the full year fails.
     if len(edtf) >= 4 and edtf[:3].isdigit() and edtf[3] in ('X', 'x'):
         decade = int(edtf[:3]) * 10
@@ -401,7 +405,7 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     """Format one timeline line from a claims query row."""
     date_str = row['date_edtf'] or '(undated)'
     place = _place_label(row['place_text'], row['place_id'], conn)
-    line = f'{date_str} — {row["type"]}: {row["value"]}'
+    line = f'{date_str} - {row["type"]}: {row["value"]}'
     if place:
         line += f' @ {place}'
     line += f' {_format_sid(row["source_id"])}'
@@ -465,7 +469,7 @@ def _generate_timeline(
 
     # Accumulate rows into (decade_header, rows) sections before rendering.
     # We cannot emit section headers inline as we iterate because Markdown needs
-    # a blank line BEFORE each ### header — we don't know whether a new section
+    # a blank line BEFORE each ### header - we don't know whether a new section
     # is starting until we've already seen the first row of it.  Collecting first
     # lets us emit clean separators in a second pass without lookahead.
     sections: list[tuple[str | None, list[sqlite3.Row]]] = []
@@ -745,7 +749,7 @@ def _folder_numeric_prefix(folder_name: str) -> int | None:
 
 
 def _given_name(full_name: str) -> str:
-    """Return the first word of a full name — the form used in bracket lists."""
+    """Return the first word of a full name - the form used in bracket lists."""
     parts = full_name.strip().split()
     return parts[0] if parts else full_name
 
@@ -790,24 +794,35 @@ def _build_ahnentafel_map(conn: sqlite3.Connection, root_pid: str) -> dict[str, 
       sex='M' → 2N (father's slot), sex='F' → 2N+1 (mother's slot).
       Same-sex or sex='U' pairs: lexicographically-first P-id → 2N (deterministic).
     Terminates when no accepted parent edges remain (relationships table is
-    derived from accepted claims only — see index.py).
+    derived from accepted claims only - see index.py).
 
     WHY BFS: Ahnentafel is a breadth-first numbering by definition.  Depth-first
     would produce the same positions but BFS is the natural traversal shape.
     """
+    # Numbering follows only the GENETIC pedigree (SPEC §12.2): a parent edge is
+    # skipped when its claim's nature is an explicit social/legal kind. The nature
+    # lives on the backing claim, so we join relationships → claims by claim_id;
+    # an unset/unknown/legacy nature defaults to genetic (NOT IN the social set),
+    # so a legacy archive numbers exactly as before. DISTINCT collapses the
+    # co-valid case (a biological AND an adoptive edge to the same parent) to the
+    # one surviving genetic edge.
+    social = sorted(SOCIAL_PARENT_SUBTYPES)
+    social_ph = ','.join('?' * len(social))
     pid_to_pos: dict[str, int] = {root_pid: 1}
     queue: deque[tuple[str, int]] = deque([(root_pid, 1)])
 
     while queue:
         pid, n = queue.popleft()
         parent_rows = conn.execute(
-            """
-            SELECT r.other_id AS pid, p.sex
+            f"""
+            SELECT DISTINCT r.other_id AS pid, p.sex
             FROM relationships r
             JOIN persons p ON r.other_id = p.id
+            LEFT JOIN claims c ON r.claim_id = c.id
             WHERE r.person_id = ? AND r.rel = 'parent'
+              AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
             """,
-            (pid,),
+            (pid, *social),
         ).fetchall()
 
         parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
@@ -851,14 +866,17 @@ def _check_w103_brackets(
 
     For each couple folder, the expected bracket list is: given names of ALL
     children of persons in the folder, sorted alphabetically, derived from the
-    relationships table (which mirrors accepted child-of claims only).
+    relationships table (which mirrors accepted parent/child claims, identified
+    by their roles: map regardless of nature). A child who joined other than by
+    birth is marked `(adopted)`/`(step)`/… via the backing claim's subtype, so an
+    adopted child is shown but visibly distinct (SPEC §12.2).
 
     Each returned dict has keys: code, folder, old_name, new_name, msg.
 
     WHY ALL CHILDREN (including direct-line): The bracket list is a human
     convenience label showing every child of the couple.  Direct-line children
     (who also have their own numbered couple folder) still appear in their
-    parents' bracket list — e.g. Calvin appears in folder 040 even though
+    parents' bracket list - e.g. Calvin appears in folder 040 even though
     Calvin's own couple folder is 020.  This matches the observed example-archive
     pattern (Warren in 020's brackets, Edith in 010's, etc.).
     """
@@ -891,13 +909,16 @@ def _check_w103_brackets(
             continue
 
         # All children of all persons in this folder, tracking the parent so
-        # grandchildren via stray occupants can be excluded.
+        # grandchildren via stray occupants can be excluded, and the edge nature
+        # (from the backing claim) so a non-birth child can be marked.
         placeholders = ','.join('?' * len(person_ids))
         child_rows = conn.execute(
             f"""
-            SELECT r.person_id AS parent_pid, r.other_id AS child_pid, p.name
+            SELECT r.person_id AS parent_pid, r.other_id AS child_pid,
+                   p.name AS name, LOWER(COALESCE(c.subtype, '')) AS nature
             FROM relationships r
             JOIN persons p ON r.other_id = p.id
+            LEFT JOIN claims c ON r.claim_id = c.id
             WHERE r.person_id IN ({placeholders}) AND r.rel = 'child'
             """,
             person_ids,
@@ -906,13 +927,29 @@ def _check_w103_brackets(
         # A stray folder occupant who is also a child here would contribute their
         # own children (grandchildren of the couple) to the bracket.  Exclude any
         # child whose parent_pid itself appears as a child in these results.
-        # Dict keyed on child_pid deduplicates multiple-parent entries naturally.
         all_result_child_pids = {r['child_pid'] for r in child_rows}
-        derived_names = sorted(
-            {r['child_pid']: _given_name(r['name'])
-             for r in child_rows
-             if r['parent_pid'] not in all_result_child_pids and r['name']}.values()
-        )
+        # Aggregate each child's natures across its edges to folder parents (a pair
+        # may carry both a biological and an adoptive edge - the co-valid case); a
+        # child with any genetic edge reads as a birth child (bare name), one joined
+        # only by a social/legal bond reads `Given (adopted)`. Mirrors
+        # lint._check_bracket_lists so both backends derive identical lists.
+        child_info: dict[str, dict] = {}
+        for r in child_rows:
+            if r['parent_pid'] in all_result_child_pids or not r['name']:
+                continue
+            info = child_info.setdefault(r['child_pid'], {'name': r['name'], 'natures': set()})
+            info['natures'].add(r['nature'])
+        derived_entries = []
+        for info in child_info.values():
+            natures = info['natures']
+            label = None
+            if not any(is_genetic_parent_subtype(s) for s in natures):
+                for s in sorted(natures):
+                    label = nonbirth_bracket_label(s)
+                    if label:
+                        break
+            derived_entries.append(format_bracket_child(_given_name(info['name']), label))
+        derived_names = sorted(derived_entries)
 
         if sorted(current_names) != sorted(derived_names):
             bracket_part = (
@@ -993,13 +1030,13 @@ def _check_w110_ahnentafel(
 ) -> list[dict]:
     """Implement TOOLING §7 checks 2 and 3 for Ahnentafel placement.
 
-    Check 2 — folder-number rename:
+    Check 2 - folder-number rename:
       For each direct-line couple, the couple folder's numeric prefix must equal
       the even Ahnentafel position of the person in the 'father' slot (pos N,
       where N is even).  If the prefix is wrong, the folder itself is renamed.
       One folder-rename issue is emitted per mismatched folder.
 
-    Check 3 — person-file placement:
+    Check 3 - person-file placement:
       For each direct-line person at position N (N ≥ 2), ALL companion files
       (profile, research, timeline, sources-index, draft-queue) must live in the
       folder whose prefix equals N (if N is even) or N−1 (if N is odd).  Files
@@ -1022,7 +1059,7 @@ def _check_w110_ahnentafel(
     # position anchors found in it claim the SAME expected prefix, and that prefix
     # differs from the folder's actual prefix.  If two even-position persons from
     # different Ahnentafel branches are both present (e.g. Thomas pos-40 and Calvin
-    # pos-20 in folder 020), they claim conflicting prefixes — the folder itself is
+    # pos-20 in folder 020), they claim conflicting prefixes - the folder itself is
     # not misnamed; one person is simply misplaced (check 3 handles that).
 
     # Step A: collect couple-prefix anchors per folder.
@@ -1059,7 +1096,7 @@ def _check_w110_ahnentafel(
             continue
         claimed_prefixes = {pos for _, pos in anchors}
         if len(claimed_prefixes) != 1:
-            # Conflicting claims — persons from different branches are co-mingled.
+            # Conflicting claims - persons from different branches are co-mingled.
             # Leave the folder name alone; check 3 will propose moving the strays.
             continue
         claimed_prefix = next(iter(claimed_prefixes))
@@ -1069,7 +1106,7 @@ def _check_w110_ahnentafel(
         if existing_canonical is not None and existing_canonical != folder:
             # A couple folder for claimed_prefix already exists elsewhere; renaming
             # this folder onto the same prefix would split the couple into two
-            # folders. Leave this folder alone — check 3's file-move path will
+            # folders. Leave this folder alone - check 3's file-move path will
             # relocate the stray person's files into the existing canonical folder.
             continue
 
@@ -1128,7 +1165,7 @@ def _check_w110_ahnentafel(
         person_name = _person_name_from_db(conn, pid)
 
         # Scan ALL couple dirs for companion files that belong to this person but
-        # are not in the expected folder — catches strays even when the profile
+        # are not in the expected folder - catches strays even when the profile
         # itself is already correctly placed.
         for folder in all_couple_dirs:
             if folder == dest_folder:
@@ -1318,7 +1355,7 @@ def _apply_bracket_fixes(
     failures and file-move skips are both counted as `failures`.
 
     Returns (failures, aborted). Callers treat aborted as EXIT_FAILURE and any
-    nonzero `failures` as EXIT_WARNINGS — a non-empty fix run must never report
+    nonzero `failures` as EXIT_WARNINGS - a non-empty fix run must never report
     clean after a rename/move could not be applied.
     """
     # ── Preflight: folder-rename destination conflicts ────────────────────────
@@ -1340,7 +1377,7 @@ def _apply_bracket_fixes(
                 rel = c
             print(
                 f'  ERROR: rename destination already exists: {rel} '
-                '— no changes applied.',
+                '- no changes applied.',
                 file=sys.stderr,
             )
         return len(conflicts), True
@@ -1394,7 +1431,7 @@ def _apply_bracket_fixes(
             failures += 1
             continue
         if dst.exists():
-            print(f'  ERROR {src.name}: destination already exists at {dst} — skipped to avoid overwrite.', file=sys.stderr)
+            print(f'  ERROR {src.name}: destination already exists at {dst} - skipped to avoid overwrite.', file=sys.stderr)
             failures += 1
             continue
         try:
@@ -1417,10 +1454,10 @@ def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -
     """Run the bracket/Ahnentafel checks and (with --fix) apply them; return a Result.
 
     Three checks in one pass (TOOLING §7):
-      1. W103 — refresh stale bracket lists in couple-folder names.
-      2. W110 check 2 — rename couple folders whose numeric prefix disagrees
+      1. W103 - refresh stale bracket lists in couple-folder names.
+      2. W110 check 2 - rename couple folders whose numeric prefix disagrees
                          with the Ahnentafel-derived number.  (Requires root_person.)
-      3. W110 check 3 — move all companion files (profile, research, timeline,
+      3. W110 check 3 - move all companion files (profile, research, timeline,
                          sources-index, draft-queue) to the correct folder.
                          (Requires root_person.)
 
@@ -1428,7 +1465,7 @@ def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -
     --dry-run: print findings + full preview of changes, exit without writing.
     --fix: print preview, prompt Apply? [y/N], then write.
 
-    The findings, preview, prompt, and per-rename narration stay inline — the
+    The findings, preview, prompt, and per-rename narration stay inline - the
     interactive Apply? gate is bound to that output and is out of scope to move
     (a deferred Phase-3 concern).  The Result records the outcome: the issue
     counts in `data` and, on a successful --fix, the dropped index cache in
@@ -1457,7 +1494,7 @@ def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -
             root_pid = normalize_id(str(root_person_raw))
             if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone() is None:
                 print(
-                    f'WARNING: root_person {root_pid!r} is not in the index — '
+                    f'WARNING: root_person {root_pid!r} is not in the index - '
                     'Ahnentafel checks (W110) skipped. Run `fha index` or fix fha.yaml.',
                     file=sys.stderr,
                 )
@@ -1516,7 +1553,7 @@ def run_brackets(archive_root: Path, fix: bool = False, dry_run: bool = False) -
         failures, aborted = _apply_bracket_fixes(w103, w110, archive_root)
         if aborted:
             print(
-                f'\nNo changes written — {failures} rename destination(s) already '
+                f'\nNo changes written - {failures} rename destination(s) already '
                 'exist (see stderr). Resolve the conflicts, then re-run.',
                 file=sys.stderr,
             )
@@ -1611,7 +1648,7 @@ def _collect_edges(
     """Fetch distinct outbound relationship edges from the relationships table.
 
     The index builder may insert duplicate rows when a claim has multiple
-    claim_persons entries — DISTINCT prevents those duplicates from appearing
+    claim_persons entries - DISTINCT prevents those duplicates from appearing
     as repeated edges in the traversal.
 
     Returns a list of internal edge dicts:
@@ -1624,9 +1661,9 @@ def _collect_edges(
     placeholders = ','.join('?' * len(rels))
     rows = conn.execute(
         f"""
-        SELECT DISTINCT rel, other_id, claim_id, date_start, date_end
-        FROM relationships
-        WHERE person_id = ? AND rel IN ({placeholders})
+        SELECT DISTINCT r.rel, r.other_id, r.claim_id, r.date_start, r.date_end, c.subtype
+        FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
+        WHERE r.person_id = ? AND r.rel IN ({placeholders})
         """,
         [pid] + rels,
     ).fetchall()
@@ -1636,6 +1673,10 @@ def _collect_edges(
             'from': pid,
             'to': row['other_id'],
             'claim_id': row['claim_id'],
+            # The bond's nature (SPEC §12.2): a non-genetic parent/child edge draws
+            # distinctly; unset/legacy subtypes default to genetic, back-compatibly.
+            'subtype': (row['subtype'] or '').strip().lower() or None,
+            'genetic': is_genetic_parent_subtype(row['subtype']),
             'date_start': row['date_start'] or None,
             'date_end': row['date_end'] or None,
         }
@@ -1655,17 +1696,17 @@ def _traverse_tree(
     single batch (two SQL queries via _build_nodes_bulk) rather than 2N queries.
 
     Returns:
-        nodes — ordered dict pid → node dict (BFS encounter order)
-        edges — ordered dict (from, to, type) → edge dict (deduplicated)
+        nodes - ordered dict pid → node dict (BFS encounter order)
+        edges - ordered dict (from, to, type) → edge dict (deduplicated)
 
     Modes and traversal logic (TOOLING §7):
-        'ancestors'   — expand via 'parent' edges only (pedigree chart).
-        'descendants' — expand via 'child' edges.  At every visited node,
+        'ancestors'   - expand via 'parent' edges only (pedigree chart).
+        'descendants' - expand via 'child' edges.  At every visited node,
                         spouse edges are also collected and the spouse added
                         as a node, but spouses are NOT enqueued for further
-                        expansion (one-hop only — pulls in in-laws without
+                        expansion (one-hop only - pulls in in-laws without
                         recursing into their own ancestry).
-        'fan'         — expand via all edge types (parent, child, spouse,
+        'fan'         - expand via all edge types (parent, child, spouse,
                         friend, associate, neighbor).  max_hops defaults to
                         2 at the call site.
 
@@ -1686,7 +1727,7 @@ def _traverse_tree(
     elif mode == 'descendants':
         traverse_rels = ['child']
         extra_rels = ['spouse']
-    else:  # fan — all relationship types
+    else:  # fan - all relationship types
         traverse_rels = ['parent', 'child', 'spouse', 'friend', 'associate', 'neighbor']
         extra_rels = []
 
@@ -1707,7 +1748,7 @@ def _traverse_tree(
                     pids_in_order.append(other)
                     pids_seen.add(other)
 
-        # Collect extra_rels as leaf nodes — never enqueued (in-law lineages
+        # Collect extra_rels as leaf nodes - never enqueued (in-law lineages
         # appear in the tree but their own ancestry is not followed).
         for edge in _collect_edges(conn, pid, extra_rels):
             ekey = (edge['from'], edge['to'], edge['type'])
@@ -1735,6 +1776,8 @@ def _edge_to_json_dict(edge: dict) -> dict:
         'from': fmt_id_display(edge['from']),
         'to': fmt_id_display(edge['to']),
         'claim_id': fmt_id_display(edge['claim_id']) if edge['claim_id'] else None,
+        'subtype': edge.get('subtype'),
+        'genetic': edge.get('genetic', True),
         'dates': {
             'start': edge['date_start'] if is_spouse else None,
             'end': edge['date_end'] if is_spouse else None,
@@ -1766,7 +1809,7 @@ def _tree_to_dot(nodes: dict, edges: dict) -> str:
     Node label: "{name}\\n({birth}–{death})" where absent dates render as
     empty string (not 'None').  Edge labels are the relationship type string.
     The \\n in label strings is the DOT escape for a line break in the
-    rendered graph, not a Python newline — hence the double backslash.
+    rendered graph, not a Python newline - hence the double backslash.
     """
     lines = ['digraph {', '  rankdir=TB;']
 
@@ -2107,7 +2150,7 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
             text = p.read_text(encoding='utf-8', errors='ignore')
         except OSError:
             continue
-        # Owned by views only when the marker is the FIRST non-blank line — a
+        # Owned by views only when the marker is the FIRST non-blank line - a
         # hand-written file that merely mentions the marker later is never deleted.
         if first_nonblank_line(text).startswith(_GEN_MARKER):
             found.append(p)
@@ -2129,7 +2172,7 @@ def run_clean(archive_root: Path, dry_run: bool = False) -> Result:
     verb = 'Would remove' if dry_run else 'Removed'
     print(f'{verb} {len(found)} generated file(s).')
     if not dry_run:
-        print('Note: deleted files still appear in .cache/index.sqlite — run `fha index` to update the cache.')
+        print('Note: deleted files still appear in .cache/index.sqlite - run `fha index` to update the cache.')
         return _views_result(EXIT_WARNINGS, changed=changed, data={'removed': len(found)})
     return _views_result(EXIT_CLEAN, data={'removed': 0, 'would_remove': len(found)})
 

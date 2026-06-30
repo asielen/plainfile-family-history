@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-claim.py — fha claim: human-directed claim review write-back (AGENTS.md, SPEC §8).
+claim.py - fha claim: human-directed claim review write-back (AGENTS.md, SPEC §8).
 
   fha claim <C-id> --status accepted|disputed|rejected|needs-review|superseded
                    [--reviewed DATE] [--value "…"] [--date EDTF]
@@ -15,18 +15,18 @@ contract-safe CLI action that any front door (chat now, a UI later) can drive.
 
 **Contract (AGENTS.md / SPEC §8.2):** only the *human* moves a claim to
 `accepted`, and an accepted claim must carry a `reviewed:` date (lint E006). The
-human satisfies that contract by *directing* this tool — the editing method does
+human satisfies that contract by *directing* this tool - the editing method does
 not matter, only that the decision is theirs. So `--status accepted` always
 writes a `reviewed:` stamp: the explicit `--reviewed DATE` when given, otherwise
 today (forgiving, since a human is at the keyboard). The tool never accepts on
 its own. `disputed` / `rejected` / `superseded` change status rather than
-deleting, so the research trail is preserved — `disputed` marks a claim that is
+deleting, so the research trail is preserved - `disputed` marks a claim that is
 actively contested (e.g. a `contradicts:` standoff) rather than settled either
 way, distinct from a `rejected` claim the reviewer has ruled out.
 
 The edit is **surgical**: only the one named claim's entry inside its source
-`.md` `## Claims` block is touched — its sibling claims, the block's key order,
-and any hand comments are preserved — mirroring `places geocode`'s surgical
+`.md` `## Claims` block is touched - its sibling claims, the block's key order,
+and any hand comments are preserved - mirroring `places geocode`'s surgical
 `places.yaml` edit and `process --more`'s frontmatter edit. The claim is located
 by scanning the `sources/` records directly (the `.md` files are the truth), so
 the command works even when `.cache/index.sqlite` is stale or absent. After a
@@ -34,11 +34,11 @@ write, re-run `fha index` so the new status enters the query surface.
 
 CODE MAP
 --------
-  _today                    — review-stamp default (overridable in tests)
-  _ClaimEditRefused         — surgical edit declined (e.g. block-scalar value)
-  _find_claim_record        — scan sources/ for the .md holding one C-id
-  _apply_claim_review       — surgical `## Claims` block edit (status/reviewed/…)
-  run_claim                 — validate, locate, edit, return a Result
+  _today                    - review-stamp default (overridable in tests)
+  _ClaimEditRefused         - surgical edit declined (e.g. block-scalar value)
+  _find_claim_record        - scan sources/ for the .md holding one C-id
+  _apply_claim_review       - surgical `## Claims` block edit (status/reviewed/…)
+  run_claim                 - validate, locate, edit, return a Result
   _cmd_claim / register / _standalone_main
 """
 
@@ -101,7 +101,7 @@ def _find_claim_record(archive_root: Path, claim_id: str) -> tuple[Path, dict] |
     """Scan `sources/` for the record whose `## Claims` block holds `claim_id`.
 
     Returns `(path, claim_dict)` for the first match, or None. The `.md` files
-    are archive truth, so this never consults `.cache/index.sqlite` — the write
+    are archive truth, so this never consults `.cache/index.sqlite` - the write
     must work even when the index is stale or has never been built. Records that
     fail to parse are skipped (the claim isn't in an unparseable block, and lint
     is the tool that reports the parse error).
@@ -113,7 +113,7 @@ def _find_claim_record(archive_root: Path, claim_id: str) -> tuple[Path, dict] |
     for path in sorted(sources_dir.rglob('*.md')):
         try:
             rec = read_record(path)
-        except Exception:  # noqa: BLE001 — a bad record can't hold our claim
+        except Exception:  # noqa: BLE001 - a bad record can't hold our claim
             continue
         for claim in rec.get('claims') or []:
             if not isinstance(claim, dict):
@@ -138,13 +138,13 @@ def _apply_claim_review(
     """Surgically set `status:`/`reviewed:`/`value:`/`date:` on one claim block.
 
     Only the claim whose `id:` matches `claim_id` (case-insensitive) inside the
-    `## Claims` fenced YAML block is touched; every other line — sibling claims,
-    key order, comments — is preserved. Returns `(new_text, changed)`; `changed`
+    `## Claims` fenced YAML block is touched; every other line - sibling claims,
+    key order, comments - is preserved. Returns `(new_text, changed)`; `changed`
     is False when the block or the claim isn't found (the caller reports a clean
     not-found rather than guessing).
 
     Raises `_ClaimEditRefused` when an edit can't be made without risking
-    corruption — currently only `--value` against a multi-line block scalar
+    corruption - currently only `--value` against a multi-line block scalar
     (`value: >` / `value: |`), which a human edits by hand.
     """
     target = normalize_id(claim_id)
@@ -235,7 +235,7 @@ def _apply_claim_review(
         item.insert(pos, f'{key_indent}{key}: {value_text}')
         return pos
 
-    # 3. status (always present in a valid claim — replaced in place).
+    # 3. status (always present in a valid claim - replaced in place).
     status_idx = set_scalar('status', status, insert_after=0)
 
     anchor = status_idx
@@ -267,7 +267,7 @@ def _yaml_inline(value: str) -> str:
     The claims block is edited as text (not round-tripped through the YAML
     emitter) to preserve key order and comments, so a free-form `--value` that
     carries YAML-significant characters (`: `, a leading `-`, ` #`) must be
-    quoted exactly when the parser needs it — the same discipline `fha process`
+    quoted exactly when the parser needs it - the same discipline `fha process`
     uses for scaffold scalars.
     """
     rendered = yaml.safe_dump(
@@ -303,14 +303,14 @@ def run_claim(
         'after_status': status, 'reviewed': None, 'source': None,
     })
 
-    # Validate the C-id shape before touching the archive — a malformed id is a
+    # Validate the C-id shape before touching the archive - a malformed id is a
     # plain refusal, never a traceback.
     if not (is_valid_id(claim_id) and id_type_of(claim_id) == 'C'):
         result.ok = False
         result.exit_code = EXIT_FAILURE
         result.data['status'] = 'invalid-id'
         result.add('error',
-                   f'{claim_id!r} is not a valid claim ID. C-ids look like C-fd0000001a — '
+                   f'{claim_id!r} is not a valid claim ID. C-ids look like C-fd0000001a - '
                    'a C followed by a dash and 10 characters from the archive alphabet.')
         return result
 
@@ -390,7 +390,7 @@ def run_claim(
         return result
 
     if not changed:
-        # The record parsed with the claim but its raw `## Claims` text didn't —
+        # The record parsed with the claim but its raw `## Claims` text didn't -
         # an unusual shape lint should surface; refuse rather than guess.
         result.ok = False
         result.exit_code = EXIT_WARNINGS

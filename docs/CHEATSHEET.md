@@ -30,6 +30,7 @@ python tools/fha.py report   --root my-family-archive   # the review queue + res
 python tools/fha.py find --text "Rose Hartley" --root my-family-archive   # search everything
 python tools/fha.py doctor   --root my-family-archive   # health check - run this when stuck
 python tools/fha.py lint     --root my-family-archive   # "is my archive shaped right?"
+python tools/fha.py relate P-aaaa P-bbbb --root my-family-archive   # how are these two related?
 ```
 
 `--root` just names which archive folder to use. On a Mac, use `python3` if that's what answers.
@@ -63,9 +64,14 @@ Write the name in **double brackets**. That's the whole trick.
 | `[[Grandpa Joe]]` | the person named Grandpa Joe (a nickname is fine) |
 | `[[Hartley family bible]]` | that source record |
 | `born in [[Fairview]]` | the place |
+| `[[Caleb Hartley]]` in a person's relationships | his parent, spouse, or child - with its nature noted |
 
 Don't worry about IDs - name your file something sensible, link to it by name, and if you ever run
 `fha lint` it assigns the durable IDs and keeps your name-links working. You never have to make one.
+
+Relationships work the same way: under a person, list who they connect to and how - a parent, a
+spouse, an adoptive parent - by name. Mark a tie you're sure of with the source that proves it, or
+just jot it as a hunch; the assistant keeps the unproved ones on the "still to source" list.
 
 ---
 
@@ -85,10 +91,12 @@ photo viewer - no tool required, now or in fifty years.
 
 ---
 
-## Two rules that keep you safe
+## Three rules that keep you safe
 
 1. **Nothing becomes a fact until *you* accept it.** The assistant only ever *suggests*.
 2. **Photos are never renamed.** Drop them in as-is; identity rides in hidden metadata, not the name.
+3. **Mark anything private with `restricted`.** A person, a fact, a source, or an old name -
+   restricted material stays in your archive but never leaves in anything you share.
 
 ---
 

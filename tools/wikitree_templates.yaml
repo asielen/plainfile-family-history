@@ -1,9 +1,9 @@
-# wikitree_templates.yaml — optional claim-type → WikiTree infobox hooks for
+# wikitree_templates.yaml - optional claim-type → WikiTree infobox hooks for
 # `fha wikitree` (TOOLING §13). This file is *data*: it ships empty so the
 # default export emits no templates. Uncomment / add mappings to have certain
 # claim types render a WikiTree template near the top of the exported profile.
 #
-# Schema — one entry per claim `type` (SPEC §8.2 vocabulary):
+# Schema - one entry per claim `type` (SPEC §8.2 vocabulary):
 #
 #   <claim_type>:
 #     template: <WikiTree template name>      # e.g. "US Civil War"
@@ -15,7 +15,7 @@
 # A field whose claim attribute is empty is omitted; an empty/missing file, or a
 # malformed one, simply disables the feature (the rest of the export is unaffected).
 #
-# Example (commented out — enable by removing the leading '#'):
+# Example (commented out - enable by removing the leading '#'):
 #
 # military:
 #   template: "US Civil War"

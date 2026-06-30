@@ -1,4 +1,4 @@
-# Generated caches and site output — rebuilt by fha index / fha site / fha photoindex.
+# Generated caches and site output - rebuilt by fha index / fha site / fha photoindex.
 .cache/
 
 # Binary asset roots. Photos and documents can be large; consider keeping them
@@ -7,10 +7,10 @@
 photos/
 documents/
 
-# Staging area — inbox/ items are processed one at a time, not version-controlled.
+# Staging area - inbox/ items are processed one at a time, not version-controlled.
 inbox/
 
-# Machine-local working-copy marker (git-ignored by design — see SPEC.md §12).
+# Machine-local working-copy marker (git-ignored by design - see SPEC.md §12).
 WORKING_COPY
 
 # Backup directory created by fha update-tools.

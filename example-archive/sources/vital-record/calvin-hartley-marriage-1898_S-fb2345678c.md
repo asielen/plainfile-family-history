@@ -1,7 +1,7 @@
 ---
 id: S-fb2345678c
 aliases: [S-fb2345678c]
-title: Marriage certificate — Calvin Hartley & Harriet Webb, 1898
+title: Marriage certificate - Calvin Hartley & Harriet Webb, 1898
 source_type: vital-record
 source_date: 1898-04-22
 source_class: original

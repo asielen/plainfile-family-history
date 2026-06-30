@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-index.py — fha index: build the SQLite query surface.
+index.py - fha index: build the SQLite query surface.
 
   fha index                  Full rebuild of .cache/index.sqlite from scratch
   fha index --source S-xxxx  Upsert one source (incremental, sub-second)
 
-The index is a disposable SQLite cache — never authoritative, always rebuildable.
+The index is a disposable SQLite cache - never authoritative, always rebuildable.
 SPEC §8.7, TOOLING §2.
 
 ARCHITECTURE
@@ -19,7 +19,7 @@ Two modes:
     scratch.  Use after any structural change (new person files, moved records).
   Incremental upsert (upsert_source):  re-index one source and its claims in
     place, then re-derive relationships.  Use after editing a single source file
-    — completes in under a second on a normal archive.
+    - completes in under a second on a normal archive.
 
 The schema lives in _DDL.  Foreign keys are OFF because the archive allows
 forward references (a claim can reference a person whose file appears later in
@@ -76,46 +76,51 @@ import yaml
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Schema
-#    _DDL                    — CREATE TABLE statements for all index tables
+#    _DDL                    - CREATE TABLE statements for all index tables
 #
 #  Low-level DB helpers
-#    _get_db                 — open (or create) the SQLite file, apply DDL
-#    _drop_tables            — wipe all tables before a full rebuild
+#    _get_db                 - open (or create) the SQLite file, apply DDL
+#    _drop_tables            - wipe all tables before a full rebuild
 #
 #  Indexers (one per record type)
-#    _index_places           — places.yaml → places, place_names, place_history
-#    _index_person           — one person .md → persons + person_files
+#    _index_places           - places.yaml → places, place_names, place_history
+#    _index_person           - one person .md → persons + person_files
 #                              + hypotheses + search_log (research files)
-#    _index_source           — one source .md → sources + claims + claim_persons
+#    _index_source           - one source .md → sources + claims + claim_persons
 #                              + claim_links + source_files + source_people
-#    _index_notes            — notes/*.md → notes_fts
+#    _index_notes            - notes/*.md → notes_fts
 #                              + search_log (notes/research-log.md)
-#    _index_citations        — all .md → citations (token → file + line)
+#    _index_citations        - all .md → citations (token → file + line)
 #
 #  Markdown block parsing
-#    _parse_md_list_blocks   — generic "- field: value" block parser, shared by
+#    _parse_md_list_blocks   - generic "- field: value" block parser, shared by
 #                              the Hypotheses and Research Log section parsers
-#    _index_hypotheses_block — ## Hypotheses entries → hypotheses rows
-#    _index_research_log_block — ## Research Log entries → search_log rows
+#    _index_hypotheses_block - ## Hypotheses entries → hypotheses rows
+#    _index_research_log_block - ## Research Log entries → search_log rows
 #
 #  Derived tables
-#    _derive_relationships   — accepted claims → relationships adjacency list
+#    _derive_relationships   - accepted claims → relationships adjacency list
 #
 #  Top-level build functions
-#    build_index             — full rebuild: drop, re-index everything, derive
-#    upsert_source           — incremental: re-index one source, re-derive
+#    build_index             - full rebuild: drop, re-index everything, derive
+#    upsert_source           - incremental: re-index one source, re-derive
 #
 #  CLI
-#    register                — attach 'index' to the main fha parser
-#    _run_index              — argparse → build_index / upsert_source bridge
-#    _standalone_main        — for `python tools/index.py` direct invocation
+#    register                - attach 'index' to the main fha parser
+#    _run_index              - argparse → build_index / upsert_source bridge
+#    _standalone_main        - for `python tools/index.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _is_restricted_value(value) -> bool:
+    """True when a `restricted:` field value withholds a record from public output."""
+    return value not in (None, False, '', 'false')
+
+
 # ── DDL ───────────────────────────────────────────────────────────────────────
 # Schema mirrors the SPEC record model plus derived tables for query speed.
-# Foreign keys are OFF — forward references are valid and lint enforces integrity.
+# Foreign keys are OFF - forward references are valid and lint enforces integrity.
 # WAL journal mode: a crash during indexing leaves the prior index readable.
 # kind column in person_files: profile | research | timeline | sources-index | draft-queue
 
@@ -290,7 +295,7 @@ CREATE TABLE IF NOT EXISTS hypotheses(
 );
 
 -- citations: citation/cross-link token locations by file and line number.
--- `token` holds the RESOLVED canonical ID — a `[[grandmas-album]]` stem or a
+-- `token` holds the RESOLVED canonical ID - a `[[grandmas-album]]` stem or a
 -- `[[Ken Smith]]` name that resolves via the alias map is recorded as the
 -- record's ID, so every query is ID-uniform regardless of the surface text.
 CREATE TABLE IF NOT EXISTS citations(
@@ -304,7 +309,7 @@ CREATE TABLE IF NOT EXISTS citations(
 -- shares. One row per string that resolves to a record: its own canonical ID,
 -- any human stem, an on-demand C-id (added only when a `[[C-…]]` citation
 -- exists), and a person's/place's display name + variants. `alias` is stored
--- lowercased. Pure projection — disposable, rebuilt by `fha index`.
+-- lowercased. Pure projection - disposable, rebuilt by `fha index`.
 CREATE TABLE IF NOT EXISTS aliases(
   alias TEXT,            -- lowercased reference string
   canonical_id TEXT,     -- the record it resolves to
@@ -361,7 +366,7 @@ def _insert_record_aliases(
     names: tuple[str, ...] = (),
     variants: tuple[str, ...] = (),
 ) -> None:
-    """Insert the alias rows for one record: its own canonical ID (always — the
+    """Insert the alias rows for one record: its own canonical ID (always - the
     line that makes `[[S-…]]` click through in Obsidian), plus any human stems,
     display name(s), and name/alt variants. Strings are unwrapped and lowercased;
     blanks and per-record duplicates are skipped."""
@@ -392,7 +397,7 @@ def _insert_record_aliases(
 def _resolve_map_from_aliases(conn: sqlite3.Connection) -> dict[str, str]:
     """Build the read-time resolve map `alias → canonical_id` from the aliases
     table. Clash-aware: an alias naming ≥2 distinct records is omitted, so a bare
-    ambiguous name never silently resolves (SPEC §7) — the linter flags it."""
+    ambiguous name never silently resolves (SPEC §7) - the linter flags it."""
     idx: dict[str, set[str]] = {}
     for alias, cid in conn.execute('SELECT alias, canonical_id FROM aliases'):
         idx.setdefault(alias, set()).add(cid)
@@ -493,7 +498,7 @@ def _parse_md_list_blocks(section_body: str) -> list[dict[str, str]]:
     section's entries).
 
     Tolerant of the well-formed two-space-indent style (the canonical example,
-    SPEC §16) and is otherwise strict about line shape — a continuation line
+    SPEC §16) and is otherwise strict about line shape - a continuation line
     that lacks the leading indent is just not picked up, rather than guessed
     at, since the field-name-as-disambiguator trick is fragile prose to rely on.
     Values are returned exactly as written, quotes and all; callers that care
@@ -520,7 +525,7 @@ def _parse_md_list_blocks(section_body: str) -> list[dict[str, str]]:
             if cm:
                 current[cm.group(1)] = cm.group(2).strip()
             else:
-                # Unindented or unrecognized line inside an entry — the entry
+                # Unindented or unrecognized line inside an entry - the entry
                 # is over (matches the "blank line or next `- `" termination
                 # rule in spirit: anything that isn't a recognized field line
                 # ends the current entry rather than corrupting it).
@@ -586,7 +591,7 @@ def _index_research_log_block(
     body and insert rows into search_log.
 
     notes/research-log.md (SPEC §16) isn't specified to require the
-    `## Research Log` heading the way a person research file does — it may
+    `## Research Log` heading the way a person research file does - it may
     just be a bare list of entries.  Fall back to treating the whole body as
     the section when no heading is present, so either shape works.
     """
@@ -607,7 +612,7 @@ def _index_research_log_block(
         entry_pid = pid
         if not entry_pid:
             # Multi-person/locality entries (notes/research-log.md) carry no
-            # implicit person — only pick one up if the entry explicitly names
+            # implicit person - only pick one up if the entry explicitly names
             # a person_id or P-id (SPEC §16: "no person_id field there since
             # it's not person-scoped the same way").
             explicit = entry.get('person_id') or ''
@@ -637,7 +642,7 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
 
     Profile files (kind='profile') get a full persons row upsert.  Companion
     files (kind='timeline', 'sources-index', etc.) only get a person_files row
-    — they don't create a second persons entry, but views can find them by
+    - they don't create a second persons entry, but views can find them by
     person_id and kind.
 
     Surname is parsed from the filename's double-underscore convention
@@ -653,7 +658,7 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     pid = normalize_id(str(meta.get('id', '')))
     if not pid:
         # Generated companion files (timeline, sources-index, draft-queue) carry no
-        # frontmatter id — the P-id lives in the filename instead.  Extract it so
+        # frontmatter id - the P-id lives in the filename instead.  Extract it so
         # these files appear in person_files and are discoverable via fha find.
         parsed = parse_filename(path)
         if parsed and parsed['id_type'] == 'P':
@@ -673,7 +678,7 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
     is_companion = kind != 'profile'
 
     if not is_companion:
-        # Primary profile — upsert person row
+        # Primary profile - upsert person row
         name_parts = name.rsplit(' ', 1)
         surname = None
         if '__' in stem:
@@ -704,17 +709,38 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
                 str(path.relative_to(archive_root)),
             ),
         )
-        variants = [str(v) for v in (meta.get('name_variants') or [])]
-        for v in variants:
+        # Restricted variants (deadnames, SPEC §18) go into aliases for internal
+        # link resolution only — they must not enter person_variants, which feeds
+        # public rendering paths (WikiTree fold forms, search display, etc.).
+        # Single pass over the raw list (entries are still dicts or strings here);
+        # deriving public_variants from the already-flattened all_variants strings
+        # would break the isinstance check needed to detect the restricted flag.
+        all_variants: list[str] = []
+        public_variants: list[str] = []
+        for _v in (meta.get('name_variants') or []):
+            if isinstance(_v, dict):
+                _val = _v.get('value')
+                if not _val:
+                    continue
+                all_variants.append(_val)
+                if not _is_restricted_value(_v.get('restricted')):
+                    public_variants.append(_val)
+            else:
+                _s = str(_v)
+                all_variants.append(_s)
+                public_variants.append(_s)
+        for v in public_variants:
             conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, v))
         # Register this person's resolution surface: the P-id (so `[[P-…]]`
         # clicks through), any hand-typed `aliases:` stems, the display name, and
-        # each name variant — so `[[Ken Smith]]` resolves to the right P-id.
+        # each name variant - so `[[Ken Smith]]` resolves to the right P-id.
+        # All variants (including restricted) go into aliases so name-wikilinks
+        # to former names still resolve internally; render paths redact the display.
         _insert_record_aliases(
             conn, pid,
             stems=tuple(str(a) for a in (meta.get('aliases') or [])),
             names=(name,) if name and name != 'unknown' else (),
-            variants=tuple(variants),
+            variants=tuple(all_variants),
         )
         for t in (meta.get('face_tags') or []):
             conn.execute('INSERT INTO person_face_tags(person_id, tag) VALUES (?,?)', (pid, str(t)))
@@ -743,7 +769,7 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
         )
 
     # Research files (SPEC §16) carry ## Hypotheses and ## Research Log
-    # sections — the only place those durable records live.  Without this,
+    # sections - the only place those durable records live.  Without this,
     # the report's hypotheses/search-log sections always read empty even when
     # the archive has real entries (the report rebuilds the index right
     # before querying these tables).
@@ -763,7 +789,7 @@ def _index_source(
     """Index one source markdown file.
 
     `alias_map`, when supplied, resolves name-first frontmatter link fields
-    (`people:`/`places:`) — e.g. `people: ["[[Ken Smith]]"]` → the matching
+    (`people:`/`places:`) - e.g. `people: ["[[Ken Smith]]"]` → the matching
     P-id. Without it the fields are read the legacy bare-ID way, so this stays
     callable for the incremental and test paths that pass no map.
     """
@@ -785,7 +811,7 @@ def _index_source(
     # from "unset". 1 = rights.publication_ok true; 0 = explicit false; NULL =
     # absent (publishable by default). The redaction predicate consumers share
     # is COALESCE(publication_ok, 1) = 0 (gedcom, wikitree, site), which only
-    # fires on a stored 0 — so a false MUST be stored as 0, not folded to NULL.
+    # fires on a stored 0 - so a false MUST be stored as 0, not folded to NULL.
     pub_ok = meta.get('rights', {})
     if isinstance(pub_ok, dict) and 'publication_ok' in pub_ok:
         pub_ok = 1 if pub_ok.get('publication_ok') in (True, 'true') else 0
@@ -817,7 +843,7 @@ def _index_source(
         stems=tuple(str(a) for a in (meta.get('aliases') or [])),
     )
 
-    # People listed on the source — the human graph surface (frontmatter
+    # People listed on the source - the human graph surface (frontmatter
     # cross-links). Entries may be bare P-ids or name-first `[[Ken Smith]]`
     # links; resolve each to a canonical P-id via the alias map.
     for pid in _resolve_link_field(meta.get('people'), alias_map):
@@ -826,7 +852,7 @@ def _index_source(
             (sid, pid),
         )
 
-    # Places the source involves — optional location half of the graph surface.
+    # Places the source involves - optional location half of the graph surface.
     for lid in _resolve_link_field(meta.get('places'), alias_map):
         conn.execute(
             'INSERT INTO source_places(source_id, place_id) VALUES (?,?)',
@@ -966,7 +992,7 @@ def _index_notes(conn: sqlite3.Connection, archive_root: Path) -> None:
 
     # notes/research-log.md (SPEC §16): multi-person/locality searches log
     # here with the same field shape as a research file's ## Research Log,
-    # but no implicit person_id (it isn't person-scoped) — picked up only
+    # but no implicit person_id (it isn't person-scoped) - picked up only
     # when an entry explicitly names one.
     research_log_path = notes_dir / 'research-log.md'
     if research_log_path.exists():
@@ -984,7 +1010,7 @@ def _index_capture_log(conn: sqlite3.Connection, archive_root: Path) -> None:
 
     `fha capture` writes a search_log row directly into index.sqlite for
     immediate freshness, but a full rebuild drops and recreates search_log
-    from scratch (`_drop_tables`) — without this, that row would vanish on the
+    from scratch (`_drop_tables`) - without this, that row would vanish on the
     next `fha index` run. capture.py also always appends the same row to this
     jsonl file, so re-ingesting it here makes every capture survive a reindex
     regardless of whether the index existed at capture time.
@@ -1024,22 +1050,22 @@ def _index_citations(
     """Scan all .md files for citation tokens and record the RESOLVED canonical ID.
 
     Two kinds of token are picked up:
-      - ID tokens (`[[S-…]]`, legacy `[S-…]`) — stored as their own lowercased ID,
+      - ID tokens (`[[S-…]]`, legacy `[S-…]`) - stored as their own lowercased ID,
         exactly as before. Dangling IDs are still recorded; lint flags them.
-      - name/stem wikilinks (`[[grandmas-album]]`, `[[Ken Smith]]`) — stored as
+      - name/stem wikilinks (`[[grandmas-album]]`, `[[Ken Smith]]`) - stored as
         the record's ID *only when* `alias_map` resolves them, so a stem citation
         is ID-uniform with an ID citation. An unresolved name link is inert (it's
         an ordinary Obsidian note-link, not a citation) and recorded nowhere.
 
     As a side effect, a cited `[[C-…]]` registers that C-id as an alias of its
-    owning source — the on-demand C-id aliasing (added only when the citation
+    owning source - the on-demand C-id aliasing (added only when the citation
     actually exists, so a 60-claim interview carries no dead weight).
     """
     from _lib import TOKEN_RE
     # archive_root/out/ is fha packet's default, gitignored output directory
-    # (TOOLING §8) — disposable export copies, not archive truth, so they
+    # (TOOLING §8) - disposable export copies, not archive truth, so they
     # must not become citation sites in the index. Only the root-level out/
-    # is skipped — a record tree's own 'out' subdirectory (sources/out/, …)
+    # is skipped - a record tree's own 'out' subdirectory (sources/out/, …)
     # is real archive content and must still be scanned.
     packet_out_root = archive_root / 'out'
     cited_cids: set[str] = set()
@@ -1063,7 +1089,7 @@ def _index_citations_for_file(
     occurrence (resolved canonical ID), and return the set of C-ids it cites.
 
     Shared by the full scan and the incremental upsert so both record citations
-    — ID tokens and resolved name/stem wikilinks — identically. The caller turns
+    - ID tokens and resolved name/stem wikilinks - identically. The caller turns
     the returned C-ids into on-demand source aliases via
     `_register_cited_claim_aliases`."""
     from _lib import TOKEN_RE
@@ -1086,8 +1112,8 @@ def _index_citations_for_file(
                 (token, kind, rel, lineno),
             )
         # Name/stem wikilinks resolve through the alias map to the record's
-        # canonical ID. ID-shaped targets are skipped here — already handled by
-        # the TOKEN_RE pass above — so `[[S-…]]` is never double-counted.
+        # canonical ID. ID-shaped targets are skipped here - already handled by
+        # the TOKEN_RE pass above - so `[[S-…]]` is never double-counted.
         if alias_map:
             for target, _disp, _frag, _span in extract_wikilinks(line):
                 if id_type_of(target):
@@ -1107,7 +1133,7 @@ def _index_citations_for_file(
 def _register_cited_claim_aliases(conn: sqlite3.Connection, cited_cids: set[str]) -> None:
     """On-demand C-id aliasing: for each cited C-id, register it as an alias of
     its owning source so `[[C-…]]` opens the source record (the claim's home,
-    SPEC §8.7). Only cited C-ids get a row — a claim nobody links to stays out of
+    SPEC §8.7). Only cited C-ids get a row - a claim nobody links to stays out of
     the alias surface, keeping a many-claim source lean."""
     for cid in sorted(cited_cids):
         row = conn.execute('SELECT source_id FROM claims WHERE id=?', (cid,)).fetchone()
@@ -1130,8 +1156,14 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
     can ask "who are this person's parents?" with a simple SELECT.
 
     Called at the end of both full rebuild and incremental upsert so the table
-    is always current.  Only accepted claims are used — suggested and
+    is always current.  Only accepted claims are used - suggested and
     needs-review claims don't become load-bearing graph edges.
+
+    Parent/child and spouse edges are keyed on the claim's `roles:` map (child +
+    parent, or spouse), not on `subtype:` - `subtype` now names the *nature* of a
+    bond (biological, adoptive, …; SPEC §8.2), and every parent edge is recorded
+    regardless of nature. Legacy `subtype: child-of`/`spouse-of` claims still
+    derive correctly since they carry the same roles.
     """
     conn.execute('DELETE FROM relationships')
 
@@ -1149,35 +1181,76 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
         ).fetchall()
         pids = [p for p, r in all_persons]
 
-        if ctype == 'relationship' and subtype == 'child-of':
-            # child → parents
+        if ctype == 'relationship':
+            # The edge's kind comes from the roles: map (the part each person
+            # plays), not from subtype: - subtype now names the *nature* of a
+            # parent/child bond (biological, adoptive, step, …; SPEC §8.2). A
+            # claim naming a child and a parent is a parent/child edge whatever
+            # its nature; legacy `subtype: child-of` claims still match because
+            # they carry the same roles, and legacy `spouse-of` is caught by the
+            # subtype fallback below.
             child_ids = [p for p, r in all_persons if r == 'child']
             parent_ids = [p for p, r in all_persons if r == 'parent']
-            for child_id in child_ids:
-                for parent_id in parent_ids:
-                    conn.execute(
-                        'INSERT OR IGNORE INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) VALUES (?,?,?,?,?,?)',
-                        (child_id, 'parent', parent_id, cid, dmin, dmax),
-                    )
-                    conn.execute(
-                        'INSERT OR IGNORE INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) VALUES (?,?,?,?,?,?)',
-                        (parent_id, 'child', child_id, cid, dmin, dmax),
-                    )
-        elif ctype in ('relationship',) and subtype in _RELATIONSHIPS_SOCIAL_SUBTYPES:
-            for i, p1 in enumerate(pids):
-                for p2 in pids[i+1:]:
-                    rel = subtype or 'associate'
-                    conn.execute(
-                        'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                        (p1, rel, p2, cid, dmin, dmax),
-                    )
-                    conn.execute(
-                        'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
-                        (p2, rel, p1, cid, dmin, dmax),
-                    )
-        elif ctype == 'marriage' or (ctype == 'relationship' and subtype == 'spouse-of'):
-            # Both a marriage claim and a relationship claim with subtype
-            # spouse-of produce reciprocal spouse edges (TOOLING §relationships).
+            spouse_ids = [p for p, r in all_persons if r == 'spouse']
+
+            if child_ids and parent_ids:
+                for child_id in child_ids:
+                    for parent_id in parent_ids:
+                        conn.execute(
+                            'INSERT OR IGNORE INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) VALUES (?,?,?,?,?,?)',
+                            (child_id, 'parent', parent_id, cid, dmin, dmax),
+                        )
+                        conn.execute(
+                            'INSERT OR IGNORE INTO relationships(person_id, rel, other_id, claim_id, date_start, date_end) VALUES (?,?,?,?,?,?)',
+                            (parent_id, 'child', child_id, cid, dmin, dmax),
+                        )
+            elif spouse_ids or subtype == 'spouse-of':
+                # A relationship claim naming spouses (or a legacy spouse-of
+                # subtype) yields reciprocal spouse edges, like a marriage claim.
+                spouse_pids = spouse_ids or pids
+                for i, p1 in enumerate(spouse_pids):
+                    for p2 in spouse_pids[i+1:]:
+                        conn.execute(
+                            'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                            (p1, 'spouse', p2, cid, dmin, None),
+                        )
+                        conn.execute(
+                            'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                            (p2, 'spouse', p1, cid, dmin, None),
+                        )
+            elif subtype in _RELATIONSHIPS_SOCIAL_SUBTYPES:
+                for i, p1 in enumerate(pids):
+                    for p2 in pids[i+1:]:
+                        rel = subtype or 'associate'
+                        conn.execute(
+                            'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                            (p1, rel, p2, cid, dmin, dmax),
+                        )
+                        conn.execute(
+                            'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                            (p2, rel, p1, cid, dmin, dmax),
+                        )
+            else:
+                # Directional power-tie roles: enslaved/enslaver, employer/employee.
+                # Each directed pair gets an asymmetric edge so callers can
+                # distinguish victim from perpetrator (SPEC §8.2).
+                for (role_a, edge_a), (role_b, edge_b) in (
+                    (('enslaved', 'enslaved-by'), ('enslaver', 'enslaver')),
+                    (('employee', 'employee'), ('employer', 'employer')),
+                ):
+                    a_ids = [p for p, r in all_persons if r == role_a]
+                    b_ids = [p for p, r in all_persons if r == role_b]
+                    for pa in a_ids:
+                        for pb in b_ids:
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (pa, edge_a, pb, cid, dmin, dmax),
+                            )
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (pb, edge_b, pa, cid, dmin, dmax),
+                            )
+        elif ctype == 'marriage':
             for i, p1 in enumerate(pids):
                 for p2 in pids[i+1:]:
                     conn.execute(
@@ -1219,7 +1292,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
     """Rebuild the index from scratch; return a Result summarizing the build.
 
     The `verbose` progress lines stay inline (they narrate each build step as it
-    runs); the Result reports the build as data instead of only logs — per-table
+    runs); the Result reports the build as data instead of only logs - per-table
     row counts and the schema version in `data`, the rebuilt cache file in
     `changed`, and `data['mode'] = 'full'` to distinguish this drop-and-rebuild
     from the incremental `upsert_source` path.  An in-process caller (e.g.
@@ -1265,7 +1338,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             if verbose:
                 print(f'  indexed {person_count} person files')
 
-            # Resolve map for name-first frontmatter links — persons and places
+            # Resolve map for name-first frontmatter links - persons and places
             # are fully indexed (their names registered as aliases) before any
             # source's `people:`/`places:` is read.
             link_alias_map = _resolve_map_from_aliases(conn)
@@ -1286,7 +1359,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             # Capture log (durability: survives a search_log drop/rebuild)
             _index_capture_log(conn, archive_root)
 
-            # Citation scan — the full alias map now includes source stems, so a
+            # Citation scan - the full alias map now includes source stems, so a
             # `[[grandmas-album]]` prose link resolves to its S-id and a cited
             # `[[C-…]]` registers its on-demand source alias.
             _index_citations(conn, archive_root, _resolve_map_from_aliases(conn))
@@ -1295,7 +1368,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
             _derive_relationships(conn)
     finally:
         # Without this, every build_index call leaks one open sqlite3.Connection
-        # (the `with conn:` context manager only commits/rolls back — it never
+        # (the `with conn:` context manager only commits/rolls back - it never
         # closes). On Windows that held-open file handle blocks anything trying
         # to delete or replace the .sqlite file afterward, e.g. a tempdir-based
         # test's cleanup, or `fha photoindex tag-person` writing right after a
@@ -1321,7 +1394,7 @@ def build_index(archive_root: Path, fha_config: dict, verbose: bool = False) -> 
 
 def _find_source_file(archive_root: Path, sid: str) -> Path | None:
     """Locate the source record file for canonical source id `sid` by EXACT
-    identity — its filename id (`{slug}_{S-id}.md`), or failing that its
+    identity - its filename id (`{slug}_{S-id}.md`), or failing that its
     frontmatter `id`.  Returns None when no source matches.
 
     Exact matching (not the old `sid in path.stem` substring test) means a typo
@@ -1382,17 +1455,17 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
     Validates `source_id` and locates the matching source file by EXACT identity
     *before* mutating anything, so a typo or a stale ID never deletes rows or
     reports false success.  Returns one of:
-      'indexed'       — the source was found and re-indexed.
-      'not_found'     — no source under sources/ matches that exact ID.
-      'invalid_id'    — source_id is not a syntactically valid S- ID.
-      'index_absent'  — no full index exists; run `fha index` first.
+      'indexed'       - the source was found and re-indexed.
+      'not_found'     - no source under sources/ matches that exact ID.
+      'invalid_id'    - source_id is not a syntactically valid S- ID.
+      'index_absent'  - no full index exists; run `fha index` first.
 
     Deletion order matters: child tables must be deleted before their parent rows.
     citations references sources.path, so it is deleted before sources.
 
     Re-derives relationships after the upsert so the relationships table
     reflects any changed claim statuses.  Does not re-index persons or places
-    — those only change on a full rebuild.
+    - those only change on a full rebuild.
     """
     sid = normalize_id(source_id)
     if not is_valid_id(sid) or id_type_of(sid) != 'S':
@@ -1447,7 +1520,7 @@ def upsert_source(archive_root: Path, fha_config: dict, source_id: str) -> str:
                 conn, found, archive_root, _resolve_map_from_aliases(conn),
             )
             # Rebuild this source's on-demand C-id aliases from EVERY citation
-            # site, not just its own file — a `[[C-…]]` to one of its claims may
+            # site, not just its own file - a `[[C-…]]` to one of its claims may
             # live in a person profile we didn't rescan, and we just dropped the
             # alias row above.
             this_claims = {
@@ -1511,7 +1584,7 @@ def _run_index(args: argparse.Namespace) -> int:
             return EXIT_FAILURE
         if status == 'not_found':
             print(
-                f'ERROR: source {args.source} not found under sources/ — nothing indexed.',
+                f'ERROR: source {args.source} not found under sources/ - nothing indexed.',
                 file=sys.stderr,
             )
             return EXIT_FAILURE

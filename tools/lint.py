@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-lint.py — fha lint: verify the archive against the spec.
+lint.py - fha lint: verify the archive against the spec.
 
   fha lint [--root PATH]             Walk and check the archive; report-only
   fha lint --with-exif               Also verify embedded SOURCE: keywords (slow)
@@ -9,24 +9,25 @@ lint.py — fha lint: verify the archive against the spec.
   fha lint --format-write            Planned formatter write mode (not yet implemented)
   fha lint --mint-stubs              Create missing person stubs (E005 set)
   fha lint --spawn-questions         Append questions for E009 contradictions
+  fha lint --fix-reciprocal          Add the missing mirror edge for each W116
   fha lint --fix-inventory           Planned inventory fixer (not yet implemented)
 
 Exit codes: 0 = clean, 1 = warnings only, 2 = errors, 3 = tool failure.
 SPEC §16, TOOLING §3.
 
-HOW IT WORKS — TWO PASSES, NO PRIOR INDEX
+HOW IT WORKS - TWO PASSES, NO PRIOR INDEX
 ------------------------------------------
 Lint is fully self-contained: it does NOT require `fha index` to have run.
 It builds its own in-memory Registry on the first pass, then runs cross-file
 checks on the second pass once the full picture is available.
 
-Pass 1 — walk and collect  (_walk_archive):
+Pass 1 - walk and collect  (_walk_archive):
   Read every person and source file; register IDs, claims, token references,
-  and metadata.  File-level checks fire here — the ones that don't need to see
+  and metadata.  File-level checks fire here - the ones that don't need to see
   the rest of the archive: bad IDs, missing required fields, malformed EDTF
   dates, duplicate claim IDs within a source.
 
-Pass 2 — cross-file checks  (_cross_file_checks):
+Pass 2 - cross-file checks  (_cross_file_checks):
   With the complete Registry in hand, check things that require the whole
   picture: orphan token references, duplicate record IDs, summary-block drift
   against accepted claims, vitals gaps for curated persons, merged-person
@@ -34,7 +35,7 @@ Pass 2 — cross-file checks  (_cross_file_checks):
 
 WHY IN-MEMORY, NOT THE SQLITE INDEX
   The SQLite index may not exist, or may be stale.  Lint is the source of
-  truth — the index must match what lint accepts, never the other way around.
+  truth - the index must match what lint accepts, never the other way around.
   Building a fresh Registry per run ensures lint is always consistent with
   what's actually on disk.
 """
@@ -74,6 +75,9 @@ from _lib import (
     build_alias_map,
     edtf_bounds,
     finding_to_message,
+    format_bracket_child,
+    is_genetic_parent_subtype,
+    nonbirth_bracket_label,
     extract_token_ids,
     extract_wikilinks,
     link_field_refs,
@@ -104,57 +108,65 @@ import yaml
 # ── CODE MAP ──────────────────────────────────────────────────────────────────
 #
 #  Data model
-#    Registry                    — in-memory snapshot of one lint pass
+#    Registry                    - in-memory snapshot of one lint pass
 #
 #  Constants / small helpers
-#    _SOURCE_FILENAME_RE         — grammar check for source filenames (SPEC §13)
-#    _PERSON_FILENAME_RE         — grammar check for person filenames (SPEC §13)
-#    REQUIRED_*_FIELDS           — required frontmatter keys per record type
-#    _normalize_alias_path       — backslash→slash normalisation for path comparison
-#    _mapped_root, _path_to_alias — resolve fha.yaml alias roots to absolute paths
-#    _claim_person_ids           — extract normalised P-ids from a claim's persons: field
-#    _parse_summary_block        — parse **Born/Died/…:** lines from a profile body
-#    _edtf_gloss                 — plain-language gloss for a canonical EDTF value
-#    _check_date_value           — forgiving date check: valid/loose-W109/broken-E014
-#    _collect_token_refs         — scan a text block for [ID] tokens → registry
-#    _question_blocks            — split a questions.md into per-heading blocks
-#    _metadata_values            — normalise scalar/list exiftool field values
+#    _SOURCE_FILENAME_RE         - grammar check for source filenames (SPEC §13)
+#    _PERSON_FILENAME_RE         - grammar check for person filenames (SPEC §13)
+#    REQUIRED_*_FIELDS           - required frontmatter keys per record type
+#    _normalize_alias_path       - backslash→slash normalisation for path comparison
+#    _mapped_root, _path_to_alias - resolve fha.yaml alias roots to absolute paths
+#    _claim_person_ids           - extract normalised P-ids from a claim's persons: field
+#    _parse_summary_block        - parse **Born/Died/…:** lines from a profile body
+#    _edtf_gloss                 - plain-language gloss for a canonical EDTF value
+#    _check_date_value           - forgiving date check: valid/loose-W109/broken-E014
+#    _collect_token_refs         - scan a text block for [ID] tokens → registry
+#    _question_blocks            - split a questions.md into per-heading blocks
+#    _metadata_values            - normalise scalar/list exiftool field values
 #
-#  Pass 1 — walk and collect
-#    _walk_archive               — top-level coordinator; calls the _process_* functions
-#    _process_person_file        — index one person file + file-level checks
-#    _process_source_file        — index one source file + file-level checks + claims
+#  Pass 1 - walk and collect
+#    _walk_archive               - top-level coordinator; calls the _process_* functions
+#    _process_person_file        - index one person file + file-level checks
+#    _process_source_file        - index one source file + file-level checks + claims
 #
 #  Bracket / Ahnentafel checks (W103, W110)
-#    _build_children_of          — accepted child-of claims → parent→children map
-#    _check_bracket_lists        — W103: stale couple-folder bracket lists
-#    _build_ahnentafel_lint      — BFS from root_person using in-memory registry
-#    _check_ahnentafel_placement — W110: person file in wrong Ahnentafel folder
+#    _build_child_edges          - parent → {child → {nature,…}} from accepted claims
+#    _build_children_of          - parent → {children}; genetic_only filters numbering
+#    _check_bracket_lists        - W103: stale couple-folder bracket lists
+#    _build_ahnentafel_lint      - BFS from root_person using in-memory registry
+#    _check_ahnentafel_placement - W110: person file in wrong Ahnentafel folder
 #
-#  Pass 2 — cross-file checks
-#    _cross_file_checks          — top-level coordinator for all cross-file rules
-#    _check_summary_line         — E013/W104: one **Label:** segment vs accepted claims
-#    _has_question_for           — E009: co-occurrence check across question blocks
-#    _get_person_accepted_claims — build accepted-claim list for one person
-#    _check_reverse_inventory    — E011: document files vs source inventory lists
-#    _check_embedded_source_keywords — E012: exiftool SOURCE: keyword vs inventory
-#    _read_source_keywords       — invoke exiftool; parse its JSON keyword output
-#    _check_generated_headers    — W105: hand-edits below a GENERATED header
-#    _check_readme_age           — W108: README.md older than SPEC.md
-#    _check_agent_drift          — E018: deprecated commands in AGENTS.md
+#  Relationship reconciliation (W115, W116)
+#    _check_relationships_reconciliation - sourced relationships: entry vs claim
+#    _check_reciprocity          - W116: a sourced edge unmirrored on the other person
+#    _claim_by_id / _role_pids / _claim_backs_edge - claim lookup + role matching
+#
+#  Pass 2 - cross-file checks
+#    _cross_file_checks          - top-level coordinator for all cross-file rules
+#    _check_summary_line         - E013/W104: one **Label:** segment vs accepted claims
+#    _has_question_for           - E009: co-occurrence check across question blocks
+#    _get_person_accepted_claims - build accepted-claim list for one person
+#    _check_reverse_inventory    - E011: document files vs source inventory lists
+#    _check_embedded_source_keywords - E012: exiftool SOURCE: keyword vs inventory
+#    _read_source_keywords       - invoke exiftool; parse its JSON keyword output
+#    _check_generated_headers    - W105: hand-edits below a GENERATED header
+#    _check_readme_age           - W108: README.md older than SPEC.md
+#    _check_agent_drift          - E018: deprecated commands in AGENTS.md
 #
 #  Format checks / fix modes
-#    _check_format               — W109: final newline, CRLF line endings
-#    _fix_format                 — apply conservative format fixes
-#    _fix_mint_stubs             — create stubs for the E005 set (--mint-stubs)
-#    _fix_spawn_questions        — append question entries for E009 set (--spawn-questions)
+#    _check_format               - W109: final newline, CRLF line endings
+#    _fix_format                 - apply conservative format fixes
+#    _fix_mint_stubs             - create stubs for the E005 set (--mint-stubs)
+#    _fix_spawn_questions        - append question entries for E009 set (--spawn-questions)
+#    _fix_reciprocal             - append missing mirror edges for the W116 set (--fix-reciprocal)
+#    _append_relationship_entry  - additive frontmatter surgery for the mirror entry
 #
 #  Main entry / CLI
-#    run_lint                    — orchestrates both passes; returns a Result
-#    _cmd_lint                   — render a lint Result (human text or --json) → exit code
-#    register                    — attach 'lint' to the main fha parser
-#    _run_lint                   — argparse → run_lint → _cmd_lint bridge
-#    _standalone_main            — for `python tools/lint.py` direct invocation
+#    run_lint                    - orchestrates both passes; returns a Result
+#    _cmd_lint                   - render a lint Result (human text or --json) → exit code
+#    register                    - attach 'lint' to the main fha parser
+#    _run_lint                   - argparse → run_lint → _cmd_lint bridge
+#    _standalone_main            - for `python tools/lint.py` direct invocation
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -196,7 +208,7 @@ class Registry:
         # Persons: {P-id: meta_dict}
         self.person_meta: dict[str, dict] = {}
 
-        # Person profile bodies: {P-id: body_text} — read once during the walk so
+        # Person profile bodies: {P-id: body_text} - read once during the walk so
         # the needs-sourcing backlog can scan for `(TODO: import source)` prose
         # without re-reading every file.
         self.person_bodies: dict[str, str] = {}
@@ -206,7 +218,7 @@ class Registry:
         self.unfenced_claim_sources: dict[str, Path] = {}
 
         # Hand-authored records with NO id: and a filename lacking the `_{ID}`
-        # suffix — a valid pre-machine state (SPEC §4/§10). Auto-mintable, not an
+        # suffix - a valid pre-machine state (SPEC §4/§10). Auto-mintable, not an
         # error: [(path, 'P'|'S')]. `fha lint --fix-ids` mints + renames + aliases.
         self.idless_records: list[tuple[Path, str]] = []
 
@@ -235,6 +247,11 @@ class Registry:
         # Research files content (for E009)
         self.research_content: dict[Path, str] = {}
 
+        # Missing reciprocal relationship edges (W116), captured structurally so
+        # `--fix-reciprocal` can append the mirror without re-parsing messages.
+        # Each: {other_pid, owner_pid, mirror_role, subtype, claim_id}
+        self.missing_mirrors: list[dict] = []
+
     def all_known_ids(self) -> set[str]:
         """All IDs that have a defining record in the archive."""
         ids: set[str] = set()
@@ -260,8 +277,11 @@ _PERSON_FILENAME_RE = re.compile(
     # Optional MERGED-INTO-P-<survivor>__ tombstone prefix (SPEC §9): a merged
     # person's file persists forever under this rename, so the grammar must
     # accept it rather than flag the spec-mandated form as a bad filename.
+    # The primary-sort-name slot before `__` is OPTIONAL (SPEC §13): a surname-less
+    # person (a mononym, an enslaved ancestor by given name, a patronymic, a
+    # foundling) leads with the double underscore, e.g. `__caesar_P-…`.
     r'^(MERGED-INTO-P-[0-9a-hjkmnp-tv-z]{10}__)?'
-    r'[a-z][a-z_]*__[a-z][a-z_]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
+    r'([a-z][a-z_]*)?__[a-z][a-z_]*(_[a-z][a-z0-9\-]*)?_P-[0-9a-hjkmnp-tv-z]{10}$', re.I
 )
 
 # ── Required-field sets ───────────────────────────────────────────────────────
@@ -379,7 +399,7 @@ def _check_date_value(
     path: Path,
     findings: list[Finding],
 ) -> None:
-    """Check one date field the forgiving way (PR 05 — "forgiving, not fussy").
+    """Check one date field the forgiving way (PR 05 - "forgiving, not fussy").
 
     Three outcomes, in line with AGENTS.md → "Who you serve":
       - Already valid EDTF → nothing.
@@ -415,7 +435,7 @@ def _collect_token_refs(text: str, path: Path, registry: Registry) -> None:
 
     ID tokens (`[[S-…]]`, legacy `[S-…]`) go to `token_refs` for the E004/E005
     resolution checks. Non-ID name/stem wikilinks (`[[Ken Smith]]`) go to
-    `name_link_refs` — they are ordinary Obsidian links, never E004 candidates,
+    `name_link_refs` - they are ordinary Obsidian links, never E004 candidates,
     but a name link is what makes a name clash ACTIVE (must be pinned to an ID)."""
     for lineno, line in enumerate(text.splitlines(), start=1):
         for m in TOKEN_RE.finditer(line):
@@ -431,7 +451,7 @@ def _walk_archive(archive_root: Path, registry: Registry, findings: list[Finding
     """
     Pass 1: walk the archive tree and populate the registry.
 
-    File-level checks fire here — the ones that don't need to see the whole
+    File-level checks fire here - the ones that don't need to see the whole
     archive.  Anything that requires knowing whether another record exists
     (orphan references, vitals gaps, summary-block drift) is deferred to Pass 2.
 
@@ -521,8 +541,21 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
 
     # E002: Filename grammar check
     if pid and not is_companion:
-        # Profile filename: {surname}__{given}[_{kind}]_{P-id}.md
-        if not _PERSON_FILENAME_RE.fullmatch(stem):
+        # Profile filename: {primary_sort_name}__{given}[_{kind}]_{P-id}.md
+        # (the sort-name slot may be empty: a surname-less `__caesar_P-…`).
+        if _PERSON_FILENAME_RE.fullmatch(stem):
+            pass
+        elif '__' not in stem:
+            # No double-underscore sort separator. Don't reject a hand-named
+            # one-word file (SPEC §13): guide toward the grammar. The surname-less
+            # convention is to LEAD with `__` (`__caesar_P-…`); a name that should
+            # sort under a surname wants `{surname}__{given}_P-…`.
+            findings.append(Finding('W', 'W117', path,
+                f'Person filename {path.name} has no "__" sort separator. The sort '
+                f'name goes before "__" ({{surname}}__{{given}}_P-…); for someone with '
+                f'no surname, lead with the double underscore (__{stem.split("_")[0]}_P-…). '
+                f'Rename if it should sort under a surname; otherwise this is fine.'))
+        else:
             findings.append(Finding('E', 'E002', path,
                 f'Person filename fails SPEC §13 grammar: {path.name}'))
     elif pid and is_companion:
@@ -550,7 +583,7 @@ def _process_person_file(path: Path, registry: Registry, findings: list[Finding]
             registry.person_companion_paths.setdefault(pid, []).append(path)
         elif not pid_raw and parsed is None:
             # A hand-authored, id-less record (no `id:`, no `_{P-id}` in the
-            # filename). Not an error — auto-mintable on the next `fha lint
+            # filename). Not an error - auto-mintable on the next `fha lint
             # --fix-ids`. Surfaced (not silently dropped, which was the data-loss
             # trap) so the human sees it.
             registry.idless_records.append((path, 'P'))
@@ -607,7 +640,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     stem = path.stem
     parsed = parse_filename(path)
     # A hand-authored, id-less record (no `id:`, no `_{S-id}` in the filename) is
-    # a valid pre-machine state — auto-mintable, not an E002 grammar error.
+    # a valid pre-machine state - auto-mintable, not an E002 grammar error.
     if not sid_raw and parsed is None:
         registry.idless_records.append((path, 'S'))
         return
@@ -643,13 +676,13 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     # P-id that names no record is still the integrity error it always was, but a
     # name link is resolved against the alias map in Pass 2 (where every person is
     # known), so it is captured here rather than judged. An unresolved *name* is
-    # never a hard error — it is forgiving input, not a typo'd ID.
+    # never a hard error - it is forgiving input, not a typo'd ID.
     people_refs = link_field_refs(meta.get('people'))
     for ref in people_refs:
         if id_type_of(ref) == 'P' and not registry.has_person(normalize_id(ref)):
             findings.append(Finding('E', 'E005', path,
                 f'Source people: references person {fmt_id_display(normalize_id(ref))} but no '
-                'person record exists — create a stub with `fha stubs`, or fix the P-id.'))
+                'person record exists - create a stub with `fha stubs`, or fix the P-id.'))
     registry.source_links[sid] = {
         'people': people_refs,
         'places': link_field_refs(meta.get('places')),
@@ -662,9 +695,12 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             format_source_type_error(source_type)))
 
     # E017: DNA sources must be restricted AND keep their raw files under
-    # documents/dna/ (SPEC §8.5.5).
+    # documents/dna/ (SPEC §8.5.5). The `restricted` marker is open (SPEC §19,
+    # TOOLING §3): any non-empty value satisfies the rule - the plain boolean,
+    # `restricted: dna`, or another free-text type - so only an absent/false
+    # flag fails E017.
     if source_type == 'dna':
-        if meta.get('restricted') not in (True, 'true'):
+        if not _is_restricted(meta.get('restricted')):
             findings.append(Finding('E', 'E017', path,
                 'DNA source must have restricted: true'))
         for f in (meta.get('files') or []):
@@ -684,7 +720,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
     registry.source_claims[sid] = claims
 
     # W114: claims typed under ## Claims without the ```yaml fence. read_record
-    # already reads them (so no data is lost — they index fine), but the fence is
+    # already reads them (so no data is lost - they index fine), but the fence is
     # the canonical form; offer to wrap it rather than leave the record untidy.
     if rec.get('unfenced_claims'):
         registry.unfenced_claim_sources[sid] = path
@@ -749,7 +785,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         conf_value = str(claim.get('confidence', ''))
         if conf_value and conf_value not in VALID_CONFIDENCE:
             findings.append(Finding('E', 'E019', path,
-                f'Claim {cid} confidence {conf_value!r} is not valid — use high, medium, or low.'))
+                f'Claim {cid} confidence {conf_value!r} is not valid - use high, medium, or low.'))
 
         # E014: Claim date EDTF check (forgiving: loose-but-clear → W109 suggestion)
         _check_date_value(claim.get('date', ''), 'date', f'Claim {cid}: ', path, findings)
@@ -762,7 +798,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
         # E015: relationship claim must have roles
         if claim_type == 'relationship' and not claim.get('roles'):
             findings.append(Finding('E', 'E015', path,
-                f'Claim {cid} (type: relationship) is missing its roles: field — add roles: '
+                f'Claim {cid} (type: relationship) is missing its roles: field - add roles: '
                 'naming each person\'s part (e.g. roles: [parent, child] or [spouse, spouse]).'))
 
         # W109: accepted claim missing notes when it's substantive OR a low-confidence vital
@@ -773,7 +809,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
             is_low_confidence_vital = sig == 'vital' and confidence == 'low'
             if is_substantive or is_low_confidence_vital:
                 findings.append(Finding('W', 'W109', path,
-                    f'Claim {cid} ({claim_type}) is accepted but has no notes: context — '
+                    f'Claim {cid} ({claim_type}) is accepted but has no notes: context - '
                     'add a short notes: line explaining the evidence behind it.'))
 
     # E011: file inventory checks
@@ -820,32 +856,57 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 
 # ── Bracket and Ahnentafel checks (W103, W110) ───────────────────────────────
 
-def _build_children_of(registry: Registry) -> dict[str, set[str]]:
-    """Build parent_pid → {child_pids} from accepted child-of relationship claims.
+def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
+    """parent_pid → {child_pid: {subtype, …}} from accepted parent/child claims.
 
-    Iterates all accepted claims of type 'relationship' with subtype 'child-of'
-    and extracts the roles.child / roles.parent values.  Both scalars and lists
-    are accepted in either field, matching the SPEC §8.4 schema.
+    A parent/child edge is identified by its `roles:` map (it names both a `child`
+    and a `parent`), NOT by `subtype:` - `subtype` names the *nature* of the bond
+    (biological, adoptive, step, …; SPEC §8.2). One pair may carry several natures
+    across sources (a biological AND an adoptive edge - the co-valid NPE/adoption
+    case), so each child maps to the SET of its edge natures. Scalars and lists are
+    both accepted in either role (SPEC §8.4); a legacy `subtype: child-of` claim
+    lands here too, recorded as the nature string it carries.
     """
-    children_of: dict[str, set[str]] = {}
+    edges: dict[str, dict[str, set[str]]] = {}
     for claims in registry.source_claims.values():
         for claim in claims:
-            if (str(claim.get('status', '')) != 'accepted'
-                    or claim.get('type') != 'relationship'
-                    or claim.get('subtype') != 'child-of'):
+            if (not isinstance(claim, dict)
+                    or str(claim.get('status', '')) != 'accepted'
+                    or claim.get('type') != 'relationship'):
                 continue
             roles = claim.get('roles') or {}
             child_val = roles.get('child')
             parent_val = roles.get('parent')
             if not child_val or not parent_val:
                 continue
+            subtype = str(claim.get('subtype', '')).strip().lower()
             child_ids = [child_val] if isinstance(child_val, str) else list(child_val)
             parent_ids = [parent_val] if isinstance(parent_val, str) else list(parent_val)
             for cpid in child_ids:
                 cpid = normalize_id(str(cpid))
                 for ppid in parent_ids:
                     ppid = normalize_id(str(ppid))
-                    children_of.setdefault(ppid, set()).add(cpid)
+                    edges.setdefault(ppid, {}).setdefault(cpid, set()).add(subtype)
+    return edges
+
+
+def _build_children_of(registry: Registry, genetic_only: bool = False) -> dict[str, set[str]]:
+    """parent_pid → {child_pids} from accepted parent/child relationship claims.
+
+    With `genetic_only`, an edge survives only if at least one of its natures is
+    genetic (SPEC §12.2) - so the Ahnentafel NUMBERING walk skips adoptive, step,
+    foster, guardian, and social parents, while the bracket and relationship views
+    (genetic_only=False) still show every child. An unset, legacy (`child-of`), or
+    unrecognised nature defaults to genetic, so a legacy archive numbers exactly as
+    before. Bloodline filtering changes numbering only; every parent edge stays
+    visible elsewhere.
+    """
+    children_of: dict[str, set[str]] = {}
+    for ppid, kids in _build_child_edges(registry).items():
+        for cpid, natures in kids.items():
+            if genetic_only and not any(is_genetic_parent_subtype(s) for s in natures):
+                continue
+            children_of.setdefault(ppid, set()).add(cpid)
     return children_of
 
 
@@ -853,15 +914,17 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
     """W103: stale couple-folder bracket lists.
 
     For each digit-prefixed directory under people/ (excluding stubs/connections),
-    derives the expected bracket list from accepted child-of relationship claims
-    whose parent field names a person residing in that folder.  ALL children
-    appear — direct-line children with their own folder included — mirroring the
-    bracket convention documented in TOOLING §7.
+    derives the expected bracket list from accepted parent/child relationship
+    claims (by their roles: map) whose parent names a person residing in that
+    folder, marking a child who joined other than by birth (`Ruth (adopted)`).
+    ALL children appear - direct-line children with their own folder included -
+    mirroring the bracket convention documented in TOOLING §7.
 
     WHY ALL CHILDREN: see _check_w103_brackets in views.py.  Same invariant, same
     source data, different backend (in-memory registry instead of SQLite).
     """
-    children_of = _build_children_of(registry)
+    child_edges = _build_child_edges(registry)
+    children_of = {ppid: set(kids) for ppid, kids in child_edges.items()}
 
     # Build pid → folder name for all persons with profile files in people/
     pid_to_folder: dict[str, str] = {}
@@ -893,7 +956,7 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
         # exactly: drop stray occupants (a folder member who is a child of another
         # member) from the PARENT set, then take all children of the remaining
         # members.  Subtracting a stray's children instead would also drop a
-        # grandchild that ALSO has a direct child-of edge to a folder parent —
+        # grandchild that ALSO has a direct child-of edge to a folder parent -
         # views keeps that child, so lint must too.
         member_children = {
             cpid
@@ -902,15 +965,30 @@ def _check_bracket_lists(registry: Registry, findings: list[Finding]) -> None:
         }
         stray_pids = member_children & folder_pids
         parents = folder_pids - stray_pids
-        child_pids: set[str] = set()
-        for ppid in parents:
-            child_pids.update(children_of.get(ppid, set()))
 
-        derived_names = sorted(
-            str(registry.person_meta.get(cp, {}).get('name', '')).split()[0]
-            for cp in child_pids
-            if registry.person_meta.get(cp, {}).get('name')
-        )
+        # All children of the (non-stray) folder parents, each marked with its
+        # nature relative to THIS couple: a child with at least one genetic edge to
+        # a folder parent reads as a birth child (bare given name); one joined only
+        # by a social/legal bond reads `Given (adopted)`. Mirrors
+        # views._check_w103_brackets so both backends derive identical lists.
+        child_natures: dict[str, set[str]] = {}
+        for ppid in parents:
+            for cpid, natures in child_edges.get(ppid, {}).items():
+                child_natures.setdefault(cpid, set()).update(natures)
+
+        derived_entries = []
+        for cpid, natures in child_natures.items():
+            name = str(registry.person_meta.get(cpid, {}).get('name', ''))
+            if not name:
+                continue
+            label = None
+            if not any(is_genetic_parent_subtype(s) for s in natures):
+                for s in sorted(natures):
+                    label = nonbirth_bracket_label(s)
+                    if label:
+                        break
+            derived_entries.append(format_bracket_child(name.split()[0], label))
+        derived_names = sorted(derived_entries)
 
         if sorted(current_names) != sorted(derived_names):
             findings.append(Finding('W', 'W103',
@@ -995,11 +1073,13 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
     root_pid = normalize_id(str(root_person_raw))
     if not registry.has_person(root_pid):
         findings.append(Finding('W', 'W110', registry.archive_root / 'fha.yaml',
-            f'root_person {root_pid!r} has no person record — '
+            f'root_person {root_pid!r} has no person record - '
             'Ahnentafel placement checks (W110) skipped; '
             'fix root_person in fha.yaml or run fha stubs'))
         return
-    children_of = _build_children_of(registry)
+    # Ahnentafel numbering follows only the genetic pedigree (SPEC §12.2); social
+    # and legal parent edges are shown in the bracket list but never numbered.
+    children_of = _build_children_of(registry, genetic_only=True)
     pid_to_pos = _build_ahnentafel_lint(root_pid, children_of, registry)
 
     people_dir = registry.archive_root / 'people'
@@ -1043,6 +1123,38 @@ def _check_ahnentafel_placement(registry: Registry, findings: list[Finding]) -> 
 
 # ── Cross-file checks ─────────────────────────────────────────────────────────
 
+def _is_restricted(value) -> bool:
+    """True when a `restricted:` value marks the record as restricted.
+
+    The marker is open (SPEC §19): the plain boolean `true`, or any free-text
+    type (`dna`, `by-request`, `deadname`, …), all mean restricted. Only an
+    absent or explicitly-false flag is unrestricted. `read_record` coerces
+    booleans to the strings `'true'`/`'false'`, so both forms are handled."""
+    if value in (None, False, '', 'false'):
+        return False
+    return True
+
+
+def _variant_values(variants) -> list[str]:
+    """Flatten a `name_variants:` list to its display strings.
+
+    A variant is normally a bare string, but a private prior name (a deadname,
+    SPEC §9/§18) is written as a `{value:, restricted: true}` mapping so it can
+    be redacted on export. Either way the *value* is what resolves through the
+    alias surface - so a `[[prior name]]` link still finds the person (no E004)
+    and the clash check still sees the name. The `restricted` flag matters only
+    to the exporters; here we want the plain string."""
+    out: list[str] = []
+    for v in variants or []:
+        if isinstance(v, dict):
+            value = v.get('value')
+            if value:
+                out.append(str(value))
+        elif v:
+            out.append(str(v))
+    return out
+
+
 def _alias_records(registry: Registry) -> list[dict]:
     """Assemble the records `build_alias_map`/`alias_clashes` operate on, from
     everything Pass 1 collected: persons (id + name + variants + stems), sources
@@ -1054,7 +1166,7 @@ def _alias_records(registry: Registry) -> list[dict]:
         records.append({
             'id': pid,
             'name': meta.get('name'),
-            'name_variants': meta.get('name_variants') or [],
+            'name_variants': _variant_values(meta.get('name_variants')),
             'aliases': meta.get('aliases') or [],
         })
     for sid, meta in registry.source_meta.items():
@@ -1066,11 +1178,11 @@ def _alias_records(registry: Registry) -> list[dict]:
 
 def _self_alias_ok(meta: dict, cid: str) -> bool:
     """True if a record either declares no `aliases:` (hasn't opted into the
-    layer — not nagged) or its `aliases:` already includes its own canonical ID.
+    layer - not nagged) or its `aliases:` already includes its own canonical ID.
 
     Scoped this way on purpose: pre-alias records simply have no `aliases:` field
     and are left alone (forgiving, AGENTS.md), while a record that DID add aliases
-    must carry the self-ID — the one line that makes `[[S-…]]` click through."""
+    must carry the self-ID - the one line that makes `[[S-…]]` click through."""
     aliases = meta.get('aliases')
     if not aliases:
         return True
@@ -1084,27 +1196,27 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
 
       - W111 self-alias: a record that uses `aliases:` but omits its own ID.
       - W112 latent clash: one string names ≥2 records, but nothing links by it
-        yet — normal in genealogy (same-name people), just a heads-up.
+        yet - normal in genealogy (same-name people), just a heads-up.
       - W113 active clash: a real `[[John Smith]]` (prose) or `people: [[John
-        Smith]]` (frontmatter) link uses an ambiguous name — must be pinned to an
+        Smith]]` (frontmatter) link uses an ambiguous name - must be pinned to an
         ID. The system never guesses which record; the human (or `fha
         normalize-links`) chooses.
     """
-    # W111 — self-alias present where the record opted into the alias layer.
+    # W111 - self-alias present where the record opted into the alias layer.
     for pid, meta in registry.person_meta.items():
         if not _self_alias_ok(meta, pid):
             path = registry.person_profile_paths.get(pid, [Path(pid)])[0]
             findings.append(Finding('W', 'W111', path,
-                f"aliases: is missing this record's own ID {fmt_id_display(pid)} — add it so "
+                f"aliases: is missing this record's own ID {fmt_id_display(pid)} - add it so "
                 f'[[{fmt_id_display(pid)}]] resolves in Obsidian (run `fha normalize-links`)'))
     for sid, meta in registry.source_meta.items():
         if not _self_alias_ok(meta, sid):
             path = registry.source_paths.get(sid, Path(sid))
             findings.append(Finding('W', 'W111', path,
-                f"aliases: is missing this record's own ID {fmt_id_display(sid)} — add it so "
+                f"aliases: is missing this record's own ID {fmt_id_display(sid)} - add it so "
                 f'[[{fmt_id_display(sid)}]] resolves in Obsidian (run `fha normalize-links`)'))
 
-    # W112 / W113 — name/stem clashes.
+    # W112 / W113 - name/stem clashes.
     clashes = alias_clashes(_alias_records(registry))
     for name, ids in sorted(clashes.items()):
         # Active sites: a prose name-wikilink, or a frontmatter people:/places:
@@ -1119,13 +1231,260 @@ def _alias_checks(registry: Registry, findings: list[Finding]) -> None:
         if active_sites:
             site_path, _line = active_sites[0]
             findings.append(Finding('W', 'W113', site_path,
-                f"'{name}' is ambiguous — it names {len(ids)} records ({id_list}); a link uses "
+                f"'{name}' is ambiguous - it names {len(ids)} records ({id_list}); a link uses "
                 f'it but the system never guesses which. Pin it to an ID (run `fha normalize-links`).'))
         else:
             anchor = registry.all_record_ids.get(ids[0], Path(ids[0]))
             findings.append(Finding('W', 'W112', anchor,
                 f"'{name}' names {len(ids)} records ({id_list}); any link to it must be pinned "
                 'to an ID (it cannot resolve by name alone).'))
+
+
+# ── Relationship reconciliation (W115 / W116) ─────────────────────────────────
+#
+# The person-doc `relationships:` block (SPEC §9) is the human-writable surface
+# where relationship claims are applied to the lives they concern. A SOURCED
+# entry (it carries `claim:`/`source:`) must reconcile against an accepted
+# `relationship` claim - same pair, same role, same nature (subtype). An entry
+# that cites a missing claim, or whose nature disagrees with the claim, is W115.
+# A sourced edge recorded on one person but not mirrored on the other is W116;
+# `fha lint --fix-reciprocal` offers to append the missing mirror. UNSOURCED
+# beliefs (no link, or `status: hypothesis`) are never findings - they land on
+# the informational needs-sourcing backlog, exactly like a provisional birth.
+
+# entry `type` (the OTHER person's role) → (owner_role, other_role) in the claim.
+# A `type: parent` entry on P's record means "the other person is P's parent",
+# so P is the child and the other is the parent in the backing claim.
+_EDGE_ROLE_MAP = {
+    'parent':   ('child', 'parent'),
+    'child':    ('parent', 'child'),
+    'spouse':   ('spouse', 'spouse'),
+    'enslaver': ('enslaved', 'enslaver'),
+    'enslaved': ('enslaver', 'enslaved'),
+    'employer': ('employee', 'employer'),
+    'employee': ('employer', 'employee'),
+}
+# entry `type` → the reciprocal `type` the mirror entry on the other person uses.
+_RECIPROCAL_ROLE = {
+    'parent': 'child', 'child': 'parent', 'spouse': 'spouse', 'sibling': 'sibling',
+    'enslaver': 'enslaved', 'enslaved': 'enslaver',
+    'employer': 'employee', 'employee': 'employer',
+}
+
+
+def _claim_by_id(registry: Registry, cid: str) -> dict | None:
+    """Return the claim dict for a C-id, or None. Claims live under their source,
+    so this resolves the C-id → S-id index then scans that source's claims."""
+    sid = registry.claim_ids.get(cid)
+    if not sid:
+        return None
+    for claim in registry.source_claims.get(sid, []):
+        if isinstance(claim, dict) and normalize_id(str(claim.get('id', ''))) == cid:
+            return claim
+    return None
+
+
+def _role_pids(claim: dict, role: str) -> set[str]:
+    """Normalised P-ids filling one `roles:` key (scalar or list both accepted)."""
+    val = (claim.get('roles') or {}).get(role)
+    if not val:
+        return set()
+    if isinstance(val, str):
+        val = [val]
+    return {normalize_id(str(v)) for v in val if v}
+
+
+def _entry_subtype(entry: dict) -> str:
+    """The nature an entry asserts. An unqualified parent/child edge is
+    `biological` by default (SPEC §8.2); other types have no default."""
+    st = str(entry.get('subtype', '')).strip().lower()
+    if st:
+        return st
+    role = str(entry.get('type', '')).strip().lower()
+    return 'biological' if role in ('parent', 'child') else ''
+
+
+def _claim_subtype_norm(claim: dict) -> str:
+    """The claim's nature, normalised for comparison. A parent/child claim with no
+    subtype - or the legacy role-marker `child-of` - reads as `biological`."""
+    st = str(claim.get('subtype', '')).strip().lower()
+    if st and st not in ('child-of', 'spouse-of'):
+        return st
+    roles = claim.get('roles') or {}
+    if roles.get('child') and roles.get('parent'):
+        return 'biological'
+    return ''
+
+
+def _claim_backs_edge(claim: dict, owner_pid: str, other_pid: str | None, role: str) -> bool:
+    """True if `claim` is an accepted relationship/marriage claim that records the
+    edge a person-doc entry asserts. When `other_pid` is None (the `to:` name has
+    no minted record yet) only the owner's side is checked, so a forgiving name
+    never produces a false reconciliation failure."""
+    if str(claim.get('status', '')) != 'accepted':
+        return False
+    ctype = str(claim.get('type', ''))
+    if role == 'spouse' and ctype == 'marriage':
+        persons = set(_claim_person_ids(claim))
+        return owner_pid in persons and (other_pid is None or other_pid in persons)
+    pair = _EDGE_ROLE_MAP.get(role)
+    if ctype != 'relationship' or not pair:
+        return False
+    owner_role, other_role = pair
+    if owner_pid not in _role_pids(claim, owner_role):
+        return False
+    if other_pid is not None and other_pid not in _role_pids(claim, other_role):
+        return False
+    return True
+
+
+def _person_reconcilable_role_label(claim: dict, pid: str) -> str | None:
+    """For the reverse check: the entry `type` this person's block would use to
+    apply `claim`, or None if the claim isn't a kin edge naming them. Limited to
+    parent/child/spouse so social and power ties never over-flag."""
+    ctype = str(claim.get('type', ''))
+    if ctype == 'marriage':
+        return 'spouse' if pid in _claim_person_ids(claim) else None
+    if ctype != 'relationship':
+        return None
+    if pid in _role_pids(claim, 'child'):
+        return 'parent'     # the person is a child → their entry names a parent
+    if pid in _role_pids(claim, 'parent'):
+        return 'child'
+    if pid in _role_pids(claim, 'spouse'):
+        return 'spouse'
+    return None
+
+
+def _profile_path_for(registry: Registry, pid: str) -> Path:
+    """Best on-disk path to attach a finding to for a person."""
+    paths = registry.person_profile_paths.get(pid)
+    if paths:
+        return paths[0]
+    return registry.all_record_ids.get(pid, Path(pid))
+
+
+def _check_reciprocity(
+    registry: Registry, findings: list[Finding],
+    owner_pid: str, other_pid: str, role: str, claim: dict, alias_map: dict[str, str],
+) -> None:
+    """W116: a sourced edge on owner_pid should be mirrored on other_pid, pointing
+    at the same claim. Offers `--fix-reciprocal` rather than demanding both ends."""
+    mirror_role = _RECIPROCAL_ROLE.get(role)
+    if not mirror_role:
+        return     # a tie we can't mirror automatically (e.g. member-of an org)
+    cid = normalize_id(str(claim.get('id', '')))
+    other_meta = registry.person_meta.get(other_pid) or {}
+    for e in (other_meta.get('relationships') or []):
+        if not isinstance(e, dict):
+            continue
+        e_claim = normalize_id(strip_link_wrapper(str(e.get('claim', '')))) if e.get('claim') else ''
+        if cid and e_claim == cid:
+            return     # mirror present, same claim
+        e_to = resolve_ref(str(e.get('to', '')), alias_map) if e.get('to') else None
+        e_to = normalize_id(e_to) if e_to else None
+        if e_to == owner_pid and str(e.get('type', '')).strip().lower() == mirror_role:
+            return     # mirror present, matched by person + role
+    owner_name = str(registry.person_meta.get(owner_pid, {}).get('name') or fmt_id_display(owner_pid))
+    findings.append(Finding('W', 'W116', _profile_path_for(registry, other_pid),
+        f"{fmt_id_display(other_pid)} is missing the reciprocal '{mirror_role}' edge to "
+        f"{owner_name} - it is recorded on {fmt_id_display(owner_pid)}'s relationships: "
+        f"(claim {fmt_id_display(cid)}). Run `fha lint --fix-reciprocal` to add the mirror "
+        f"(preview with --dry-run)."))
+    registry.missing_mirrors.append({
+        'other_pid': other_pid,
+        'owner_pid': owner_pid,
+        'mirror_role': mirror_role,
+        'subtype': _claim_subtype_norm(claim),
+        'claim_id': cid,
+    })
+
+
+def _check_relationships_reconciliation(
+    registry: Registry, findings: list[Finding], alias_map: dict[str, str],
+) -> None:
+    """W115/W116 over every person-doc `relationships:` block (SPEC §9).
+
+    Only persons who opted into the block are checked - like W111's self-alias,
+    a record with no `relationships:` is left alone. For each SOURCED entry: the
+    backing claim must exist and record this edge (else W115), its nature must
+    match (else W115), and the other person should mirror it (else W116). The
+    reverse direction (an accepted kin claim naming this person but absent from
+    their block) is also W115, so an opted-in block stays complete."""
+    for pid in sorted(registry.person_meta):
+        block = registry.person_meta[pid].get('relationships')
+        if not isinstance(block, list) or not block:
+            continue
+        profile_path = _profile_path_for(registry, pid)
+        referenced_cids: set[str] = set()
+
+        for entry in block:
+            if not isinstance(entry, dict):
+                continue
+            role = str(entry.get('type', '')).strip().lower()
+            other_pid = resolve_ref(str(entry.get('to', '')), alias_map) if entry.get('to') else None
+            other_pid = normalize_id(other_pid) if other_pid else None
+            status = str(entry.get('status', '')).strip().lower()
+            is_sourced = bool(entry.get('claim') or entry.get('source')) and status != 'hypothesis'
+            if not is_sourced:
+                continue   # an unsourced belief → needs-sourcing backlog, not a finding
+
+            matched: dict | None = None
+            if entry.get('claim'):
+                cid = normalize_id(strip_link_wrapper(str(entry.get('claim'))))
+                referenced_cids.add(cid)
+                claim = _claim_by_id(registry, cid)
+                if claim is None:
+                    findings.append(Finding('W', 'W115', profile_path,
+                        f"relationships: {role or 'edge'} entry links claim {fmt_id_display(cid)}, "
+                        f"but no such claim exists - fix the link, or add the claim to its source."))
+                    continue
+                if not _claim_backs_edge(claim, pid, other_pid, role):
+                    findings.append(Finding('W', 'W115', profile_path,
+                        f"relationships: entry links claim {fmt_id_display(cid)}, but that claim does "
+                        f"not record this {role or 'relationship'} edge - check its persons and roles."))
+                    continue
+                matched = claim
+            else:
+                sid = normalize_id(strip_link_wrapper(str(entry.get('source'))))
+                cands = [c for c in registry.source_claims.get(sid, [])
+                         if isinstance(c, dict) and _claim_backs_edge(c, pid, other_pid, role)]
+                if not cands:
+                    findings.append(Finding('W', 'W115', profile_path,
+                        f"relationships: {role or 'edge'} entry cites source {fmt_id_display(sid)}, but it "
+                        f"carries no accepted relationship claim for this edge - accept one, or link the "
+                        f"claim directly with claim: [[C-…]]."))
+                    continue
+                matched = cands[0]
+                referenced_cids.add(normalize_id(str(matched.get('id', ''))))
+
+            entry_subtype = _entry_subtype(entry)
+            claim_subtype = _claim_subtype_norm(matched)
+            if entry_subtype and claim_subtype and entry_subtype != claim_subtype:
+                findings.append(Finding('W', 'W115', profile_path,
+                    f"relationships: entry for claim {fmt_id_display(normalize_id(str(matched.get('id', ''))))} "
+                    f"says subtype {entry_subtype!r} but the claim says {claim_subtype!r} - make the nature match."))
+
+            if other_pid:
+                _check_reciprocity(registry, findings, pid, other_pid, role, matched, alias_map)
+
+        # Reverse: an opted-in block should apply every accepted kin claim that names this person.
+        for claims in registry.source_claims.values():
+            for claim in claims:
+                if not isinstance(claim, dict) or str(claim.get('status', '')) != 'accepted':
+                    continue
+                if str(claim.get('type', '')) not in ('relationship', 'marriage'):
+                    continue
+                cid = normalize_id(str(claim.get('id', '')))
+                if not cid or cid in referenced_cids:
+                    continue
+                label = _person_reconcilable_role_label(claim, pid)
+                if label is None:
+                    continue
+                findings.append(Finding('W', 'W115', profile_path,
+                    f"{fmt_id_display(pid)} has a relationships: block but accepted claim "
+                    f"{fmt_id_display(cid)} (a {label} edge naming them) isn't applied in it - add the "
+                    f"entry and link the claim, or remove the block if it's not meant to be complete."))
 
 
 def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: bool = False) -> None:
@@ -1143,6 +1502,11 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     # Alias-layer maintenance + integrity (self-alias, name/stem clashes).
     _alias_checks(registry, findings)
 
+    # W115/W116: reconcile each person-doc relationships: block against claims,
+    # and check reciprocity. The alias map resolves a forgiving `to:` to a P-id.
+    _check_relationships_reconciliation(
+        registry, findings, build_alias_map(_alias_records(registry)))
+
     # E001: duplicate person profiles
     for pid, paths in registry.person_profile_paths.items():
         if len(paths) > 1:
@@ -1157,14 +1521,14 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             # E004: orphan reference
             for ref_path, ref_line in refs[:3]:   # report first 3 sites
                 findings.append(Finding('E', 'E004', ref_path,
-                    f'Orphan reference [{token_id}] (line {ref_line}) — no matching record. '
+                    f'Orphan reference [{token_id}] (line {ref_line}) - no matching record. '
                     'Create the missing record (for a person, run `fha stubs`) or fix the ID.'))
 
         if tid_type == 'P' and not registry.has_person(token_id):
             # E005: referenced person has no record at all
             for ref_path, ref_line in refs[:1]:
                 findings.append(Finding('E', 'E005', ref_path,
-                    f'P-id {token_id} referenced at line {ref_line} but no person record exists — '
+                    f'P-id {token_id} referenced at line {ref_line} but no person record exists - '
                     'create a stub with `fha stubs`, or fix the ID.'))
 
     # E004: check persons referenced in claim `persons:` fields
@@ -1174,13 +1538,13 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
             for ppid in _claim_person_ids(claim):
                 if not registry.has_person(ppid):
                     findings.append(Finding('E', 'E005', src_path,
-                        f'Claim {claim.get("id","?")} references person {ppid} but no person record exists — '
+                        f'Claim {claim.get("id","?")} references person {ppid} but no person record exists - '
                         'create a stub with `fha stubs`, or fix the P-id.'))
 
-            # place reference — forgiving (PR 05): never reject a place the human
+            # place reference - forgiving (PR 05): never reject a place the human
             # typed.  A well-formed L-id that doesn't resolve is a broken link
             # (E004, an integrity problem).  Free text in place: is just the place
-            # as-written in the wrong field — point to place_text:, don't error.
+            # as-written in the wrong field - point to place_text:, don't error.
             place_raw = str(claim.get('place', '')).strip()
             if place_raw:
                 if id_type_of(place_raw) == 'L':
@@ -1188,12 +1552,12 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     if place_ref not in registry.place_ids:
                         findings.append(Finding('E', 'E004', src_path,
                             f'Claim {claim.get("id","?")} place {fmt_id_display(place_ref)} '
-                            f'is not a registered place — register it with `fha places` '
+                            f'is not a registered place - register it with `fha places` '
                             f'or fix the L-id'))
                 else:
                     findings.append(Finding('W', 'W109', src_path,
                         f'Claim {claim.get("id","?")} place: {place_raw!r} is not a place '
-                        f'L-id — put the place as written in place_text: instead, or run '
+                        f'L-id - put the place as written in place_text: instead, or run '
                         f'`fha places` to register it and get an L-id'))
 
             # E004: corroborates/contradicts targets
@@ -1218,7 +1582,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
                     # Check if an open question references both C-ids
                     if not _has_question_for(cid, tid, registry):
                         findings.append(Finding('E', 'E009', src_path,
-                            f'Claim {cid} contradicts {tid} but no open question records the conflict — '
+                            f'Claim {cid} contradicts {tid} but no open question records the conflict - '
                             'run `fha lint --spawn-questions` to open one, or add a `## Q:` block to notes/questions.md.'))
 
     # E013: summary block drift for curated profiles
@@ -1474,7 +1838,7 @@ def _get_person_accepted_claims(pid: str, registry: Registry) -> list[dict]:
     Injects a synthetic '_source_id' key into each claim dict so that callers
     (E013 summary checks, W101 vitals checks) can identify which source a claim
     came from without a second lookup.  Claims don't carry source_id in their
-    own YAML dict — it lives on the source record that contains them.
+    own YAML dict - it lives on the source record that contains them.
     """
     result = []
     for sid, claims in registry.source_claims.items():
@@ -1573,7 +1937,7 @@ def _check_readme_age(archive_root: Path, findings: list[Finding]) -> None:
     if readme.exists() and spec.exists():
         if readme.stat().st_mtime < spec.stat().st_mtime:
             findings.append(Finding('W', 'W108', readme,
-                'README.md older than SPEC.md — may need updating (the README rule)'))
+                'README.md older than SPEC.md - may need updating (the README rule)'))
 
 
 # ── E018: agent-instruction drift ────────────────────────────────────────────
@@ -1693,6 +2057,7 @@ def run_lint(
     fix_inventory: bool = False,
     fix_claims_fence: bool = False,
     fix_ids: bool = False,
+    fix_reciprocal: bool = False,
     spec_root: Path | None = None,  # TODO: use for TOOLING §3 spec-drift checks (E018 expansion)
 ) -> Result:
     """
@@ -1701,7 +2066,7 @@ def run_lint(
     The reference implementation of the structured-result contract (_lib.py): this
     function computes findings and performs the mutating fix modes (their file
     writes are side effects that belong in the compute layer), but it does NOT
-    print the human report — `_cmd_lint` renders that from the returned Result.
+    print the human report - `_cmd_lint` renders that from the returned Result.
     Report-only by default; mutating fix modes require explicit flags and respect
     --dry-run. Never modifies original source files or photos.
 
@@ -1711,12 +2076,12 @@ def run_lint(
       - data.progress: the per-operation lines fix modes emit, in order, for
         `_cmd_lint` to print ahead of the findings report.
       - data.config_missing: set when there is no fha.yaml (a special early case
-        whose output `_cmd_lint` renders differently — compact JSON, absolute path).
+        whose output `_cmd_lint` renders differently - compact JSON, absolute path).
       - changed: files actually created/written by the fix modes (empty on dry-run).
     """
     # Check that archive root looks right
     if not (archive_root / 'fha.yaml').exists():
-        msg = f'No fha.yaml found at {archive_root} — is this an archive root?'
+        msg = f'No fha.yaml found at {archive_root} - is this an archive root?'
         result = Result(
             ok=False,
             exit_code=EXIT_ERRORS,
@@ -1735,7 +2100,7 @@ def run_lint(
         n_inventoried = sum(len(v) for v in registry.source_inventory.values())
         wc_note = (
             f'[working copy] {n_inventoried} asset file(s) assumed present on the main'
-            ' machine — E011/E012 asset-on-disk checks skipped'
+            ' machine - E011/E012 asset-on-disk checks skipped'
         )
 
     # Format checks / fixes
@@ -1761,6 +2126,8 @@ def run_lint(
         _fix_claims_fence(registry, archive_root, progress, changed, dry_run=dry_run)
     if fix_ids:
         _fix_mint_ids(registry, archive_root, progress, changed, dry_run=dry_run)
+    if fix_reciprocal:
+        _fix_reciprocal(registry, archive_root, progress, changed, dry_run=dry_run)
 
     # Sort findings by severity then path
     findings.sort(key=lambda f: (f.code, f.path))
@@ -1774,7 +2141,7 @@ def run_lint(
     else:
         exit_code = EXIT_CLEAN
 
-    # Informational needs-sourcing worklist — deliberately NOT a finding, so it
+    # Informational needs-sourcing worklist - deliberately NOT a finding, so it
     # never moves the exit code off its documented level (it is a worklist, like
     # the suggested-claim backlog, not a gate).
     backlog = _needs_sourcing_backlog(registry)
@@ -1782,7 +2149,7 @@ def run_lint(
     # Hand-authored id-less records: reported as auto-mintable (not E002/E010), so
     # a human's pre-machine record is surfaced and completable, never silently lost.
     mintable = [
-        f'{path.relative_to(archive_root)}: no ID yet (hand-authored) — run '
+        f'{path.relative_to(archive_root)}: no ID yet (hand-authored) - run '
         '`fha lint --fix-ids` to add one (the filename slug is kept as an alias, '
         'so existing [[links]] keep working).'
         for path, _kind in registry.idless_records
@@ -1867,12 +2234,12 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
         # never read as part of the pass/fail report (no effect on exit code).
         mintable = data.get('mintable') or []
         if mintable:
-            print('\nAuto-mintable records (no ID yet — not errors):')
+            print('\nAuto-mintable records (no ID yet - not errors):')
             for line in mintable:
                 print(f'  - {line}')
         backlog = data.get('backlog') or []
         if backlog:
-            print('\nNeeds sourcing (worklist — informational, not errors):')
+            print('\nNeeds sourcing (worklist - informational, not errors):')
             for line in backlog:
                 print(f'  - {line}')
 
@@ -1880,6 +2247,16 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False) -> int
 
 
 _TODO_SOURCE_RE = re.compile(r'\(TODO:\s*import source\)', re.I)
+
+
+def _friendly_to(to_raw: object) -> str:
+    """A readable label for a relationships entry's `to:` target - the display
+    name after a `|` when present, else the bare stripped target."""
+    s = str(to_raw or '').strip()
+    m = re.search(r'\|([^\]]+)', s)
+    if m:
+        return m.group(1).strip()
+    return strip_link_wrapper(s)
 
 
 def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
@@ -1902,7 +2279,7 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
 def _needs_sourcing_backlog(registry: Registry) -> list[str]:
     """An INFORMATIONAL worklist (never an error or warning): per person, a
     provisional `birth:`/`death:` not yet backed by an accepted claim, and prose
-    marked `(TODO: import source)`. The inverse of the W101 vitals-gap check — it
+    marked `(TODO: import source)`. The inverse of the W101 vitals-gap check - it
     flags a present-but-unsourced vital, not a missing one. A provisional date is
     a legitimate starting state, so this nudges toward a source, never blocks."""
     accepted = _accepted_vital_pids(registry)
@@ -1915,7 +2292,7 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
             if not value or (pid, field) in accepted:
                 continue   # absent, or already superseded by an accepted claim
             lines.append(
-                f'{name} ({fmt_id_display(pid)}): provisional {field}: {value!r} — '
+                f'{name} ({fmt_id_display(pid)}): provisional {field}: {value!r} - '
                 f'recorded but not yet backed by a source. Add one when you can '
                 f'(e.g. `fha process` the record, then accept a {field} claim).'
             )
@@ -1923,14 +2300,32 @@ def _needs_sourcing_backlog(registry: Registry) -> list[str]:
         if n_todo:
             lines.append(
                 f'{name} ({fmt_id_display(pid)}): {n_todo} prose passage(s) marked '
-                f'"(TODO: import source)" — still to be sourced.'
+                f'"(TODO: import source)" - still to be sourced.'
+            )
+        # A relationships: entry with no claim:/source: link, or one carrying
+        # status: hypothesis, is a known relationship not yet sourced - listed the
+        # same way as a provisional date, never a gate. A sourced claim supersedes it.
+        for entry in (meta.get('relationships') or []):
+            if not isinstance(entry, dict):
+                continue
+            status = str(entry.get('status', '')).strip().lower()
+            sourced = bool(entry.get('claim') or entry.get('source'))
+            if sourced and status != 'hypothesis':
+                continue
+            role = str(entry.get('type', '')).strip() or 'relationship'
+            target = _friendly_to(entry.get('to'))
+            tail = ' (hypothesis)' if status == 'hypothesis' else ''
+            lines.append(
+                f'{name} ({fmt_id_display(pid)}): {role} relationship to '
+                f'{target or "(unnamed)"}{tail} - recorded but not yet sourced. '
+                f'Link its claim:/source: when you find the evidence.'
             )
     return lines
 
 
 def _wrap_unfenced_claims(path: Path) -> str | None:
     """Return `path`'s text with the unfenced `## Claims` content wrapped in a
-    ```yaml fence, or None if there is nothing to wrap. Text surgery only — the
+    ```yaml fence, or None if there is nothing to wrap. Text surgery only - the
     YAML the human typed is preserved verbatim, just fenced."""
     try:
         text = path.read_text(encoding='utf-8')
@@ -1983,7 +2378,7 @@ def _slugify_segment(text: str) -> str:
 def _person_filename_parts(name: str, fallback_slug: str) -> tuple[str, str]:
     """(surname, given) for the §13 person filename `{surname}__{given}_{P-id}`.
 
-    Derived from the `name:` field — surname is the last word, given the rest —
+    Derived from the `name:` field - surname is the last word, given the rest -
     falling back to the hand-filename when there is no usable name. Letters only,
     so the generated filename matches the strict person grammar and lint won't
     immediately re-flag it."""
@@ -2151,6 +2546,113 @@ def _fix_spawn_questions(
         changed.append(str(questions_path))
 
 
+def _format_mirror_entry(
+    owner_pid: str, owner_name: str, role: str, subtype: str, claim_id: str,
+) -> list[str]:
+    """The YAML list-item lines for a mirror relationship entry pointing back at
+    the person who already records the edge. Pinned `[[P-id|Name]]` so it reads
+    and resolves; subtype omitted when there is nothing to say."""
+    lines = [
+        f'  - to: "[[{fmt_id_display(owner_pid)}|{owner_name}]]"',
+        f'    type: {role}',
+    ]
+    if subtype:
+        lines.append(f'    subtype: {subtype}')
+    if claim_id:
+        lines.append(f'    claim: "[[{fmt_id_display(claim_id)}]]"')
+    return lines
+
+
+def _append_relationship_entry(text: str, item_lines: list[str]) -> str | None:
+    """Insert a relationships list-item into a person record's frontmatter.
+
+    Additive text surgery: appends to an existing block (a `relationships:` key
+    followed by indented items) or creates one just before the closing `---`.
+    Returns None when the frontmatter is missing or `relationships:` is written
+    in a form we won't safely edit (e.g. inline `relationships: [...]`), so the
+    caller can report it rather than corrupt the file."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != '---':
+        return None
+    close = next((i for i in range(1, len(lines)) if lines[i].strip() == '---'), None)
+    if close is None:
+        return None
+
+    rel_idx = None
+    for i in range(1, close):
+        if re.match(r'^relationships:\s*(#.*)?$', lines[i]):
+            rel_idx = i
+            break
+        if re.match(r'^relationships:\s*\S', lines[i]):
+            return None     # inline form - refuse rather than create a duplicate key
+
+    if rel_idx is None:
+        lines[close:close] = ['relationships:'] + list(item_lines)
+    else:
+        end = rel_idx + 1
+        while end < close and (lines[end].startswith(' ') or lines[end].startswith('\t')):
+            end += 1
+        lines[end:end] = list(item_lines)
+
+    result = '\n'.join(lines)
+    if text.endswith('\n'):
+        result += '\n'
+    return result
+
+
+def _fix_reciprocal(
+    registry: Registry,
+    archive_root: Path,
+    progress: list[str],
+    changed: list[str],
+    dry_run: bool = False,
+) -> None:
+    """W116 fix: append each missing mirror entry to the other person's
+    relationships: block. Additive only (never overwrites human text), previewed
+    under --dry-run, and conflict-safe - the W116 pass already confirmed the
+    mirror is absent, and a person with no record is reported, not invented."""
+    seen: set[tuple[str, str, str]] = set()
+    for m in registry.missing_mirrors:
+        key = (m['other_pid'], m['claim_id'], m['mirror_role'])
+        if key in seen:
+            continue
+        seen.add(key)
+        other_pid = m['other_pid']
+        owner_name = str(registry.person_meta.get(m['owner_pid'], {}).get('name')
+                         or fmt_id_display(m['owner_pid']))
+        paths = registry.person_profile_paths.get(other_pid)
+        if not paths:
+            progress.append(
+                f"--fix-reciprocal: {fmt_id_display(other_pid)} has no person record to hold the "
+                f"mirror - run `fha stubs` first; skipped.")
+            continue
+        path = paths[0]
+        rel = path.relative_to(archive_root)
+        if dry_run:
+            progress.append(
+                f"--fix-reciprocal dry-run: would add a '{m['mirror_role']}' edge to "
+                f"{owner_name} (claim {fmt_id_display(m['claim_id'])}) in {rel}")
+            continue
+        try:
+            text = path.read_text(encoding='utf-8')
+        except OSError:
+            progress.append(f"--fix-reciprocal: could not read {rel}; skipped.")
+            continue
+        item = _format_mirror_entry(m['owner_pid'], owner_name, m['mirror_role'],
+                                    m['subtype'], m['claim_id'])
+        new_text = _append_relationship_entry(text, item)
+        if not new_text or new_text == text:
+            progress.append(
+                f"--fix-reciprocal: couldn't safely place the mirror in {rel} "
+                f"(its relationships: block isn't a simple list) - add it by hand.")
+            continue
+        path.write_text(new_text, encoding='utf-8')
+        changed.append(str(path))
+        progress.append(
+            f"Added reciprocal '{m['mirror_role']}' edge to {owner_name} "
+            f"(claim {fmt_id_display(m['claim_id'])}) in {rel}")
+
+
 def _today() -> str:
     return datetime.date.today().isoformat()
 
@@ -2204,6 +2706,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                    help='Wrap hand-written claims that forgot the ```yaml fence (with --dry-run to preview)')
     p.add_argument('--fix-ids', action='store_true',
                    help='Mint IDs for hand-authored id-less records, renaming and keeping the slug as an alias (with --dry-run to preview)')
+    p.add_argument('--fix-reciprocal', action='store_true',
+                   help='Add the missing mirror edge for each W116 (with --dry-run to preview)')
     p.add_argument('--fix-inventory', action='store_true',
                    help='Regenerate files: from ID glob for E011 set')
     p.set_defaults(func=_run_lint)
@@ -2233,6 +2737,7 @@ def _run_lint(args: argparse.Namespace) -> int:
         fix_inventory=getattr(args, 'fix_inventory', False),
         fix_claims_fence=getattr(args, 'fix_claims_fence', False),
         fix_ids=getattr(args, 'fix_ids', False),
+        fix_reciprocal=getattr(args, 'fix_reciprocal', False),
         spec_root=Path(spec_root) if spec_root else None,
     )
     return _cmd_lint(result, archive_root, use_json=getattr(args, 'use_json', False))
@@ -2257,6 +2762,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--spawn-questions', action='store_true')
     parser.add_argument('--fix-claims-fence', action='store_true')
     parser.add_argument('--fix-ids', action='store_true')
+    parser.add_argument('--fix-reciprocal', action='store_true')
     parser.add_argument('--fix-inventory', action='store_true')
     args = parser.parse_args(argv)
     return _run_lint(args)

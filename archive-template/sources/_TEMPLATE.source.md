@@ -21,6 +21,9 @@ repository: unknown        # OPTIONAL - where the original lives (an attic, a co
 citation: >                # OPTIONAL - a sentence saying exactly what this is, in your own words
   1880 U.S. census, Hartley household, Fairview, Kansas.
 
+# restricted: true   # OPTIONAL - keep this source out of anything you share publicly. DNA is
+                     # always restricted automatically.
+
 # WHO and WHERE this source is about - this is your family graph.
 # In Obsidian, type [[ and pick the name: it links them and shows up in your graph.
 # A cleanup pass tidies these later (`fha normalize-links`); you never need the ID.
@@ -29,9 +32,15 @@ people:
 places:                    # OPTIONAL - where this source is set
   - "[[Fairview]]"         # settles to [[L-...|Fairview]]
 
+# original_language: de   # OPTIONAL - the language of the source itself, if not English (de, fr, la, ...)
 files:                     # OPTIONAL - the photo or scan this source points at
   - file: documents/put-your-file-here.jpg
     role: primary
+    # language: de        # OPTIONAL - the language of THIS file
+  # - file: documents/put-your-file-here-translation.md
+  #   role: translation   # an English version of a foreign record, filed beside the original
+  #   language: en
+  #   derived: true
 
 created: 2026-01-01        # the date you added this (any date is fine)
 ---
@@ -56,6 +65,27 @@ created: 2026-01-01        # the date you added this (any date is fine)
   # place: L-__________            # OPTIONAL - a registered place code, no brackets (run `fha places`)
   # information: primary           # OPTIONAL (advanced) - primary / secondary: was the informant there?
   # evidence: direct               # OPTIONAL (advanced) - direct / indirect: does it state the fact outright?
+
+# A RELATIONSHIP claim - who is related to whom, and how. "roles" is required here.
+# - value: "Thomas Hartley, son of Caleb Hartley"
+#   type: relationship
+#   persons: [P-__________, P-__________]   # both people, no brackets
+#   id: C-__________
+#   subtype: biological        # the nature: biological (default), adoptive, step, foster, ...
+#   roles: {child: P-__________, parent: P-__________}
+#   status: suggested
+#   confidence: high
+
+# A MEMBERSHIP - someone belonged to a group (a regiment, a tribe, a lodge, an employer).
+# - value: "Enrolled member, Cherokee Nation (1902 Dawes Roll #4471)"
+#   type: relationship
+#   persons: [P-__________]
+#   id: C-__________
+#   subtype: member-of           # or "employer" for a workplace
+#   roles: {member: P-__________}
+#   value_org: "Cherokee Nation" # the organization, in plain text
+#   status: suggested
+#   confidence: high
 ```
 
 ## Notes

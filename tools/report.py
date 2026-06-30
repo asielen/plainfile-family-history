@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-report.py — fha report: the session report (research feed).
+report.py - fha report: the session report (research feed).
 
   fha report [--full] [--section NAME]
 
 The "login screen": refreshes the index/photo cache, runs lint, diffs the
 result against the last session's snapshot, and assembles a markdown research
-feed — discoveries first, chores second (TOOLING §15a).  Consumed almost
+feed - discoveries first, chores second (TOOLING §15a).  Consumed almost
 entirely through the `/today` skill, which narrates this output and offers to
 start the top item.
 
@@ -22,13 +22,13 @@ that sits above that rule, not an exception to be copied elsewhere.
 
 Refresh sequence (TOOLING §15a step 1-3), run on every invocation regardless
 of `--full`/`--section` (the report's own freshness, not its diffing baseline):
-  1. `index.build_index(...)` — full index rebuild
-  2. `photoindex.run_scan(..., full=False)` — incremental photo metadata
+  1. `index.build_index(...)` - full index rebuild
+  2. `photoindex.run_scan(..., full=False)` - incremental photo metadata
      refresh; runs *after* the index rebuild because it derives face-tag/
      name-variant matches from `.cache/index.sqlite` and should see this
      session's fresh data, not last session's. Wrapped in try/except so an
      exiftool failure degrades Section 6 only, not the whole report.
-  3. `lint._run_lint_core(...)` — in-memory lint pass (gives both raw Finding
+  3. `lint._run_lint_core(...)` - in-memory lint pass (gives both raw Finding
      objects and the Registry that produced them; `run_lint_silent` only
      returns counts, which the discoveries/vitals-gaps/contradictions
      sections need more than)
@@ -38,47 +38,47 @@ SNAPSHOT
 `.cache/last_report.json` is intentionally a superset of the minimal example
 in BUILD.md/TOOLING §15a: alongside `source_ids`/`person_ids`/`claim_statuses`
 it also stores per-claim status, claim_links, relationship edges, the W101
-vitals-gap person set, and per-question status — the extra bookkeeping a
+vitals-gap person set, and per-question status - the extra bookkeeping a
 "what changed since last time" diff needs that aggregate counts alone cannot
 answer (e.g. "did claim C-x move from needs-review to accepted" requires
 knowing C-x's *prior* status, not just a prior total).  `--full` ignores this
 snapshot (treats `prev` as empty) but still writes a fresh one afterward.
 
 Writing `notes/discoveries.md` and confirming/dismissing `fha cooccur`
-candidates both require human confirmation (TOOLING §15a) — that interactive
+candidates both require human confirmation (TOOLING §15a) - that interactive
 loop is a future skill-layer concern (mirrors `fha cooccur`'s read-only
 tombstone discipline); this tool only ever proposes and prints.
 
 CODE MAP
 --------
   Constants
-    SECTIONS                   — (key, number-label, title) in display order
+    SECTIONS                   - (key, number-label, title) in display order
 
   Snapshot
-    _load_snapshot / _write_snapshot  — .cache/last_report.json read/write
-    _parse_questions            — notes/questions.md -> {heading: {status, refs, block}}
-    _vitals_gap_pids            — W101 findings -> sorted P-id list (via registry paths)
-    _build_snapshot             — current-state snapshot dict from the just-refreshed index
+    _load_snapshot / _write_snapshot  - .cache/last_report.json read/write
+    _parse_questions            - notes/questions.md -> {heading: {status, refs, block}}
+    _vitals_gap_pids            - W101 findings -> sorted P-id list (via registry paths)
+    _build_snapshot             - current-state snapshot dict from the just-refreshed index
 
   Section builders (one per TOOLING §15a section; each returns list[str] lines)
-    _section_discoveries         — §0: claim status flips, new corroborations,
+    _section_discoveries         - §0: claim status flips, new corroborations,
                                     newly-answered questions, vitals gaps closed,
                                     newly confirmed relationship edges
-    _section_review_queue        — §1: W102 backlog, grouped by source
-    _section_new_since_last      — §2: source/claim/person id set diff vs snapshot
-    _section_vitals_gaps         — §3: W101 findings, formatted
-    _section_contradictions      — §4: E009 findings, formatted
-    _section_search_log          — §5: search_log lookups for current leads
-    _section_answerable_questions — §5b: open questions with a closeable gap
-    _section_photo_triage        — §6: photoindex.run_triage embed
-    _section_place_candidates    — §6b: places.run_candidates() embed
-    _section_hypotheses          — §7: open hypotheses + draft-queue backlog
-    _section_possible_connections — §8: cooccur.run_cooccur top candidates
+    _section_review_queue        - §1: W102 backlog, grouped by source
+    _section_new_since_last      - §2: source/claim/person id set diff vs snapshot
+    _section_vitals_gaps         - §3: W101 findings, formatted
+    _section_contradictions      - §4: E009 findings, formatted
+    _section_search_log          - §5: search_log lookups for current leads
+    _section_answerable_questions - §5b: open questions with a closeable gap
+    _section_photo_triage        - §6: photoindex.run_triage embed
+    _section_place_candidates    - §6b: places.run_candidates() embed
+    _section_hypotheses          - §7: open hypotheses + draft-queue backlog
+    _section_possible_connections - §8: cooccur.run_cooccur top candidates
 
   Rendering / orchestration
-    _person_label                — 'Name [P-xxxx]' display helper
-    _render_report                — assemble ordered markdown from section bodies
-    run_report                    — top-level: refresh, diff, render, persist
+    _person_label                - 'Name [P-xxxx]' display helper
+    _render_report                - assemble ordered markdown from section bodies
+    run_report                    - top-level: refresh, diff, render, persist
 
   CLI
     register, _cmd_report, _standalone_main
@@ -357,7 +357,7 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
             if row:
                 lines.append(
                     f"- {fmt_id_display(cid)} ({row['type']}: {row['value']}) "
-                    f"— [{fmt_id_display(row['source_id'])}]"
+                    f"- [{fmt_id_display(row['source_id'])}]"
                 )
 
     prev_links = {tuple(x) for x in prev.get('claim_links', [])}
@@ -377,7 +377,7 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
     if newly_answered:
         lines.append('**Questions newly answered:**')
         for h in newly_answered:
-            lines.append(f'- {h} — {cur_q[h]}')
+            lines.append(f'- {h} - {cur_q[h]}')
 
     prev_gaps = set(prev.get('vitals_gap_person_ids', []))
     cur_gaps = set(current['vitals_gap_person_ids'])
@@ -400,7 +400,7 @@ def _section_discoveries(conn, prev: dict, current: dict) -> list[str]:
     if confirmed:
         lines.append('**Confirmed connections:**')
         for a, rel, b in confirmed:
-            lines.append(f'- {_person_label(conn, a)} — {rel} — {_person_label(conn, b)}')
+            lines.append(f'- {_person_label(conn, a)} - {rel} - {_person_label(conn, b)}')
 
     # Contradictions (E009) that no longer fire this session.  A resolution
     # logged as a new open question referencing both claim-ids (rather than a
@@ -439,7 +439,7 @@ def _section_review_queue(conn) -> list[str]:
             (row['sid'],),
         ).fetchall()
         lines.append(
-            f"- {row['title']} [{fmt_id_display(row['sid'])}] — {len(claims)} suggested claim(s)"
+            f"- {row['title']} [{fmt_id_display(row['sid'])}] - {len(claims)} suggested claim(s)"
         )
         for c in claims:
             lines.append(f"    - {fmt_id_display(c['id'])} {c['type']}: {c['value']}")
@@ -544,14 +544,14 @@ def _section_search_log(conn, current: dict) -> list[str]:
     then call out recent `fha capture` pages that aren't tied to any lead.
 
     Leads = persons with a vitals gap, a suggested-claim backlog (review
-    queue), or a contradiction — the same person sets the other sections
+    queue), or a contradiction - the same person sets the other sections
     already surfaced, gathered here rather than threading lead lists between
     section functions.
 
     Capture rows always carry `person_id IS NULL` (TOOLING §13b: a stub
     hasn't been reconciled to a person yet), so they can never match a lead
     above by construction. Without a separate call-out they'd be invisible
-    here even though they're sitting durably in search_log — listing the
+    here even though they're sitting durably in search_log - listing the
     recent ones (capped to a short window so this doesn't grow into a
     permanent unread backlog) at least keeps them in view until `fha
     process` resolves the stub into a real record.
@@ -594,11 +594,11 @@ def _section_search_log(conn, current: dict) -> list[str]:
                     else f"already searched {row['date']}"
                 )
                 collection = row['collection'] or row['repository'] or '(unspecified collection)'
-                lines.append(f'- {label} — {collection}: {note}')
+                lines.append(f'- {label} - {collection}: {note}')
 
     recency = datetime.date.today() - datetime.timedelta(days=_CAPTURE_RECENCY_DAYS)
     # notes/research-log.md entries are also person_id IS NULL (general/locality
-    # searches aren't person-scoped) but aren't inbox captures — `fha capture`
+    # searches aren't person-scoped) but aren't inbox captures - `fha capture`
     # is the only writer that stamps result `staged {path}` (capture.py:768),
     # so that prefix is what actually distinguishes a capture row here.
     captured = conn.execute(
@@ -614,7 +614,7 @@ def _section_search_log(conn, current: dict) -> list[str]:
         if not recent:
             continue
         collection = row['collection'] or row['repository'] or '(unspecified collection)'
-        capture_lines.append(f"- {row['date']} — {collection}: {row['question']}")
+        capture_lines.append(f"- {row['date']} - {collection}: {row['question']}")
     if capture_lines:
         if lines:
             lines.append('')
@@ -627,7 +627,7 @@ def _section_search_log(conn, current: dict) -> list[str]:
 # ── Section 5b: Answerable questions ──────────────────────────────────────────
 
 # Vitals-gap closure (the P-id branch below) only makes sense for a question
-# that is actually *about* birth/marriage/death — a question referencing the
+# that is actually *about* birth/marriage/death - a question referencing the
 # same person but asking about something else entirely (immigration date,
 # residence, parentage, an alias) must not be proposed-closed just because
 # that person's vitals later filled in.  Keyed on the same vocabulary as the
@@ -652,7 +652,7 @@ def _question_vitals_subset(heading: str, block: str, needed: set[str]) -> set[s
     documented", "vitals gap") rather than naming a specific vital, the
     question is genuinely about the full `needed` set, so the full set is
     returned in that case. Otherwise only the specifically-named vital(s)
-    come back — a question that only asks "When was X born?" must not wait
+    come back - a question that only asks "When was X born?" must not wait
     on an unrelated marriage/death gap before a closure is proposed.
     """
     text = f'{heading}\n{block}'.lower()
@@ -667,7 +667,7 @@ def _question_vitals_subset(heading: str, block: str, needed: set[str]) -> set[s
 def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
     """
     Open questions whose referenced gap now has an accepted claim, or whose
-    referenced C-id changed status — proposed only, never executed (TOOLING
+    referenced C-id changed status - proposed only, never executed (TOOLING
     §15a: closing requires human confirmation).
     """
     questions = _parse_questions(archive_root)
@@ -716,7 +716,7 @@ def _section_answerable_questions(conn, archive_root: Path) -> list[str]:
                 mentioned = _question_vitals_subset(heading, info['block'], needed)
                 if mentioned and mentioned.issubset(claim_types):
                     proposal = (
-                        f'propose: review — {_person_label(conn, pid)} now has accepted '
+                        f'propose: review - {_person_label(conn, pid)} now has accepted '
                         f'{", ".join(sorted(mentioned))} claim(s)'
                     )
                     break
@@ -739,12 +739,12 @@ def _section_photo_triage(
         ]
     if scan_error:
         return [
-            f'Photo scan failed this session ({scan_error}) — triage results below may be '
+            f'Photo scan failed this session ({scan_error}) - triage results below may be '
             'stale; run `fha photoindex` once the issue is fixed.'
         ]
     result = photoindex.run_triage(archive_root, fha_config, top=10)
     if result['status'] in ('absent', 'unreadable'):
-        return [f'Photo index {result["status"]} — run `fha photoindex` to enable triage.']
+        return [f'Photo index {result["status"]} - run `fha photoindex` to enable triage.']
 
     candidates = result['candidates']
     if not candidates:
@@ -754,7 +754,7 @@ def _section_photo_triage(
     for c in candidates:
         signals = ', '.join(c['signals']) if c['signals'] else 'no signals'
         lines.append(
-            f"- {c['path']}  score={c['score']:+d}  [{signals}] — suggested: fha process {c['path']}"
+            f"- {c['path']}  score={c['score']:+d}  [{signals}] - suggested: fha process {c['path']}"
         )
     return lines
 
@@ -765,18 +765,18 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
     """
     Calls `places.run_candidates()` (BUILD.md M6.2). The import/attribute
     guards stay in place as a defensive fallback rather than a hard
-    dependency — every other optional embed in this file (photoindex,
+    dependency - every other optional embed in this file (photoindex,
     cooccur) degrades the same way instead of raising.
     """
     try:
-        import places as _places_tool   # noqa: PLC0415 — optional embed, see docstring
+        import places as _places_tool   # noqa: PLC0415 - optional embed, see docstring
     except ImportError:
-        return ['`fha places candidates` is not yet built (BUILD.md M6.2) — section deferred.']
+        return ['`fha places candidates` is not yet built (BUILD.md M6.2) - section deferred.']
 
     try:
         result = _places_tool.run_candidates(archive_root, fha_config)
     except AttributeError:
-        return ['`fha places candidates` is not yet built (BUILD.md M6.2) — section deferred.']
+        return ['`fha places candidates` is not yet built (BUILD.md M6.2) - section deferred.']
 
     groups = result.get('groups') or []
     if not groups:
@@ -789,7 +789,7 @@ def _section_place_candidates(archive_root: Path, fha_config: dict) -> list[str]
 def _person_has_draft_queue_backlog(conn, archive_root: Path, person_id: str) -> bool:
     """
     True if `person_id` has ≥1 accepted-claim source not cited in their
-    profile body — computed live from the index, mirroring exactly what
+    profile body - computed live from the index, mirroring exactly what
     `views.py`'s `_generate_draft_queue` does (accepted_sids - cited_sids),
     rather than reading the generated draft-queue file. The generated file
     can lag behind the index (claim just accepted, `fha views draft-queue`
@@ -829,7 +829,7 @@ def _section_hypotheses(conn, archive_root: Path) -> list[str]:
     if open_hyps:
         lines.append('**Open hypotheses:**')
         for row in open_hyps:
-            lines.append(f"- {_person_label(conn, row['person_id'])} — {row['n']} open hypothesis/es")
+            lines.append(f"- {_person_label(conn, row['person_id'])} - {row['n']} open hypothesis/es")
     else:
         lines.append('No open hypotheses.')
 
@@ -856,7 +856,7 @@ def _section_hypotheses(conn, archive_root: Path) -> list[str]:
 def _section_possible_connections(archive_root: Path) -> list[str]:
     result = cooccur.run_cooccur(archive_root, threshold=2)
     if result['status'] != 'ok':
-        return ['`fha cooccur` could not run — check .cache/index.sqlite.']
+        return ['`fha cooccur` could not run - check .cache/index.sqlite.']
 
     lines: list[str] = []
 
@@ -867,7 +867,7 @@ def _section_possible_connections(archive_root: Path) -> list[str]:
             lines.append(
                 f"- {c['name_a']} [{fmt_id_display(c['person_a'])}] <-> "
                 f"{c['name_b']} [{fmt_id_display(c['person_b'])}] "
-                f"— {c['source_count']} source(s)  [confirm] [dismiss]"
+                f"- {c['source_count']} source(s)  [confirm] [dismiss]"
             )
 
     place_pairs = result['place_pairs'][:10]
@@ -885,7 +885,7 @@ def _section_possible_connections(archive_root: Path) -> list[str]:
         lines.append('**Org/entity recurrence:**')
         for g in org_groups:
             lines.append(
-                f"- {g['label']} [{g['category']}] — "
+                f"- {g['label']} [{g['category']}] - "
                 f"{g['person_count']} people, {g['source_count']} sources"
             )
 
@@ -895,7 +895,7 @@ def _section_possible_connections(archive_root: Path) -> list[str]:
 # ── Rendering / orchestration ──────────────────────────────────────────────────
 
 def _render_report(generated: str, bodies: dict[str, list[str]], section_filter: str | None) -> str:
-    lines = [f'# fha report — {generated}', '']
+    lines = [f'# fha report - {generated}', '']
     for key, number, title in SECTIONS:
         if section_filter and key != section_filter:
             continue
@@ -917,13 +917,13 @@ def run_report(
 
     Returns a `Result` whose `data` carries the report as data and as text:
       - data['status']:   'ok' (kept for back-compat; subscriptable via Result).
-      - data['markdown']: the text to print this run — only the requested
+      - data['markdown']: the text to print this run - only the requested
         section when `section` is given.
       - data['full_markdown']: the complete report (what the snapshot/cache hold).
       - data['sections']: the per-section structured bodies (key -> list[str]),
         so a consumer can read each section as data, not just parsed text.
     The persisted snapshot and `.cache/report_{date}.md` always hold the complete
-    report — `--section` narrows what's printed this run, not what's recorded —
+    report - `--section` narrows what's printed this run, not what's recorded -
     and both written files are listed in `result.changed`.  `result.exit_code`
     follows the refresh lint pass (0/1/2).  `result['markdown']` etc. work because
     Result exposes dict-style read access into `data` (_lib.py).
@@ -935,7 +935,7 @@ def run_report(
             f'unknown --section {section!r}; choose one of: ' + ', '.join(sorted(_SECTION_KEYS))
         )
 
-    # Refresh sequence (TOOLING §15a steps 1-3) — always incremental for
+    # Refresh sequence (TOOLING §15a steps 1-3) - always incremental for
     # photos/index regardless of report's own --full (which only controls
     # whether the snapshot diff baseline is used, not how fresh the caches are).
     #
@@ -945,8 +945,8 @@ def run_report(
     # not-yet-rebuilt index would use a stale person/face-tag snapshot for
     # this cycle. Rebuilding first means run_scan always sees this session's
     # fresh data. photoindex.py's own staleness handling (_index_is_fresh)
-    # already tolerates an index that lags behind — it just preserves
-    # existing weak matches rather than failing — so this ordering is safe
+    # already tolerates an index that lags behind - it just preserves
+    # existing weak matches rather than failing - so this ordering is safe
     # either way; it's strictly an improvement.
     index.build_index(archive_root, fha_config)
     photo_scan_error: str | None = None
@@ -1002,7 +1002,7 @@ def run_report(
         conn.close()
 
     # Map the refresh's lint pass onto the tool suite's shared 0/1/2 exit-code
-    # contract (TOOLING §1) instead of always reporting clean — an E-level
+    # contract (TOOLING §1) instead of always reporting clean - an E-level
     # finding (duplicate IDs, malformed records, etc.) must surface as exit 2,
     # a W-level-only run as exit 1, same as `fha lint` itself would report.
     if any(f.severity == 'E' for f in findings):

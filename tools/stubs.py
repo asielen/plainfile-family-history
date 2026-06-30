@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-stubs.py — fha stubs: mint person stubs for unresolved P-id references.
+stubs.py - fha stubs: mint person stubs for unresolved P-id references.
 
   fha stubs                           Scan claims and create missing stubs
   fha stubs --from-names "A; B; C"    Mint new P-ids + stubs for named people
@@ -67,7 +67,7 @@ def _stub_filename(pid: str, name: str | None) -> str:
 
 def _stub_content(pid: str, name: str | None) -> str:
     display_name = name if name and name.lower() != 'unknown' else 'unknown'
-    # `aliases:` carries the P-id from birth — the line that makes a bare
+    # `aliases:` carries the P-id from birth - the line that makes a bare
     # `[[P-…]]` cite click through in Obsidian. The display name registers as an
     # alias automatically (the index reads it from `name:`), so a hand-typed
     # `[[Name]]` resolves once the stub is promoted to a real name.
@@ -81,7 +81,7 @@ def _stub_content(pid: str, name: str | None) -> str:
         f'aliases: [{pid}]\n'
         f'name: {display_name}\n'
         f'living: unknown\n'
-        f'# birth:   # an honest guess is fine — a tool will remind you to add a source later\n'
+        f'# birth:   # an honest guess is fine - a tool will remind you to add a source later\n'
         f'# death:   # same here; leave commented until you know\n'
         f'created: {_today()}\n'
         f'tier: stub\n'
@@ -98,7 +98,7 @@ def _collect_unresolved_persons(archive_root: Path) -> dict[str, str | None]:
     structure and reliable name extraction isn't worth the complexity.
     The biographer gives the stub a real name when they promote it from stubs/.
     # TODO: extract name from claim value when claim type is 'relationship'
-    #   and the value follows the "{name} is a child of …" pattern — that
+    #   and the value follows the "{name} is a child of …" pattern - that
     #   would give us a name hint for most auto-generated relationship claims.
     """
     # Collect all known P-ids from existing person files

@@ -1,9 +1,9 @@
 """
-test_report.py — fha report (BUILD.md M5.1-M5.3).
+test_report.py - fha report (BUILD.md M5.1-M5.3).
 
 Unlike xref/cooccur's synthetic-sqlite-index fixtures, `fha report` rebuilds
 the index from on-disk record files (it calls `index.build_index` and
-`lint._run_lint_core` directly — BUILD.md M5.1's "call tool logic directly"
+`lint._run_lint_core` directly - BUILD.md M5.1's "call tool logic directly"
 design), so the fixture here is a tiny real archive tree rather than a
 hand-built .cache/index.sqlite.
 """
@@ -295,7 +295,7 @@ class ReportTests(unittest.TestCase):
     def test_answerable_questions_proposes_closure_for_partial_vital_match(self) -> None:
         # Partial Birth Person needs birth + marriage + death (no
         # no_known_marriages, not living) but only has an accepted birth
-        # claim. The open question only asks "When was X born?" — it names
+        # claim. The open question only asks "When was X born?" - it names
         # birth specifically, so a closure proposal must fire on birth alone
         # rather than waiting on the unrelated marriage/death gaps too.
         (self.archive_root / 'people' / 'partialbirth__P-cccccccccc.md').write_text(
@@ -341,11 +341,11 @@ class ReportTests(unittest.TestCase):
             conn.close()
 
         self.assertIn(
-            '- Test Person [P-aaaaaaaaaa] — County probate index: worth re-running (stale nil search)',
+            '- Test Person [P-aaaaaaaaaa] - County probate index: worth re-running (stale nil search)',
             lines,
         )
         self.assertIn(
-            '- Test Person [P-aaaaaaaaaa] — Newspaper archive: already searched 2020-01-01',
+            '- Test Person [P-aaaaaaaaaa] - Newspaper archive: already searched 2020-01-01',
             lines,
         )
 
@@ -380,7 +380,7 @@ class ReportTests(unittest.TestCase):
 
     def test_search_log_excludes_general_research_log_entries(self) -> None:
         # notes/research-log.md (SPEC §16) also logs person_id IS NULL rows for
-        # general/locality searches — those aren't `fha capture` rows and must
+        # general/locality searches - those aren't `fha capture` rows and must
         # not be mislabeled as "Recently captured".
         report.run_report(self.archive_root, {}, full=True)
 

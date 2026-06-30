@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-confirm.py — fha confirm: human-directed write-back for detection candidates
+confirm.py - fha confirm: human-directed write-back for detection candidates
 (AGENTS.md, TOOLING §14a / §14a2 / §15a).
 
   fha confirm xref      <C-a> <C-b> --as corroborates|contradicts [--dry-run]
@@ -12,7 +12,7 @@ confirm.py — fha confirm: human-directed write-back for detection candidates
   fha confirm draft     <P-id> [--dry-run]
 
 The deterministic *detection* tools (`fha xref`, `fha cooccur`, `fha places
-candidates`) only ever read — they print candidate pairs/clusters for a human to
+candidates`) only ever read - they print candidate pairs/clusters for a human to
 judge and explicitly leave every write "to a future skill layer." This is that
 layer's deterministic floor: once the human has picked a candidate, the
 write-back itself is mechanical, so it lives here as a real CLI any front door
@@ -22,40 +22,40 @@ would be two owners for one surface).
 
 THE SIX WRITE-BACKS
 -------------------
-  xref       — confirm an `fha xref` pair: write reciprocal `corroborates:`/
+  xref       - confirm an `fha xref` pair: write reciprocal `corroborates:`/
                `contradicts:` claim_links into both claims' source records. A
                contradiction also spawns a templated open question in
                `notes/questions.md` (`origin: tool`, both C-ids referenced) so
-               lint E009 ("contradicts: with no open question") stays satisfied —
+               lint E009 ("contradicts: with no open question") stays satisfied -
                the same machinery `fha lint --spawn-questions` uses.
-  cooccur    — confirm an `fha cooccur` person-pair: mint a `relationship` claim
+  cooccur    - confirm an `fha cooccur` person-pair: mint a `relationship` claim
                (`subtype: friend|associate|neighbor`, the confirming source
                cited) into that source's `## Claims` block. Minted `suggested`
-               by default — the human's confirm proposes the edge; accepting it
+               by default - the human's confirm proposes the edge; accepting it
                into a load-bearing graph edge still goes through the normal
                step-05 claim review (`fha claim … --status accepted`), which is
                the only place "the human accepts" lives. `--accept` is the
                escape hatch for a human who is treating this confirm *as* the
                review (it stamps `reviewed:` like `fha claim` does).
-  dismiss    — record a co-occurrence pair in `.cache/cooccur_dismissed.json`,
+  dismiss    - record a co-occurrence pair in `.cache/cooccur_dismissed.json`,
                the tombstone `fha cooccur` reads to stop re-proposing a pair.
                Nothing else writes this file; this is its writer.
-  place      — register a place-text cluster: mint a new `L-id` place in
+  place      - register a place-text cluster: mint a new `L-id` place in
                `places/places.yaml` (or merge into an existing one via `--into`)
                and relink the named claims' `place:` to it, so the cluster stops
                surfacing as an unlinked `fha places candidates` group.
-  discovery  — append a dated entry (with `[S-]`/`[P-]` refs) to
+  discovery  - append a dated entry (with `[S-]`/`[P-]` refs) to
                `notes/discoveries.md`, the durable research-wins log
                `fha report` §0 leads with.
-  draft      — flip a profile's `<!-- AI-DRAFT … -->` markers to
+  draft      - flip a profile's `<!-- AI-DRAFT … -->` markers to
                `<!-- AI-ACCEPTED … (accepted DATE) -->` (AGENTS.md: draft prose
                carries the marker until the human accepts it). Provenance is
-               preserved, not erased — the original date/model stay in the marker.
+               preserved, not erased - the original date/model stay in the marker.
 
 Every verb ships `--dry-run` (previews, writes nothing) and returns a `_lib.Result`
 whose `changed[]` lists each file written. Source/registry edits are **surgical**
 text edits (not a YAML round-trip) so sibling claims, key order, and hand comments
-survive — the same discipline as `fha claim` and `fha places geocode`. The `.md`
+survive - the same discipline as `fha claim` and `fha places geocode`. The `.md`
 files are archive truth, so claims/sources are located by scanning `sources/`
 directly; the write works even when `.cache/index.sqlite` is stale or absent.
 After a write that changes the query surface, re-run `fha index`.
@@ -64,15 +64,15 @@ CODE MAP
 --------
   Shared edit helpers
     _today, _EditRefused
-    _find_source_path_for_claim   — scan sources/ for the .md holding one C-id
-    _find_source_path_by_id       — scan sources/ for one S-id's record
-    _find_profile_path            — scan people/ for one P-id's curated profile
-    _find_claims_block            — locate the ## Claims ```yaml fence
-    _claim_spans / _item_span_for — split the block into claim items, find one
-    _parse_inline_list            — read a `key: [a, b]` inline YAML list
-    _add_link_to_claim            — append a corroborates/contradicts target
-    _set_scalar_on_claim          — set a single scalar key (e.g. place:)
-    _append_claim_to_source       — append a whole new claim item to the block
+    _find_source_path_for_claim   - scan sources/ for the .md holding one C-id
+    _find_source_path_by_id       - scan sources/ for one S-id's record
+    _find_profile_path            - scan people/ for one P-id's curated profile
+    _find_claims_block            - locate the ## Claims ```yaml fence
+    _claim_spans / _item_span_for - split the block into claim items, find one
+    _parse_inline_list            - read a `key: [a, b]` inline YAML list
+    _add_link_to_claim            - append a corroborates/contradicts target
+    _set_scalar_on_claim          - set a single scalar key (e.g. place:)
+    _append_claim_to_source       - append a whole new claim item to the block
 
   Verbs (each returns a Result)
     run_confirm_xref, run_confirm_cooccur, run_dismiss,
@@ -144,7 +144,7 @@ def _find_source_path_for_claim(archive_root: Path, claim_id: str) -> Path | Non
     for path in sorted(sources_dir.rglob('*.md')):
         try:
             rec = read_record(path)
-        except Exception:  # noqa: BLE001 — a bad record can't hold our claim
+        except Exception:  # noqa: BLE001 - a bad record can't hold our claim
             continue
         for claim in rec.get('claims') or []:
             if isinstance(claim, dict) and claim.get('id') \
@@ -243,7 +243,7 @@ def _yaml_inline(value: str) -> str:
     `places.yaml` and the claims block are edited as text (not round-tripped
     through the YAML emitter) to preserve key order and comments, so a free-form
     place name/hierarchy that carries YAML-significant characters (`: `, a leading
-    `-`, ` #`) must be quoted exactly when the parser needs it — the same
+    `-`, ` #`) must be quoted exactly when the parser needs it - the same
     discipline `fha claim`/`fha process` use for scaffold scalars.
     """
     rendered = yaml.safe_dump(
@@ -271,7 +271,7 @@ def _split_inline_comment(raw: str) -> tuple[str, str]:
 def _parse_inline_list(raw: str) -> list[str]:
     """Parse a `key: [a, b]` inline YAML list (or a bare scalar) into a list.
 
-    Raises `_EditRefused` for forms this text-edit can't safely extend — an
+    Raises `_EditRefused` for forms this text-edit can't safely extend - an
     empty value (a block list `- …` likely follows) or a block scalar (`>`/`|`).
     A human edits those by hand rather than risk corrupting the YAML.
     """
@@ -296,7 +296,7 @@ def _add_link_to_claim(
     Returns (new_text, changed, already_present). The link list is rendered as a
     single-line inline YAML list. If the claim has no such key yet, one is
     inserted right after its `status:` line (falling back to the last line of the
-    item). Other lines — sibling keys, comments, key order — are untouched.
+    item). Other lines - sibling keys, comments, key order - are untouched.
     """
     target = normalize_id(target_id)
     target_disp = fmt_id_display(target)
@@ -332,7 +332,7 @@ def _add_link_to_claim(
         trailing = '\n' if text.endswith('\n') else ''
         return '\n'.join(lines) + trailing, True, False
 
-    # No existing rel key — insert one after `status:`, else at end of item.
+    # No existing rel key - insert one after `status:`, else at end of item.
     status_idx = None
     for idx in range(start, end):
         if re.match(r'^' + re.escape(key_indent) + r'status:', lines[idx]) \
@@ -420,7 +420,7 @@ def run_confirm_xref(
         if not (is_valid_id(cid) and id_type_of(cid) == 'C'):
             return _fail(result, 'invalid-id',
                          f'The {label} argument {cid!r} is not a valid claim ID. '
-                         'C-ids look like C-fd0000001a — a C, a dash, then 10 archive-alphabet '
+                         'C-ids look like C-fd0000001a - a C, a dash, then 10 archive-alphabet '
                          'characters.')
     if relation not in XREF_RELATIONS:
         return _fail(result, 'invalid-relation',
@@ -429,7 +429,7 @@ def run_confirm_xref(
     ca, cb = normalize_id(claim_a), normalize_id(claim_b)
     if ca == cb:
         return _fail(result, 'same-claim',
-                     'A claim cannot link to itself — pass two different C-ids.')
+                     'A claim cannot link to itself - pass two different C-ids.')
     result.data['claim_a'] = fmt_id_display(ca)
     result.data['claim_b'] = fmt_id_display(cb)
 
@@ -575,7 +575,7 @@ def run_confirm_cooccur(
     'source', 'claim_status'}. Minted `suggested` by default (the human's
     confirm proposes; accepting into a graph edge is the step-05 review). With
     `--accept` the claim is minted `accepted` and stamped `reviewed:` (today
-    unless given), treating this confirm as the review — the only way it becomes
+    unless given), treating this confirm as the review - the only way it becomes
     a derived `relationships` edge on the next `fha index`.
     """
     result = Result(data={
@@ -591,7 +591,7 @@ def run_confirm_cooccur(
     pa, pb = normalize_id(person_a), normalize_id(person_b)
     if pa == pb:
         return _fail(result, 'same-person',
-                     'A relationship needs two different people — pass two distinct P-ids.')
+                     'A relationship needs two different people - pass two distinct P-ids.')
     # Both people must have an actual profile record before we mint a claim that
     # names them, else the write leaves an E005 missing-person reference behind.
     known_people = {normalize_id(x) for x in scan_person_record_ids(archive_root)}
@@ -672,7 +672,7 @@ def run_confirm_cooccur(
     result.add('info', f'Minted {summary}', path=source_path)
     if not accept:
         result.add('info',
-                   'Minted as `suggested` — review it with '
+                   'Minted as `suggested` - review it with '
                    f'`fha claim {fmt_id_display(cid)} --status accepted` to make it a graph edge.',
                    next_step=f'fha claim {fmt_id_display(cid)} --status accepted')
     result.add('info', 'Reminder: run `fha index` so the claim enters the query surface.',
@@ -756,7 +756,7 @@ def run_dismiss(
                         seen.add(key)
                         pairs.append(norm)
         except (OSError, json.JSONDecodeError):
-            # A corrupt tombstone is disposable cache, not archive truth — start
+            # A corrupt tombstone is disposable cache, not archive truth - start
             # fresh rather than refuse the dismissal.
             pairs, seen = [], set()
 
@@ -900,7 +900,7 @@ def run_confirm_place(
         return result
 
     # Apply every planned write, rolling back on the first failure so the
-    # cluster is either fully relinked or left untouched — no new place stranded
+    # cluster is either fully relinked or left untouched - no new place stranded
     # with only some of its claims relinked. We restore in reverse: source files
     # to their pristine text, then the place registry to its prior state (or
     # remove it if this run created it).
@@ -934,7 +934,7 @@ def run_confirm_place(
         except OSError as e:
             return _fail(result, 'failed', f'cannot write {places_yaml}: {e}')
 
-    # 2. Relink claims — one write per source file (all of a file's claims are
+    # 2. Relink claims - one write per source file (all of a file's claims are
     #    already folded into file_edits[path]).
     for path, after in file_edits.items():
         try:
@@ -944,7 +944,7 @@ def run_confirm_place(
             return _fail(result, 'failed', f'cannot write {path}: {e}')
         written_files.append(path)
 
-    # All writes landed — now it is safe to record what changed.
+    # All writes landed - now it is safe to record what changed.
     if into is None:
         result.note_changed(places_yaml)
         result.add('info', f'Registered place {place_disp} ({name}) in {places_yaml.name}', path=places_yaml)
@@ -977,7 +977,7 @@ def _place_exists(archive_root: Path, place_id: str) -> bool:
 
 
 def _place_block_lines(place_id: str, name: str, hierarchy: str | None) -> list[str]:
-    """Build a minimal new place record for places.yaml (no coords — geocode later)."""
+    """Build a minimal new place record for places.yaml (no coords - geocode later)."""
     lines = [
         f'- id: {fmt_id_display(place_id)}',
         f'  name: {_yaml_inline(name.strip())}',
@@ -1066,7 +1066,7 @@ def run_accept_draft(
 
     `data` is {'status', 'person_id', 'profile', 'count'}. Each marker becomes
     `<!-- AI-ACCEPTED … (accepted DATE) -->`, preserving the original date/model
-    (AI provenance is never erased — AGENTS.md §20). The drafted prose itself is
+    (AI provenance is never erased - AGENTS.md §20). The drafted prose itself is
     untouched; only the marker's state flips, so the human-readable body is
     unchanged apart from the comment.
     """

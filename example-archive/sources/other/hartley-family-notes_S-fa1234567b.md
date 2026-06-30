@@ -1,7 +1,7 @@
 ---
 id: S-fa1234567b
 aliases: [S-fa1234567b]
-title: Hartley family notes — typescript, circa 1940
+title: Hartley family notes - typescript, circa 1940
 source_type: other
 source_date: 1940~
 source_class: derivative
@@ -27,7 +27,7 @@ created: 2026-06-14
 - value: "Calvin George Hartley is a child of Thomas Edward Hartley and Margaret A. Cole"
   id: C-fa0000001a
   type: relationship
-  subtype: child-of
+  subtype: biological
   persons: [P-fa7541e871, P-de957bcda1, P-cd795c61e0]
   roles:
     child: P-fa7541e871
@@ -44,7 +44,7 @@ created: 2026-06-14
 - value: "Warren Calvin Hartley is a child of Calvin George Hartley and Harriet Frances Webb"
   id: C-fa0000002b
   type: relationship
-  subtype: child-of
+  subtype: biological
   persons: [P-6f7g8h9jka, P-fa7541e871, P-8h9jkambne]
   roles:
     child: P-6f7g8h9jka
