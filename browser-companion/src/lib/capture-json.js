@@ -88,6 +88,7 @@
     out.accessed = fields.accessed || accessedDate();
     if (fields.sourceDate) out.source_date = fields.sourceDate;
     if (fields.sourceType) out.source_type = fields.sourceType;
+    if (fields.repository && fields.repository.trim()) out.repository = fields.repository.trim();
 
     // Normalize the asset list: drop entries with no file, keep role/mode and a
     // provisional flag only when true (omit the noise). The list is always

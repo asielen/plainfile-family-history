@@ -73,6 +73,14 @@
     // instead of pulling the URL box (which would be the thumbnail). Set from
     // the prefill; drives buildEvidence() and the Ancestry note.
     ancestryViewer: false,
+    // True on an open-archive IIIF page: the visible <img> is a downsized
+    // derivative, so the "Yes" flow auto-fetches the FULL IIIF image instead of
+    // pulling the URL box. Set from the prefill; drives buildEvidence().
+    iiif: false,
+    // The URL the form was last pre-filled for, so the batch-capture refresh
+    // (re-running prefill when the tab navigates to a new record) can tell a
+    // genuine navigation from a same-page update.
+    prefilledUrl: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -149,17 +157,20 @@
 
   function applyPrefill(prefill) {
     state.prefill = prefill;
+    state.iiif = !!prefill.iiif;
+    state.prefilledUrl = prefill.url || null;
     $('f-title').value = prefill.title || '';
     $('f-date').value = prefill.sourceDate || '';
     $('f-repo').value = prefill.repository || '';
     $('f-url').value = prefill.url || '';
     renderPeople(prefill.people);
     // Pre-fill the evidence url box with the best-guess image/PDF the page
-    // exposed - EXCEPT on an Ancestry image-viewer page, where detectImage()
-    // returns the 507x600 preview thumbnail (the EX7 trap). There the seamless
-    // full-res auto path replaces the URL box, so we leave it empty and let the
-    // Ancestry note (below) explain.
-    if (prefill.ancestryImageViewer) {
+    // exposed - EXCEPT where the visible image is a downsized derivative and an
+    // auto path can fetch the real file: an Ancestry image-viewer page (the EX7
+    // 507x600 thumbnail trap) or an open-archive IIIF page (the rendered <img>
+    // is a derivative). There the URL box is left empty and the auto path
+    // supplies the full record on Capture.
+    if (prefill.ancestryImageViewer || prefill.iiif) {
       $('f-asset-url').value = '';
     } else if (prefill.imageUrl) {
       $('f-asset-url').value = prefill.imageUrl;
@@ -170,11 +181,20 @@
 
     const banner = $('recipe-banner');
     const hintLabel = RECIPE_LABELS[prefill.recipeHint];
-    if (hintLabel) {
+    if (prefill.warning) {
+      // The capture-timing guard (§08-A): the record detail looks empty/unloaded,
+      // so a capture now would stage a page.html the recipe can't extract from.
+      // Surface it prominently - this matters more than the recipe hint.
+      banner.textContent = prefill.warning;
+      banner.classList.remove('recipe');
+      banner.classList.add('warn');
+    } else if (hintLabel) {
       banner.textContent = 'Looks like ' + hintLabel + '. Filing will confirm it.';
+      banner.classList.remove('warn');
       banner.classList.add('recipe');
     } else {
       banner.textContent = 'Generic capture, filing will read the page itself.';
+      banner.classList.remove('warn', 'recipe');
     }
     updateAssetStatus();
   }
@@ -216,10 +236,10 @@
 
   function hasEvidence() {
     if (evidenceMode() !== 'yes') return false;
-    // On an Ancestry image-viewer page the auto path supplies the full-res
-    // record on Capture, so "Yes" is satisfied with no dropped file or URL. A
-    // dropped file or a typed URL still takes precedence (manual override).
-    if (state.ancestryViewer) return true;
+    // On an Ancestry image-viewer or an IIIF page the auto path supplies the
+    // full record on Capture, so "Yes" is satisfied with no dropped file or URL.
+    // A dropped file or a typed URL still takes precedence (manual override).
+    if (state.ancestryViewer || state.iiif) return true;
     return !!(state.droppedAsset || evidenceUrl());
   }
 
@@ -236,6 +256,8 @@
       } else if (state.ancestryViewer) {
         // Auto path: the full-res record is fetched on Capture.
         parts.push('Record file: full record (Ancestry, auto)');
+      } else if (state.iiif) {
+        parts.push('Record file: full image (IIIF, auto)');
       } else {
         parts.push('Record file: add an address or drop a file');
       }
@@ -380,6 +402,20 @@
       const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
       return { blob, filename: 'record.' + (resp.ext || 'jpg'), mode: 'ancestry-api' };
     }
+    if (!url && state.iiif) {
+      // Open-standard IIIF: fetch the full image (content.js rewrites the
+      // derivative's URL to full/full then full/max). No auth, so a plain fetch;
+      // a failure points at the manual fallbacks like the Ancestry path.
+      const resp = await sendToTab(state.tabId, { action: 'iiifImage' });
+      if (!resp || !resp.ok) {
+        throw new Error(
+          ((resp && resp.error) || 'could not fetch the full IIIF image') +
+            '. You can paste an image address or drop a file in instead.'
+        );
+      }
+      const blob = bundle.base64ToBlob(resp.base64, resp.contentType);
+      return { blob, filename: 'record.' + (resp.ext || 'jpg'), mode: 'iiif' };
+    }
     const resp = await sendToTab(state.tabId, { action: 'fetchAsset', url });
     if (!resp || !resp.ok) {
       throw new Error((resp && resp.error) || 'could not pull that file from the page');
@@ -400,7 +436,8 @@
       );
       return;
     }
-    if (wantEvidence && !state.droppedAsset && !evidenceUrl() && !state.ancestryViewer) {
+    if (wantEvidence && !state.droppedAsset && !evidenceUrl()
+        && !state.ancestryViewer && !state.iiif) {
       setStageResult(
         'Add the file address or drop a file, or switch to "No, the page copy is the record".',
         'warn'
@@ -432,14 +469,14 @@
       }
       let evidenceWarning = null;
       if (wantEvidence) {
-        // The Ancestry seamless auto path (no dropped file, no typed URL, on a
-        // viewer page) may legitimately fail - not signed in, downloads disabled,
-        // API shape changed. That must NEVER hard-fail the capture: if a page
-        // copy was made, stage it and report the miss so the human can grab the
-        // file via Ancestry's own Download button. The explicit manual paths
+        // An auto fetch path (no dropped file, no typed URL, on an Ancestry
+        // viewer or an IIIF page) may legitimately fail - not signed in,
+        // downloads disabled, API/IIIF shape changed. That must NEVER hard-fail
+        // the capture: if a page copy was made, stage it and report the miss so
+        // the human can grab the file by hand. The explicit manual paths
         // (dropped file / typed URL) still fail loudly - those are user choices.
         const autoOnly =
-          state.ancestryViewer && !state.droppedAsset && !evidenceUrl();
+          (state.ancestryViewer || state.iiif) && !state.droppedAsset && !evidenceUrl();
         if (autoOnly && wantPageCopy) {
           try {
             const ev = await buildEvidence();
@@ -466,6 +503,7 @@
         accessed: captureJson.accessedDate(),
         sourceDate: $('f-date').value.trim(),
         sourceType: $('f-type').value,
+        repository: $('f-repo').value.trim(),
         people: checkedPeople(),
         notes: gatherNotes(),
         recipeHint: state.prefill && state.prefill.recipeHint,
@@ -553,7 +591,9 @@
   function resetForNext() {
     // Batch capture is the natural mode (§5.3): a research sitting yields a dozen
     // bundles. Clear the evidence so the next page starts fresh, but leave the
-    // panel open and the settings intact.
+    // panel open and the settings intact. The form metadata (title/date/people/
+    // repo) is refreshed when the human navigates to the next record - see
+    // refreshOnNavigation - so it never carries one record's details onto the next.
     state.droppedAsset = null;
     const drop = $('dropzone');
     if (drop) {
@@ -561,6 +601,30 @@
       drop.textContent = 'Drop a file here, or click to choose';
     }
     updateAssetStatus();
+  }
+
+  // Re-pull the pre-fill when the panel's tab navigates to a NEW record, so a
+  // batch session never files the next page under the previous record's
+  // title/date/people/repo. Skips same-page updates and in-progress captures;
+  // an unreadable new page is left for the human to fill, not dead-ended.
+  async function refreshOnNavigation(tabId, changeInfo) {
+    if (tabId !== state.tabId || state.busy) return;
+    if (changeInfo.status !== 'complete') return;
+    let tab;
+    try {
+      tab = await new Promise((resolve) => chrome.tabs.get(tabId, resolve));
+    } catch (e) {
+      return;
+    }
+    if (!tab || !/^https?:/i.test(tab.url || '') || tab.url === state.prefilledUrl) return;
+    try {
+      await injectContent(tabId);
+      const resp = await sendToTab(tabId, { action: 'prefill' });
+      if (resp && resp.ok) applyPrefill(resp.prefill);
+    } catch (e) {
+      // A restricted/again-loading page: don't clobber the form with an error;
+      // the human can still type, and the next 'complete' may succeed.
+    }
   }
 
   // ── settings (chrome.storage) ────────────────────────────────────────────────
@@ -588,6 +652,35 @@
     $('f-default-evidence').addEventListener('change', () => {
       chrome.storage.local.set({ defaultEvidence: $('f-default-evidence').value });
     });
+    // The seamless "file straight into my archive" opt-in. Ticking it requests
+    // the optional nativeMessaging permission from this click (a user gesture, as
+    // Chrome requires); declining or an absent host snaps it back off.
+    const seamless = $('cb-seamless');
+    if (seamless) {
+      seamless.addEventListener('change', async () => {
+        if (!seamless.checked) {
+          await nativeHost.removePermission();
+          setSeamlessHint('Off - captures stage to Downloads for `fha capture --ingest`.');
+          return;
+        }
+        const granted = await nativeHost.requestPermission();
+        if (!granted) {
+          seamless.checked = false;
+          setSeamlessHint('Permission declined - captures stage to Downloads.');
+          return;
+        }
+        const ready = await nativeHost.isAvailable();
+        setSeamlessHint(ready
+          ? 'On - captures file straight into your archive inbox.'
+          : "Permission granted, but no capture host answered. Run "
+            + '`fha capture --install-host` in your archive, then reopen this panel.');
+      });
+    }
+  }
+
+  function setSeamlessHint(text) {
+    const el = $('seamless-hint');
+    if (el) el.textContent = text;
   }
 
   function selectEvidenceMode(mode) {
@@ -642,6 +735,15 @@
     wireSettings();
     const cfg = await loadSettings();
     $('page-copy-card').classList.toggle('unchecked', !pageCopyOn());
+
+    // Reflect whether the seamless permission is already granted, and refresh the
+    // pre-fill whenever the panel's tab navigates to the next record (batch mode).
+    if ($('cb-seamless') && nativeHost.hasPermission) {
+      $('cb-seamless').checked = await nativeHost.hasPermission();
+    }
+    if (chrome.tabs && chrome.tabs.onUpdated) {
+      chrome.tabs.onUpdated.addListener(refreshOnNavigation);
+    }
 
     const tab = await queryActiveTab();
     if (!tab || !tab.id || !/^https?:/i.test(tab.url || '')) {

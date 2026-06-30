@@ -268,6 +268,13 @@ test('build — omits empty/blank fields', () => {
   assert.ok(!('notes' in cap));
 });
 
+test('build — repository edit is emitted (trimmed) when present, omitted when blank', () => {
+  const withRepo = build({ url: 'https://x.com', repository: '  Andrews Family Bible ', assets: [] });
+  assert.equal(withRepo.repository, 'Andrews Family Bible');
+  const without = build({ url: 'https://x.com', repository: '   ', assets: [] });
+  assert.ok(!('repository' in without));
+});
+
 test('build — assets list preserved with role/mode', () => {
   const cap = build({
     url: 'https://x.com',

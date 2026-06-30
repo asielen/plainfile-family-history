@@ -54,6 +54,7 @@ function build(fields) {
   out.accessed = fields.accessed || accessedDate();
   if (fields.sourceDate) out.source_date = fields.sourceDate;
   if (fields.sourceType) out.source_type = fields.sourceType;
+  if (fields.repository && fields.repository.trim()) out.repository = fields.repository.trim();
 
   const assets = (fields.assets || [])
     .filter((a) => a && a.file)
