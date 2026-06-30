@@ -113,6 +113,11 @@ import yaml
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _is_restricted_value(value) -> bool:
+    """True when a `restricted:` field value withholds a record from public output."""
+    return value not in (None, False, '', 'false')
+
+
 # ── DDL ───────────────────────────────────────────────────────────────────────
 # Schema mirrors the SPEC record model plus derived tables for query speed.
 # Foreign keys are OFF - forward references are valid and lint enforces integrity.
@@ -704,17 +709,38 @@ def _index_person(conn: sqlite3.Connection, path: Path, archive_root: Path) -> N
                 str(path.relative_to(archive_root)),
             ),
         )
-        variants = [str(v) for v in (meta.get('name_variants') or [])]
-        for v in variants:
+        # Restricted variants (deadnames, SPEC §18) go into aliases for internal
+        # link resolution only — they must not enter person_variants, which feeds
+        # public rendering paths (WikiTree fold forms, search display, etc.).
+        # Single pass over the raw list (entries are still dicts or strings here);
+        # deriving public_variants from the already-flattened all_variants strings
+        # would break the isinstance check needed to detect the restricted flag.
+        all_variants: list[str] = []
+        public_variants: list[str] = []
+        for _v in (meta.get('name_variants') or []):
+            if isinstance(_v, dict):
+                _val = _v.get('value')
+                if not _val:
+                    continue
+                all_variants.append(_val)
+                if not _is_restricted_value(_v.get('restricted')):
+                    public_variants.append(_val)
+            else:
+                _s = str(_v)
+                all_variants.append(_s)
+                public_variants.append(_s)
+        for v in public_variants:
             conn.execute('INSERT INTO person_variants(person_id, variant) VALUES (?,?)', (pid, v))
         # Register this person's resolution surface: the P-id (so `[[P-…]]`
         # clicks through), any hand-typed `aliases:` stems, the display name, and
         # each name variant - so `[[Ken Smith]]` resolves to the right P-id.
+        # All variants (including restricted) go into aliases so name-wikilinks
+        # to former names still resolve internally; render paths redact the display.
         _insert_record_aliases(
             conn, pid,
             stems=tuple(str(a) for a in (meta.get('aliases') or [])),
             names=(name,) if name and name != 'unknown' else (),
-            variants=tuple(variants),
+            variants=tuple(all_variants),
         )
         for t in (meta.get('face_tags') or []):
             conn.execute('INSERT INTO person_face_tags(person_id, tag) VALUES (?,?)', (pid, str(t)))
@@ -1204,6 +1230,26 @@ def _derive_relationships(conn: sqlite3.Connection) -> None:
                             'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
                             (p2, rel, p1, cid, dmin, dmax),
                         )
+            else:
+                # Directional power-tie roles: enslaved/enslaver, employer/employee.
+                # Each directed pair gets an asymmetric edge so callers can
+                # distinguish victim from perpetrator (SPEC §8.2).
+                for (role_a, edge_a), (role_b, edge_b) in (
+                    (('enslaved', 'enslaved-by'), ('enslaver', 'enslaver')),
+                    (('employee', 'employee'), ('employer', 'employer')),
+                ):
+                    a_ids = [p for p, r in all_persons if r == role_a]
+                    b_ids = [p for p, r in all_persons if r == role_b]
+                    for pa in a_ids:
+                        for pb in b_ids:
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (pa, edge_a, pb, cid, dmin, dmax),
+                            )
+                            conn.execute(
+                                'INSERT OR IGNORE INTO relationships VALUES (?,?,?,?,?,?)',
+                                (pb, edge_b, pa, cid, dmin, dmax),
+                            )
         elif ctype == 'marriage':
             for i, p1 in enumerate(pids):
                 for p2 in pids[i+1:]:

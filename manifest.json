@@ -224,7 +224,7 @@
     {
       "path": "tools/_lib.py",
       "category": "operating",
-      "sha256": "338f11f4151206af8d90e027e09e4bda626a6c71f2c0108e99981dce36491d19",
+      "sha256": "38007a55ac25828902cb374fd43077a899f59be69de6e7011bdb80d13e8ed6fc",
       "spec_version": "1.2"
     },
     {
@@ -308,13 +308,13 @@
     {
       "path": "tools/find.py",
       "category": "operating",
-      "sha256": "1a3bf75555fa0ab8b5309cc2b2dc149ce721e27176d60d52fc5bfa92f1f33c20",
+      "sha256": "bc73550144eae8c164db380a5156fe07067c672ee342b4249fe76afb154df0be",
       "spec_version": "1.2"
     },
     {
       "path": "tools/gedcom.py",
       "category": "operating",
-      "sha256": "3bfaa9a6a53a0f8a3a736d70e278c5ae5b62aa367ef269284493705f6cd0cdc4",
+      "sha256": "2f59a142e531e7752d10a219abb03ad496f8acf11bf5534eada518617cb5f399",
       "spec_version": "1.2"
     },
     {
@@ -326,7 +326,7 @@
     {
       "path": "tools/index.py",
       "category": "operating",
-      "sha256": "fc721f1e7a685a2c801dfdce8858b771b6cc19088d240d9317a40467ae5f76e9",
+      "sha256": "0668114865cb9d73df73b548c9621e44747915b55cd18dc67162c90de62c855a",
       "spec_version": "1.2"
     },
     {
@@ -350,7 +350,7 @@
     {
       "path": "tools/photoindex.py",
       "category": "operating",
-      "sha256": "14a659c6f97c1b86ed740ef044c9f7e6c53b50751f07bd4aebdd0b7bd87899a0",
+      "sha256": "4202ed7e100034cf158ac1c9f4afc4ec457a11f60c23ae12f61ccc3e52ee52c3",
       "spec_version": "1.2"
     },
     {
@@ -392,7 +392,7 @@
     {
       "path": "tools/site.py",
       "category": "operating",
-      "sha256": "c279da1ec1255a3bd5a6d7c38539544dd8cf53aafceefcfd086e9ec04f6153c6",
+      "sha256": "80221a3d2cbce6b1e8f877877cf0e321b9158e8206df98ad5da56641c58af68e",
       "spec_version": "1.2"
     },
     {
@@ -464,7 +464,7 @@
     {
       "path": "tools/wikitree.py",
       "category": "operating",
-      "sha256": "d9881a28e6427df316526eba67fa9c871c54cd12128bdf1700021c7319259cb0",
+      "sha256": "c771ec8a62e3aa9a3bb52c113faacbe6f41f064cc2d853083cda799cdb881a55",
       "spec_version": "1.2"
     },
     {

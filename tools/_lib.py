@@ -1800,7 +1800,16 @@ def _record_alias_strings(rec: dict) -> list[str]:
     if rec.get('name'):
         out.append(str(rec['name']))
     for v in rec.get('name_variants') or []:
-        out.append(str(v))
+        # A name variant may be a plain string or a {value:, restricted: true}
+        # mapping (SPEC §18 deadname). Use the value either way; str() on the
+        # dict would make the literal repr an alias key, so the real prior name
+        # would neither resolve internally nor be seen by the clash check.
+        if isinstance(v, dict):
+            val = v.get('value')
+            if val:
+                out.append(str(val))
+        elif v:
+            out.append(str(v))
     for v in rec.get('alt_names') or []:
         out.append(str(v))
     return out

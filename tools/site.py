@@ -550,6 +550,25 @@ class _SiteBuilder:
                 "WHERE p.living IN ('true','unknown') AND c.source_id IS NOT NULL"
             ):
                 source_living.add(row['source_id'])
+            # Also exclude sources naming a person-level restricted person
+            # (deceased but carrying `restricted: by-request`). The person's
+            # page is suppressed by _person_is_redacted; the source page must
+            # follow suit so the facts don't leak through the source view.
+            if self.restricted_persons:
+                placeholders = ','.join('?' * len(self.restricted_persons))
+                rp = list(self.restricted_persons)
+                for row in self.conn.execute(
+                    f"SELECT sp.source_id FROM source_people sp WHERE sp.person_id IN ({placeholders})",
+                    rp,
+                ):
+                    source_living.add(row['source_id'])
+                for row in self.conn.execute(
+                    f"SELECT DISTINCT c.source_id FROM claims c "
+                    f"JOIN claim_persons cp ON c.id = cp.claim_id "
+                    f"WHERE cp.person_id IN ({placeholders}) AND c.source_id IS NOT NULL",
+                    rp,
+                ):
+                    source_living.add(row['source_id'])
 
         for sid, row in self.source_meta.items():
             if self.linked or not self._source_is_redacted(row):
@@ -1100,13 +1119,15 @@ class _SiteBuilder:
         Used in standalone mode to suppress relationship edges whose only evidence comes
         from restricted, DNA, or living-linked sources."""
         rows = self.conn.execute(
-            "SELECT c.source_id FROM claims c "
+            "SELECT c.id, c.source_id FROM claims c "
             "JOIN claim_persons cp1 ON c.id = cp1.claim_id AND cp1.person_id = ? "
             "JOIN claim_persons cp2 ON c.id = cp2.claim_id AND cp2.person_id = ? "
             "WHERE c.status IN ('accepted','needs-review')",
             (pid1, pid2),
         ).fetchall()
         for r in rows:
+            if normalize_id(str(r['id'])) in self.restricted_claims:
+                continue
             if r['source_id'] is None or r['source_id'] in self.source_pages:
                 return True
         return not rows  # no claims at all → relationship came from YAML directly, show it
@@ -1128,7 +1149,10 @@ class _SiteBuilder:
             return False
         for row in rows:
             person = self.person_meta.get(row['person_ref'] or '')
-            if person and (person['living'] or '') in ('true', 'unknown'):
+            # A deceased `restricted: by-request` person is redacted too, not just
+            # living/unknown - mirror the person photo strips, which gate on the
+            # full _person_is_redacted predicate.
+            if person and self._person_is_redacted(person):
                 return True
         return False
 
@@ -1391,11 +1415,13 @@ class _SiteBuilder:
         Mirrors `fha views tree`'s node vitals (TOOLING §7 D3)."""
         vitals = {'birth': None, 'death': None}
         for r in self.conn.execute(
-            "SELECT c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+            "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted'",
             (pid,),
         ):
-            # Standalone: skip dates whose only source is withheld (restricted/living).
+            # Standalone: skip dates from restricted claims or withheld sources.
+            if not self.linked and normalize_id(str(r['id'])) in self.restricted_claims:
+                continue
             if not self.linked and r['source_id'] is not None and r['source_id'] not in self.source_pages:
                 continue
             if vitals.get(r['type']) is None:
