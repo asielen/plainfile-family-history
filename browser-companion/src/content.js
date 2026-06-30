@@ -79,6 +79,36 @@
   // recipe's job. JSON-LD Person/name and itemprop=name under a Person scope are
   // high-signal and site-neutral, so they make a good optional pre-fill the human
   // can untick (§5.3 Phase 2). Empty is a fine result; the human types the name.
+  //
+  // Non-people guard (05-A): exclude entities whose @type is a Place/Organization
+  // family type or that carry address/geo properties (these are structural markers
+  // of venues, not individuals). Skip BreadcrumbList/ListItem names entirely.
+  // This is intentionally generic — the same fix improves every site that mixes
+  // people and place/org structured data (not just Find a Grave).
+
+  // Types that must never yield a name in the people harvest, regardless of
+  // whether they also carry a `name` property.
+  const NON_PERSON_TYPES = new Set([
+    'Place', 'LocalBusiness', 'Organization', 'Cemetery',
+    'LandmarksOrHistoricalBuildings', 'TouristAttraction',
+    'BreadcrumbList', 'ListItem',
+    // Broad schema.org Place subtypes encountered in the wild:
+    'City', 'Country', 'State', 'AdministrativeArea',
+    'CivicStructure', 'PlaceOfWorship', 'Museum', 'Park',
+    'Hospital', 'School', 'CollegeOrUniversity',
+  ]);
+
+  // Returns true when a JSON-LD node's @type indicates a non-person entity.
+  function isNonPersonLdNode(node) {
+    const type = node['@type'];
+    const types = Array.isArray(type) ? type : (type ? [type] : []);
+    if (types.some((t) => NON_PERSON_TYPES.has(t))) return true;
+    // Also treat nodes with address/geo sub-objects as places even when @type
+    // is absent or set to something generic like "Thing".
+    if (node.address || node.geo) return true;
+    return false;
+  }
+
   function harvestPeople() {
     const names = [];
     const seen = new Set();
@@ -97,6 +127,11 @@
         node.forEach(walkLd);
         return;
       }
+      // Skip the entire subtree if this node is a non-person entity type.
+      // BreadcrumbList/ListItem nodes and Places/Orgs are excluded; we do NOT
+      // recurse further into them so their nested `name` props don't leak out.
+      if (isNonPersonLdNode(node)) return;
+
       const type = node['@type'];
       const isPerson = type === 'Person' ||
         (Array.isArray(type) && type.includes('Person'));
@@ -119,9 +154,23 @@
         /* malformed JSON-LD is common; skip it silently */
       }
     });
+    // Microdata harvest: restrict to Person itemscopes only, exclude any
+    // itemscope that is itself inside a non-person container (BreadcrumbList,
+    // Place, Organization). A flat querySelectorAll already does the right
+    // thing when scoped to schema.org/Person — but strip any matched element
+    // that lives inside a BreadcrumbList or Place itemscope to be safe.
     document
       .querySelectorAll('[itemtype$="schema.org/Person"] [itemprop="name"]')
-      .forEach((el) => add(el.textContent));
+      .forEach((el) => {
+        // Walk ancestors: reject if any contains a non-person itemtype.
+        let ancestor = el.parentElement;
+        while (ancestor) {
+          const atype = (ancestor.getAttribute('itemtype') || '').split('/').pop();
+          if (atype && NON_PERSON_TYPES.has(atype)) return; // skip
+          ancestor = ancestor.parentElement;
+        }
+        add(el.textContent);
+      });
     return names.slice(0, 12); // a pre-fill list, not an exhaustive index
   }
 
