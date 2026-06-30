@@ -230,6 +230,31 @@ class HostInstallTestCase(unittest.TestCase):
             # The launcher points at the real CLI entrypoint, tools/fha.py.
             self.assertIn('fha.py', Path(manifest['path']).read_text())
 
+    def test_install_resolves_relative_manifest_dir_to_absolute(self) -> None:
+        # Chrome/Edge require an absolute manifest `path`; a relative
+        # --host-manifest-dir must be resolved before the manifest is written.
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'arch'
+            archive.mkdir()
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                rc = capture._install_host(archive, extension_id='abcdefghij',
+                                           manifest_dir='nm-rel')
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(rc, capture.EXIT_CLEAN)
+            manifest = json.loads(
+                (Path(tmp) / 'nm-rel' / f'{capture._NATIVE_HOST_NAME}.json').read_text())
+            self.assertTrue(Path(manifest['path']).is_absolute())
+
+    def test_native_manifest_dir_edge_differs_from_chrome(self) -> None:
+        chrome = str(capture._native_manifest_dir('chrome')).lower()
+        edge = str(capture._native_manifest_dir('edge')).lower()
+        self.assertNotEqual(chrome, edge)
+        self.assertIn('edge', edge)
+
     def test_install_dry_run_writes_nothing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             archive = Path(tmp) / 'arch'

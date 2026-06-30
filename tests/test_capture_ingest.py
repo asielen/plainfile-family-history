@@ -340,7 +340,7 @@ class IngestTestCase(unittest.TestCase):
         self.assertTrue((folder / 'notes.md').is_file())
         self.assertTrue((folder / 'record.jpg').is_file())
         self.assertTrue((folder / 'page-snapshot.html').is_file())
-        # page.html is the scrape source, consumed at ingest — never filed.
+        # page.html is the scrape source, consumed at ingest - never filed.
         self.assertFalse((folder / 'page.html').exists())
 
         rec = read_record(folder / 'notes.md')
@@ -370,7 +370,7 @@ class IngestTestCase(unittest.TestCase):
         # and is the single companion of the lone-sidecar stub.
         bundle = self.staging / 'snapshot-only'
         bundle.mkdir(parents=True)
-        # No page.html — only the single-file snapshot asset.
+        # No page.html - only the single-file snapshot asset.
         (bundle / 'page-snapshot.html').write_text(_sample('ancestry'), encoding='utf-8')
         (bundle / 'capture.json').write_text(json.dumps({
             'schema': 2, 'url': 'https://www.ancestry.com/rec/1', 'accessed': '2026-06-24',

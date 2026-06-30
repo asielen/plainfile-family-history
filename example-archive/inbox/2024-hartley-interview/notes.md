@@ -1,23 +1,27 @@
-# Notes about this item
-
-<!-- A BUNDLE source stub (SPEC §12.1): the moment an item has MORE THAN ONE file
-     (here a recording plus its transcript), it lives in its own inbox folder, and a
-     single notes.md is the stub for the whole bundle. At processing the folder
-     dissolves: one S-id is minted, each file is filed into its asset tree carrying
-     that shared S-id (the recording via a SOURCE: keyword, the transcript via the
-     `-transcript` filename role), and these notes flow into the source's ## Notes.
-     The bundle has no S-id yet. A fictional fixture - the .mp3 is referenced but
-     absent (this example ships no binaries); the transcript beside it is real plain text. -->
-
 ---
+source_type: interview
+source_date: 2024-03
 people:
   - Ethel Hartley
-about: 2024-03
-source_type_guess: interview
 files:
   - { file: interview.mp3, role: recording }       # absent in this example (no binaries)
   - { file: interview-transcript.md, role: transcript }
 ---
+
+# Notes about this item
+
+<!-- A BUNDLE source stub (SPEC §12.1): the moment an item has MORE THAN ONE file
+     (here a recording plus its transcript), it lives in its own inbox folder, and a
+     single notes.md is the stub for the whole bundle. The frontmatter ABOVE is the
+     real hint block (it must be the very first thing in the file, since the parser
+     only reads `---` frontmatter at the top): `source_type`/`source_date` seed the
+     §14 record, `people` are unreconciled name hints, and `files` assigns each
+     bundle file its role. At processing the folder dissolves: one S-id is minted,
+     each file is filed into its asset tree carrying that shared S-id (the recording
+     via a SOURCE: keyword, the transcript via the `-transcript` filename role), and
+     this prose flows into the source's ## Notes. The bundle has no S-id yet. A
+     fictional fixture - the .mp3 is referenced but absent (this example ships no
+     binaries); the transcript beside it is real plain text. -->
 
 What is this?
 A phone interview I recorded with Great-Aunt Ethel in March 2024, plus the

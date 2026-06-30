@@ -218,7 +218,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "dd50062f57a058d47362d92e67508e60389f9282911991cd2d51ae6f56fa1ce2",
+      "sha256": "72a911848ced2f8338a0ed78da33fa8ddafa48ef60bd02447f1a83df07006db0",
       "spec_version": "1.2"
     },
     {
@@ -230,7 +230,7 @@
     {
       "path": "tools/capture.py",
       "category": "operating",
-      "sha256": "1615da52e870f5f2d5ca40c2305895de086703b7fb42c4a63e943843cc1b0b8a",
+      "sha256": "d77ba32863cd4d56608881c61bc93858a2aa88ccaa8f8f474cf2c4bcff11cd93",
       "spec_version": "1.2"
     },
     {

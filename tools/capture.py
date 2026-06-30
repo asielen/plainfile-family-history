@@ -1721,19 +1721,26 @@ def run_host(archive_root: Path, fha_config: dict, *, stdin=None, stdout=None) -
 
 
 def _install_host(archive_root: Path, *, extension_id: str | None,
-                  manifest_dir: str | None, dry_run: bool = False) -> int:
+                  manifest_dir: str | None, dry_run: bool = False,
+                  browser: str = 'chrome') -> int:
     """Write the native-messaging manifest (+ launcher) registering this CLI.
 
     `manifest_dir` overrides the per-OS native-messaging location (used by tests
-    and for a non-default browser profile). The launcher is a tiny wrapper that
-    invokes this interpreter on `tools/fha.py` with `capture --host --root
-    <archive>`. `dry_run` previews the paths without writing anything.
+    and for a non-default browser profile); `browser` ('chrome' | 'edge') picks
+    the default location and registry key otherwise. The launcher is a tiny
+    wrapper that invokes this interpreter on `tools/fha.py` with `capture --host
+    --root <archive>`. `dry_run` previews the paths without writing anything.
     """
-    target_dir = Path(manifest_dir) if manifest_dir else _native_manifest_dir()
+    # Chrome/Edge require the manifest `path` (and so the manifest dir) to be
+    # ABSOLUTE on every OS; a relative --host-manifest-dir would otherwise write
+    # a host the browser can't launch.
+    target_dir = (Path(manifest_dir).expanduser().resolve()
+                  if manifest_dir else _native_manifest_dir(browser))
 
     # The CLI is run as `tools/fha.py` (there is no bare `fha` executable in the
     # repo/installed layout); point the launcher at the real entrypoint.
     fha_entry = Path(__file__).resolve().parent / 'fha.py'
+    archive_root = Path(archive_root).expanduser().resolve()
     ext = '.bat' if os.name == 'nt' else '.sh'
     launcher = target_dir / f'fha-capture-host{ext}'
     manifest_path = target_dir / f'{_NATIVE_HOST_NAME}.json'
@@ -1773,10 +1780,12 @@ def _install_host(archive_root: Path, *, extension_id: str | None,
     print(f'Launcher → {launcher}')
     if os.name == 'nt':
         # Chrome/Edge discover Windows hosts via the registry, not a directory
-        # scan, so the manifest alone is not enough - point the user at the key.
+        # scan, so the manifest alone is not enough - point the user at the key
+        # for the chosen browser.
+        reg_vendor = 'Microsoft\\Edge' if browser == 'edge' else 'Google\\Chrome'
         print('NOTE: on Windows the browser finds the host through the registry. '
               'Register it with:\n'
-              f'  REG ADD "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\'
+              f'  REG ADD "HKCU\\Software\\{reg_vendor}\\NativeMessagingHosts\\'
               f'{_NATIVE_HOST_NAME}" /ve /t REG_SZ /d "{manifest_path}" /f')
     if not extension_id:
         print('NOTE: edit "allowed_origins" to your extension id '
@@ -1785,9 +1794,17 @@ def _install_host(archive_root: Path, *, extension_id: str | None,
     return EXIT_CLEAN
 
 
-def _native_manifest_dir() -> Path:
-    """The per-OS Chrome native-messaging hosts directory."""
+def _native_manifest_dir(browser: str = 'chrome') -> Path:
+    """The per-OS native-messaging hosts directory for `browser` (chrome|edge)."""
     home = Path.home()
+    if browser == 'edge':
+        if os.name == 'nt':
+            return Path(os.environ.get('LOCALAPPDATA', home)) / 'Microsoft' / \
+                'Edge' / 'User Data' / 'NativeMessagingHosts'
+        if sys.platform == 'darwin':
+            return home / 'Library' / 'Application Support' / 'Microsoft Edge' / \
+                'NativeMessagingHosts'
+        return home / '.config' / 'microsoft-edge' / 'NativeMessagingHosts'
     if os.name == 'nt':
         return Path(os.environ.get('LOCALAPPDATA', home)) / 'Google' / 'Chrome' / \
             'User Data' / 'NativeMessagingHosts'
@@ -1833,6 +1850,8 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--host-manifest-dir', metavar='DIR',
                    help='Override where --install-host writes the manifest (default: '
                         "the browser's native-messaging hosts dir)")
+    p.add_argument('--browser', choices=('chrome', 'edge'), default='chrome',
+                   help='Target browser for --install-host paths/registry (default: chrome)')
     p.add_argument('--dry-run', action='store_true', help='Preview without writing')
 
 
@@ -1854,6 +1873,7 @@ def _run_capture(args: argparse.Namespace) -> int:
                 extension_id=getattr(args, 'extension_id', None),
                 manifest_dir=getattr(args, 'host_manifest_dir', None),
                 dry_run=getattr(args, 'dry_run', False),
+                browser=getattr(args, 'browser', 'chrome'),
             )
         except OSError as e:
             # The browser's native-messaging dir may be missing/protected; report
