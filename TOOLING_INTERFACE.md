@@ -61,7 +61,9 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 - `merge-identities` - "same person" / "two people" judgment. Frontier-tier: cheap to attempt, expensive to get wrong. Reads the candidate neighborhood (`fha find --related`, co-occurrence), proposes a merge or a split for human confirmation; the mechanical write is the deterministic tool's job, never the skill's silent action. A `merged_into` person is never directly referenced again (lint E016/W107).
 - `place-research` - "fill in this place's history." Loose citations are acceptable here (place context is narrative scaffolding, not vital fact); drafts dated `history:` entries and place notes, links `[[L-…]]`, and proposes registry entries for `fha confirm place` to write.
 
-### 2.3 Skill backlog (ideas, not yet designed)
+### 2.3 Skill backlog
+
+`photo-context` (below) now has a settled design - it is **blocked** on a core-tool gap, not undesigned; see [`BUILD_INTERFACE.md`](BUILD_INTERFACE.md) Layer I4 for the authoritative status.
 
 | Idea | Sketch |
 |---|---|

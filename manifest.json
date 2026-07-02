@@ -97,7 +97,7 @@
     {
       "path": "BUILD.md",
       "category": "operating",
-      "sha256": "309dc3ba4568dbf31c1b1fa1546ee15415ff962de87dc88d65b4edca5071a105",
+      "sha256": "4e24486c3b2ddddbd8b1aced0eac06bbf3050ba7e2366585cb3766a240380a6e",
       "spec_version": "1.2"
     },
     {
@@ -109,7 +109,7 @@
     {
       "path": "BUILD_INTERFACE.md",
       "category": "operating",
-      "sha256": "460b9cb4586d454b7d25e45b3f541be1458ad64636fac927cb1627fd783935c2",
+      "sha256": "6411c8c4061d551067e6f6e3b1528347776c5f7eeeb837ffb738f64ab26bc550",
       "spec_version": "1.2"
     },
     {
@@ -145,7 +145,7 @@
     {
       "path": "TOOLING_INTERFACE.md",
       "category": "operating",
-      "sha256": "9c2d325ee50bc61280cf2bedf54cac0f82095163e82a8bca7a4c252db01bf0a4",
+      "sha256": "add02c52e6afaa2f920e671314222abaa6051e53855af493e5d7c822d45a320a",
       "spec_version": "1.2"
     },
     {
@@ -302,7 +302,7 @@
     {
       "path": "tools/README.md",
       "category": "operating",
-      "sha256": "5e7efa0176240cf3fa4476f952611eb240f1f10c6475a083cd7b4802340a23e0",
+      "sha256": "a9de08bcf37080a5060b8e624374804794160f34ba3780d15664309560bf07af",
       "spec_version": "1.2"
     },
     {

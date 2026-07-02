@@ -368,7 +368,7 @@ Plus an informational **needs-sourcing backlog** (not a finding, never moves the
 
 **Done when:**
 ```sh
-fha lint --root example-archive              # exits 1; exactly one W101
+fha lint --root example-archive              # exits 1; baseline W101 + W102 (TOOLING §15)
 fha lint --root tests/fixtures/broken-W103  # fires W103
 # repeat for each W code that has a broken fixture
 ```
@@ -501,7 +501,7 @@ write: `All accepted claims are cited in the profile.`
 fha views timeline P-de957bcda1 --root example-archive   # file generated; GENERATED header
 fha views sources-index --all-curated --couple-folders --root example-archive
 fha views draft-queue P-de957bcda1 --root example-archive  # non-empty (profile is sparse)
-fha lint --root example-archive   # still exits 1 W101; W105 does not fire on GENERATED files
+fha lint --root example-archive   # still exits 1 (baseline W101 + W102); W105 does not fire on GENERATED files
 ```
 
 ---
@@ -583,7 +583,7 @@ fha views tree P-de957bcda1 --mode descendants --format json --root example-arch
 # valid JSON; vitals populated; edges carry claim_id
 fha views tree P-de957bcda1 --mode ancestors --format dot --root example-archive
 fha views clean --root example-archive --dry-run    # lists GENERATED files
-fha views refresh --root example-archive            # regenerates all; lint still exits 1 W101
+fha views refresh --root example-archive            # regenerates all; lint still exits 1 (baseline W101 + W102)
 ```
 
 ---

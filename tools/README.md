@@ -619,8 +619,9 @@ Run with `python -m unittest tests.test_scaffold -v` from the repo root.
 | `fha lint` | `lint.py` | ✓ see lint status table below |
 | `fha stubs` | `stubs.py` | ✓ scan + mint stubs |
 
-`fha lint --root example-archive` exits 1 with one expected W101 - the fictional Thomas Hartley
-has no located death record, which is intentional for a minimal fixture.
+`fha lint --root example-archive` exits 1 with the documented baseline warnings (TOOLING.md §15):
+W101 (the fictional Thomas Hartley has no located death record) and W102 (one suggested claim
+staged on the family-portrait source as review-demo material) - both intentional for the fixture.
 No E-level errors. The `example-archive/` is a demonstration fixture permitted to carry documented
 known warnings; the `tests/fixtures/` clean fixture (not yet built) must exit 0.
 
